@@ -12,12 +12,6 @@ engine/build/
 # macOS
 .DS_Store
 
-# Xcode / SwiftPM (ui-macos)
-ui-macos/.build/
-ui-macos/.swiftpm/
-ui-macos/DerivedData/
-xcuserdata/
-
 # engine internals if a vault is ever checked out here
 .svod/
 *.svod-tmp

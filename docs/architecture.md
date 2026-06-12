@@ -1,11 +1,14 @@
 # Svod — architecture overview
 
 Svod is a local, git-backed markdown knowledge base that serves multiple local AI agents
-and **never loses files**. Two independently-released products around one versioned
-contract:
+and **never loses files**. It is a standalone OSS product — *auditable, git-backed agent
+memory you can read, diff, and restore* — not a note app.
 
-- **Svod** — headless engine (Kotlin/JVM). The single writer and source of truth.
-- **Svod UI** — native macOS client (SwiftUI). A swappable controller/client.
+- **Svod engine** (this repo, `FleetQ/svod-engine`, OSS) — headless Kotlin/JVM daemon; the
+  single writer and source of truth. Stays vendor-agnostic; FleetQ is just one MCP client.
+- **Svod UI** (`FleetQ/svod-ui-macos`, separate & personal) — a SwiftUI client built
+  against the published OpenAPI contract. **Not a supported product surface.** See
+  [ADR-0002](adr/0002-repo-split-and-license.md).
 
 ```
         agents (Mac, friday, sage-production)         UI (SwiftUI, swappable)
@@ -45,10 +48,12 @@ contract:
 ## Module layout
 
 - `engine/` — Kotlin + Gradle. `dev.svod.engine.core` is the integrity core (this step).
-- `ui-macos/` — SwiftUI client. Zero JVM. (later)
 - `contract/` — OpenAPI spec. (step 4)
 - `dist/` — launchd plist, jpackage/jlink config, installers. (step 5)
+- `examples/` — reference integrations: web viewer + FleetQ-MCP (built from step 4).
 - `docs/` — architecture + ADRs (one per major decision).
+
+The SwiftUI client lives in a separate, personal repo (`FleetQ/svod-ui-macos`), not here.
 
 ## Engine internals: the integrity core (`dev.svod.engine.core`)
 
@@ -69,6 +74,6 @@ See [ADR-0001](adr/0001-integrity-core.md) for the rationale behind each decisio
 
 - JDK 20 (no 21 present) — Gradle toolchain targets 20; fine for jpackage/jlink later.
 - Gradle 8.12 (wrapper committed). Kotlin 2.1.0, coroutines 1.9.0, jgit 6.7.0.
-- Swift 6.3 / Xcode 26.5 available for `ui-macos`.
+- Swift 6.3 / Xcode 26.5 available (the SwiftUI client lives in its own repo).
 - **Ollama is NOT installed** — required for step 2 embeddings (`multilingual-e5-large`).
   Install before starting the index/embedding pipeline.

@@ -10,9 +10,12 @@ integrity core until its concurrency + crash tests pass.**
 | 3 | MCP server — read/write/delete/move/search/list/history/diff/get_revision/link/graph_query/promote; audit log; token auth; roles; rate limiting; `messy/`→`vault/` promotion | ⬜ todo | |
 | 4 | App API + OpenAPI contract + file watcher + wikilink/backlink graph + link-integrity on rename/move | ⬜ todo | `contract/openapi.yaml` first. |
 | 5 | Lifecycle — launchd socket activation, `/health` + `/ready`, single-instance, graceful shutdown, self-update w/ API-compat check | ⬜ todo | `dist/`. |
-| 6 | Svod UI (SwiftUI) — editor, history/conflict, graph, agent activity, one-button start | ⬜ todo | Design-token layer first. |
+| 6 | Reference web viewer in `examples/` ("watch agents write, then `git diff` their memory") | ⬜ todo | Product demo; built once App API (step 4) exists. |
 | 7 | Multi-host sync — replicated engines + git transport, frontmatter-aware merge, designated merge authority, conflicts surfaced | ⬜ todo | |
 | 8 | Hardening — TLS, Keychain tokens, secret scanning, observability metrics, Obsidian import, full test suite | ⬜ todo | |
+
+> The personal **SwiftUI client** moved to its own repo (`FleetQ/svod-ui-macos`) and is
+> **out of product scope** — not a build step here. See [ADR-0002](adr/0002-repo-split-and-license.md).
 
 ## Step-1 acceptance (met)
 
