@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd user agent for the Svod engine.
+
+  Install (per-user, replace __USER__ / paths first):
+    cp dev.svod.engine.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.svod.engine.plist
+
+  One-button start (the UI does this when its health check fails):
+    launchctl kickstart -k gui/$(id -u)/dev.svod.engine
+    # then poll http://127.0.0.1:7517/ready until 200, then connect
+
+  RunAtLoad starts it at login; KeepAlive restarts it on crash. See ../README.md for the
+  socket-activation rationale.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.svod.engine</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/java</string>
+        <string>-jar</string>
+        <string>/usr/local/svod/svod-engine.jar</string>
+        <string>__USER_HOME__/.config/svod/config.json</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>JAVA_HOME</key>
+        <string>/Library/Java/JavaVirtualMachines/jdk-20.jdk/Contents/Home</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__USER_HOME__/Library/Logs/svod/engine.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__USER_HOME__/Library/Logs/svod/engine.err.log</string>
+</dict>
+</plist>

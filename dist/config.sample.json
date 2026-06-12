@@ -1,0 +1,15 @@
+{
+  "vaultPath": "/Users/you/Svod",
+  "host": "127.0.0.1",
+  "appApiPort": 7517,
+  "mcpPort": 7518,
+  "embedder": {
+    "provider": "onnx-local",
+    "onnxModelId": "multilingual-e5-small"
+  },
+  "agents": [
+    { "token": "CHANGE_ME_friday", "agentId": "friday", "role": "WRITE", "name": "Friday" },
+    { "token": "CHANGE_ME_reader", "agentId": "reader", "role": "READ_ONLY" }
+  ],
+  "syncRemotes": []
+}
