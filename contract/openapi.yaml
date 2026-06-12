@@ -548,13 +548,16 @@ components:
     Conflicts:
       type: object
       required: [conflicts]
+      description: Sync merge conflicts surfaced by the merge authority (never auto-resolved).
       properties:
         conflicts:
           type: array
           items:
             type: object
+            required: [path]
             properties:
               path: { type: string }
+              reasons: { type: array, items: { type: string } }
 
     Event:
       type: object

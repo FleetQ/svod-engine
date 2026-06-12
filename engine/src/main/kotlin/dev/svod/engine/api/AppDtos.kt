@@ -100,7 +100,7 @@ data class SettingsDto(
 data class IndexStatusDto(val docCount: Int, val headIndexed: String? = null, val model: String, val dim: Int)
 
 @Serializable
-data class ConflictEntryDto(val path: String)
+data class ConflictEntryDto(val path: String, val reasons: List<String> = emptyList())
 
 @Serializable
 data class ConflictsDto(val conflicts: List<ConflictEntryDto>)

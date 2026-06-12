@@ -48,6 +48,7 @@ class AppApiServer(
     private val eventBus: EventBus,
     private val config: Config = Config(),
     private val readiness: () -> Boolean = { true },
+    private val conflicts: dev.svod.engine.sync.ConflictStore? = null,
 ) {
     data class Config(
         val host: String = "127.0.0.1",
@@ -196,7 +197,10 @@ class AppApiServer(
             get("/api/v1/index/status") {
                 call.respond(IndexStatusDto(index.docCount(), index.headCommitIndexed(), index.indexedModel() ?: "none", index.indexedDim() ?: 0))
             }
-            get("/api/v1/conflicts") { call.respond(ConflictsDto(emptyList())) }
+            get("/api/v1/conflicts") {
+                val entries = conflicts?.all()?.map { ConflictEntryDto(it.path, it.reasons) } ?: emptyList()
+                call.respond(ConflictsDto(entries))
+            }
 
             webSocket("/api/v1/events") {
                 eventBus.events.collect { e -> send(Frame.Text(encodeEvent(e))) }

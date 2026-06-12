@@ -25,6 +25,12 @@ data class SvodConfig(
     val embedder: EmbedderSettings = EmbedderSettings(),
     val agents: List<AgentSettings> = emptyList(),
     val syncRemotes: List<String> = emptyList(),
+    /** Stable identifier for this host (used for its sync proposal branch). */
+    val hostId: String = "local",
+    /** This host is the canonical merge authority (only it creates merge commits). */
+    val mergeAuthority: Boolean = false,
+    /** Auto-sync interval in seconds; 0 disables the background loop (manual sync only). */
+    val syncIntervalSeconds: Int = 0,
     /** Optional path to the reference web viewer (examples/web-viewer); served at `/` when set. */
     val webViewerPath: String? = null,
 ) {
@@ -65,6 +71,7 @@ data class SvodConfig(
         for (a in agents) {
             if (ROLES.none { it.equals(a.role, ignoreCase = true) }) errors += "agent '${a.agentId}' role must be one of $ROLES, was '${a.role}'"
         }
+        if (syncRemotes.isNotEmpty() && hostId.isBlank()) errors += "hostId must be set when syncRemotes is configured"
         return errors
     }
 
