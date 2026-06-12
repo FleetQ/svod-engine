@@ -8,7 +8,7 @@ integrity core until its concurrency + crash tests pass.**
 | 1 | **Integrity core** — write-actor, jgit atomic commit, optimistic revision, soft-delete, crash recovery, vault lock, single-instance | ✅ **done, gate green** | `dev.svod.engine.core`; 12 tests passing (concurrency, crash-injection, Cyrillic). See ADR-0001. |
 | 2 | **Lucene hybrid index** — BM25 baseline + opt-in HNSW kNN + RRF, heading chunking, **pluggable embedder** (`onnx-local` default / `ollama` / `none`), incremental-from-commits, model-change migration, self-heal vs HEAD | ✅ **done, gate green** | `dev.svod.engine.index`; 25 tests (incl. in-process ONNX e5-small + live-Ollama). See ADR-0003, ADR-0004. |
 | 3 | **MCP server** — all 12 tools over streamable HTTP; per-agent token auth → git author; read-only/write roles; rate limiting; append-only audit; `messy/`→`vault/` promotion | ✅ **done, gate green** | `dev.svod.engine.mcp`; 10 tests (8 hermetic + 2 real-HTTP via MCP client). See ADR-0005. |
-| 4 | App API + OpenAPI contract + file watcher + wikilink/backlink graph + link-integrity on rename/move | ⬜ todo | `contract/openapi.yaml` first. |
+| 4 | **App API + OpenAPI contract** + file watcher + wikilink/backlink graph + link-integrity on rename/move | ✅ **done, gate green** | `contract/openapi.yaml` (contract-first) + `dev.svod.engine.{api,events,graph,watch}`; 8 tests (contract conformance, WS events, watcher, link-integrity). See ADR-0006. |
 | 5 | Lifecycle — launchd socket activation, `/health` + `/ready`, single-instance, graceful shutdown, self-update w/ API-compat check | ⬜ todo | `dist/`. |
 | 6 | Reference web viewer in `examples/` ("watch agents write, then `git diff` their memory") | ⬜ todo | Product demo; built once App API (step 4) exists. |
 | 7 | Multi-host sync — replicated engines + git transport, frontmatter-aware merge, designated merge authority, conflicts surfaced | ⬜ todo | |
@@ -54,6 +54,20 @@ integrity core until its concurrency + crash tests pass.**
 - [x] `messy/`→`vault/` promotion (revision-checked move); bad namespace rejected.
 - [x] Conflict/not-found returned as structured results (current content for 3-way merge), not protocol errors.
 - [x] Unknown bearer token rejected at the transport.
+
+## Step-4 acceptance (met)
+
+- [x] `contract/openapi.yaml` written first; every App API response validated against it and
+      implemented routes == declared paths (contract test fails on drift).
+- [x] All endpoints work: tree, file CRUD, search, history, diff, revision, restore, graph,
+      links, tags, settings, index status, conflicts, health/ready.
+- [x] WebSocket `/api/v1/events` streams live `agent.activity` / `commit.created` /
+      `index.updated` (+ `file.changed` / `conflict` / `engine.status`).
+- [x] File watcher ingests external working-tree edits via the write-actor (committed as
+      `external`, indexed); engine's own writes are not re-ingested (no loop).
+- [x] Link-integrity: moving a note rewrites all backlinks in ONE commit (path + basename
+      styles, alias/heading preserved); ambiguous basenames left untouched.
+- [x] App API binds 127.0.0.1 only; no per-agent auth (loopback-trusted UI identity).
 
 ## How to run the gate
 

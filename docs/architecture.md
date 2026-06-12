@@ -111,12 +111,31 @@ SDK; per-agent bearer auth binds identity to each session.
 Each tool call carries the authenticated agent, whose identity becomes the git commit author
 — so multi-agent writes stay attributable and auditable. See [ADR-0005](adr/0005-mcp-server.md).
 
+## Engine internals: the App API + graph + watcher (`api` / `events` / `graph` / `watch`)
+
+The UI-facing surface, defined contract-first by [`contract/openapi.yaml`](../contract/openapi.yaml)
+and bound to 127.0.0.1 only.
+
+| Type | Responsibility |
+|---|---|
+| `AppApiServer` (`api`) | Ktor REST + WebSocket; every contract endpoint; single UI identity. |
+| `EventBus` (`events`) | Non-blocking pub/sub; streamed over `/api/v1/events`. Published by engine/MCP/index/watcher. |
+| `LinkGraph` / `LinkRewriter` (`graph`) | Full backlink/tag graph; transactional link rewriting on move. |
+| `FileWatcher` (`watch`) | FSEvents → debounced, actor-serialized ingest of external edits. |
+| `SvodEngine.moveWithLinks` | Move + rewrite all backlinks in one commit (link-integrity). |
+| `SvodEngine.ingestExternalChanges` | Commit dirty working tree as `external` (used by the watcher). |
+
+The contract is the single source of truth: a test validates every live response against
+`openapi.yaml` and that routes == declared paths. See [ADR-0006](adr/0006-app-api-contract-watcher-graph.md).
+
 ## Toolchain notes (this machine)
 
 - JDK 20 (no 21 present) — Gradle toolchain targets 20; fine for jpackage/jlink later.
 - Gradle 8.12 (wrapper committed). **Kotlin 2.3.21** (bumped from 2.1 to read the MCP SDK
   0.13.0 metadata), coroutines 1.9.0, jgit 6.7.0.
 - MCP: `io.modelcontextprotocol:kotlin-sdk` **0.13.0** + **Ktor 3.4.3** (CIO), loopback-only.
+- App API: Ktor 3.4.3 (REST + WebSocket); `io.methvin:directory-watcher` (FSEvents);
+  contract test via `com.atlassian.oai:swagger-request-validator`.
 - Swift 6.3 / Xcode 26.5 available (the SwiftUI client lives in its own repo).
 - **No external embedding server required.** Default `onnx-local` runs `multilingual-e5-small`
   (MIT, 384-dim, int8) in-process via DJL 0.30 + ONNX Runtime; model cached under
