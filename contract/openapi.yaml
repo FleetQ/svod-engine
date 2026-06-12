@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.1.0
+  version: 0.2.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -307,6 +307,29 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Conflicts" }
 
+  /api/v1/conflicts/resolve:
+    post:
+      tags: [meta]
+      summary: >
+        Resolve a surfaced sync conflict. Writes the chosen/merged content through the single
+        writer (a normal attributed commit) and clears the conflict. The data for a 3-way merge
+        (base/ours/theirs) is on each entry of GET /api/v1/conflicts.
+      operationId: resolveConflict
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResolveConflictRequest" }
+      responses:
+        "200":
+          description: Resolved (conflict cleared, merged content committed)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WriteResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/BadRequest" }
+
   /api/v1/events:
     get:
       tags: [events]
@@ -567,9 +590,31 @@ components:
           items:
             type: object
             required: [path]
+            description: >
+              A surfaced conflict. base/ours/theirs carry the three versions a client needs to
+              render a 3-way merge UI; any may be null (e.g. a file added on one side only).
             properties:
               path: { type: string }
               reasons: { type: array, items: { type: string } }
+              base: { type: string, nullable: true }
+              ours: { type: string, nullable: true }
+              theirs: { type: string, nullable: true }
+              ts: { type: integer, format: int64, description: When the conflict was recorded (epoch millis). }
+
+    ResolveConflictRequest:
+      type: object
+      required: [path, content]
+      description: The merged/chosen content to commit, clearing the conflict for `path`.
+      properties:
+        path: { type: string }
+        content: { type: string }
+        expectedRevision:
+          type: string
+          nullable: true
+          description: >
+            Optional optimistic guard. Omit/null to resolve against the current on-disk
+            revision; set it to pin a specific one. Either way a change landing after you
+            resolved yields 409 (never a silent overwrite).
 
     Metrics:
       type: object

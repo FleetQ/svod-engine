@@ -100,10 +100,21 @@ data class SettingsDto(
 data class IndexStatusDto(val docCount: Int, val headIndexed: String? = null, val model: String, val dim: Int)
 
 @Serializable
-data class ConflictEntryDto(val path: String, val reasons: List<String> = emptyList())
+data class ConflictEntryDto(
+    val path: String,
+    val reasons: List<String> = emptyList(),
+    // base/ours/theirs back a 3-way merge UI; any may be null (e.g. added on one side only).
+    val base: String? = null,
+    val ours: String? = null,
+    val theirs: String? = null,
+    val ts: Long = 0,
+)
 
 @Serializable
 data class ConflictsDto(val conflicts: List<ConflictEntryDto>)
+
+@Serializable
+data class ResolveConflictRequestDto(val path: String, val content: String, val expectedRevision: String? = null)
 
 @Serializable
 data class WriteStatsDto(val count: Long, val avgMs: Double, val maxMs: Double, val lastMs: Double)

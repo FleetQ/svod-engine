@@ -30,7 +30,8 @@ class ApiFixture : AutoCloseable {
     val audit = AuditLog(root.resolve(".svod").resolve("audit").resolve("audit.log"))
     val registry = AgentRegistry(listOf(AgentRegistry.AgentSpec("w", "scribe", AgentRole.WRITE, name = "Scribe")))
     val tools = SvodTools(engine, index, audit, RateLimiter.default(), eventBus)
-    private val api = AppApiServer(engine, index, eventBus)
+    val conflicts = dev.svod.engine.sync.ConflictStore()
+    private val api = AppApiServer(engine, index, eventBus, conflicts = conflicts)
     private val running = api.start(0)
 
     val port: Int get() = running.port

@@ -53,7 +53,7 @@ class AppApiServer(
 ) {
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.1.0",
+        val apiVersion: String = "0.2.0",
         val embedderProvider: String = "onnx-local",
         val uiAuthor: Author = Author("svod-ui", "ui@svod.local"),
         /** When set to a directory, the reference web viewer is served same-origin at `/`. */
@@ -200,8 +200,28 @@ class AppApiServer(
                 call.respond(IndexStatusDto(index.docCount(), index.headCommitIndexed(), index.indexedModel() ?: "none", index.indexedDim() ?: 0))
             }
             get("/api/v1/conflicts") {
-                val entries = conflicts?.all()?.map { ConflictEntryDto(it.path, it.reasons) } ?: emptyList()
+                val entries = conflicts?.all()?.map {
+                    ConflictEntryDto(it.path, it.reasons, it.base, it.ours, it.theirs, it.ts)
+                } ?: emptyList()
                 call.respond(ConflictsDto(entries))
+            }
+            post("/api/v1/conflicts/resolve") {
+                val req = call.receive<ResolveConflictRequestDto>()
+                // The resolution is committed through the single writer like any other write; on
+                // success we clear the surfaced conflict. Default guard is the current on-disk
+                // revision, so a change landing after the client resolved still yields 409 rather
+                // than a silent overwrite (invariant 4); a client may pin its own expectedRevision.
+                val expected = req.expectedRevision ?: svod.read(req.path)?.revision
+                when (val o = svod.write(req.path, req.content, expected, config.uiAuthor)) {
+                    is WriteOutcome.Success -> {
+                        conflicts?.resolve(req.path)
+                        publishCommit(o, "resolve")
+                        call.respond(WriteResultDto(o.path, o.revision, o.commit))
+                    }
+                    is WriteOutcome.Conflict -> { publishConflict(o.path); call.respond(HttpStatusCode.Conflict, o.toConflictDto()) }
+                    is WriteOutcome.NotFound -> call.notFound(o.path)
+                    is WriteOutcome.Blocked -> call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("blocked", "secret(s) detected: ${o.findings.joinToString(", ")}"))
+                }
             }
             get("/api/v1/metrics") {
                 val w = svod.metrics.snapshot()

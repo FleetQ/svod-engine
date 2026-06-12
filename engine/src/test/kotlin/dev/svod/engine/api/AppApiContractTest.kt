@@ -84,6 +84,33 @@ class AppApiContractTest {
     }
 
     @Test
+    fun `conflicts expose 3-way merge data and resolve commits then clears`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            val ap = "/api/v1"
+            val author = Author("ui", "ui@svod.local")
+            fx.engine.write("vault/c.md", "ours body", null, author)
+            fx.conflicts.record("vault/c.md", base = "base body", ours = "ours body", theirs = "theirs body", reasons = listOf("body"))
+
+            // GET surfaces base/ours/theirs (what a 3-way merge UI needs) and conforms to the contract.
+            val listed = fx.get("$ap/conflicts")
+            assertEquals(200, listed.statusCode())
+            validate("$ap/conflicts", Request.Method.GET, 200, listed.body())
+            assertTrue(listed.body().contains("base body") && listed.body().contains("theirs body"),
+                "3-way data must be exposed: ${listed.body()}")
+
+            // Resolve: the merged content is committed through the writer and the conflict clears.
+            val resolved = fx.post("$ap/conflicts/resolve", """{"path":"vault/c.md","content":"merged body"}""")
+            assertEquals(200, resolved.statusCode())
+            validate("$ap/conflicts/resolve", Request.Method.POST, 200, resolved.body())
+
+            assertTrue(fx.conflicts.isEmpty(), "conflict cleared after resolve")
+            assertTrue(fx.get("$ap/conflicts").body().contains("\"conflicts\":[]"))
+            val content = Regex("\"content\":\"([^\"]*)\"").find(fx.get("$ap/file?path=${ApiFixture.enc("vault/c.md")}").body())!!.groupValues[1]
+            assertEquals("merged body", content)
+        }
+    }
+
+    @Test
     fun `every path declared in the contract is implemented`() {
         val openApi = OpenAPIV3Parser().read(specPath.toString())
         val declared = openApi.paths.keys.toSet()
@@ -91,7 +118,7 @@ class AppApiContractTest {
             "/health", "/ready", "/api/v1/tree", "/api/v1/file", "/api/v1/file/move", "/api/v1/file/restore",
             "/api/v1/file/history", "/api/v1/file/diff", "/api/v1/file/revision", "/api/v1/file/links",
             "/api/v1/search", "/api/v1/graph", "/api/v1/tags", "/api/v1/settings", "/api/v1/index/status",
-            "/api/v1/metrics", "/api/v1/conflicts", "/api/v1/events",
+            "/api/v1/metrics", "/api/v1/conflicts", "/api/v1/conflicts/resolve", "/api/v1/events",
         )
         assertEquals(declared, implemented, "contract paths and implemented routes must match exactly")
         assertTrue(Files.exists(specPath), "contract file present")
