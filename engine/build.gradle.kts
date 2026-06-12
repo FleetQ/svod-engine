@@ -39,11 +39,18 @@ dependencies {
     implementation("io.ktor:ktor-server-cio:$ktorVersion")
     implementation("io.ktor:ktor-server-auth:$ktorVersion")
     implementation("io.ktor:ktor-server-sse:$ktorVersion")
+    implementation("io.ktor:ktor-server-websockets:$ktorVersion")
     implementation("io.ktor:ktor-server-content-negotiation:$ktorVersion")
     implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
 
+    // External-change file watcher (App API / step 4)
+    implementation("io.methvin:directory-watcher:0.18.0")
+
     testImplementation("io.modelcontextprotocol:kotlin-sdk-client:$mcpVersion")
     testImplementation("io.ktor:ktor-client-cio:$ktorVersion")
+    testImplementation("io.ktor:ktor-client-websockets:$ktorVersion")
+    // Validate live App API responses against contract/openapi.yaml (contract test)
+    testImplementation("com.atlassian.oai:swagger-request-validator-core:2.43.0")
 
     // jgit logs via slf4j; provide a simple backend so warnings are not swallowed
     implementation("org.slf4j:slf4j-simple:2.0.13")
