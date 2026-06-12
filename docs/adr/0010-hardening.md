@@ -43,12 +43,24 @@ The whole suite (89 tests) runs green: integrity/concurrency/crash, hybrid index
 ONNX/Ollama, MCP (HTTP + TLS), App API contract conformance + events + watcher, link-integrity,
 lifecycle, sync (frontmatter merge + replication), and the hardening features above.
 
+### 7. macOS Keychain token provider
+`Secrets` resolves `keychain:[service/]account` via the macOS `security` CLI (service defaults
+to `svod`), so agent tokens / keystore passwords can live in the Keychain. macOS-only by
+nature; proven by a real add → read → delete round-trip test (skipped off macOS).
+
+### 8. Packaging — jpackage + jlink app image
+`dist/package.sh` builds a self-contained app image: `installDist` → a **jlink** runtime
+(jdeps-derived modules + curated TLS/crypto/locale extras) → **jpackage** `--type app-image`.
+The packaged `SvodEngine.app` launches and serves `/ready` 200. (Native embedding libs are
+fetched on first run, so the image stays small.) GraalVM `native-image` remains the planned
+2nd iteration.
+
 ## Deferred (documented, not hidden)
 
-- **macOS Keychain token provider** — a `keychain:` `Secrets` provider via the `security` CLI,
-  lives in `dist/` (OS-specific). The abstraction is in place.
-- **Encryption-at-rest** — out of scope for now; the vault relies on filesystem/disk
-  encryption. The git-backed model is unchanged when added.
+- **Encryption-at-rest** — out of scope for now (spec marks it optional); the vault relies on
+  filesystem/disk encryption. The git-backed model is unchanged when added.
+- **GraalVM native-image** — the planned 2nd packaging iteration (jpackage+jlink ships now).
+- **macOS SwiftUI client** — its own personal repo (`FleetQ/svod-ui-macos`), next session.
 - **Reverse-proxy TLS** — terminating TLS at an nginx/caddy front (MCP on loopback) remains a
   valid alternative to native TLS; both are supported.
 

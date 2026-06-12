@@ -1,8 +1,13 @@
 # Svod — build order & status
 
-**All 8 steps complete and green — 89 tests, 0 failed.** Svod is a runnable, replicating,
+**All 8 steps complete and green — 90 tests, 0 failed.** Svod is a runnable, replicating,
 contract-driven engine: integrity core → hybrid index → MCP → App API/contract/graph →
-lifecycle → reference viewer → multi-host sync → hardening.
+lifecycle → reference viewer → multi-host sync → hardening. Packaged via jpackage + jlink
+(`dist/package.sh` → `SvodEngine.app`, verified launching).
+
+**Deferred (not build steps):** GraalVM `native-image` (2nd packaging iteration),
+encryption-at-rest (spec-optional), and the macOS SwiftUI client (separate personal repo —
+next session).
 
 Each step was fully done + tested before the next. The gate rule: **do not move past the
 integrity core until its concurrency + crash tests pass.**

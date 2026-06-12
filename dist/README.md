@@ -64,6 +64,27 @@ hook: stop the App API + MCP servers, stop the watcher, close the Lucene index, 
 the engine — which **drains the write-actor queue** and releases the lock. No in-flight write
 is lost; committed writes are always recoverable from git.
 
+## Packaging (jpackage + jlink)
+
+`package.sh` builds a self-contained macOS app image:
+
+```sh
+JAVA_HOME=$(/usr/libexec/java_home -v 20) dist/package.sh
+# → dist/build/SvodEngine.app
+dist/build/SvodEngine.app/Contents/MacOS/SvodEngine ~/.config/svod/config.json
+```
+
+It runs `gradlew installDist`, builds a trimmed **jlink** runtime (jdeps-derived modules +
+curated TLS/crypto/locale extras), then **jpackage** `--type app-image`. The embedding native
+libraries (ONNX/DJL/tokenizers) download on first run, so the image stays small. GraalVM
+`native-image` is the planned next iteration.
+
+## Secrets
+
+Tokens and keystore passwords are **secret references** resolved by `Secrets`:
+`env:NAME`, `file:/path`, `keychain:[service/]account` (macOS Keychain via the `security`
+CLI; service defaults to `svod`), or a literal. Prefer `env:`/`keychain:` over literals.
+
 ## Self-update
 
 `self-update.sh` is a skeleton: it must call the engine's **API-compat preflight**
