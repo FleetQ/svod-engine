@@ -70,10 +70,30 @@ The SwiftUI client lives in a separate, personal repo (`FleetQ/svod-ui-macos`), 
 See [ADR-0001](adr/0001-integrity-core.md) for the rationale behind each decision and
 [build-order.md](build-order.md) for status.
 
+## Engine internals: the hybrid index (`dev.svod.engine.index`)
+
+Derived, rebuildable-from-HEAD search. Reads committed blobs only (its own read-only git
+handle) and runs entirely **off** the write path.
+
+| Type | Responsibility |
+|---|---|
+| `IndexService` | Owns the index; sync/reconcile/migrate on one `svod-indexer` thread; hybrid `search()`. |
+| `LuceneIndex` | BM25 + HNSW kNN (cosine) in one doc per chunk; stores vectors for reuse. |
+| `MarkdownChunker` | YAML frontmatter + heading-level chunks; SHA-256 content hash per chunk. |
+| `OllamaEmbedder` | e5 embeddings via Ollama (`passage:`/`query:` prefixes); `Embedder` is the seam. |
+| `GitReader` | Read-only jgit: HEAD tree, blobs, commit diffs — decoupled from the write actor. |
+| `Rrf` | Reciprocal Rank Fusion (k=60) of the BM25 and kNN legs. |
+| `IndexMeta` | Versioned `{schema, model, dim, headCommit}`; drives migration + self-heal. |
+
+The engine notifies the index via an additive `onCommit` listener; the handler only
+enqueues a sync, so writes never wait on embedding or Lucene I/O. See
+[ADR-0003](adr/0003-hybrid-index.md).
+
 ## Toolchain notes (this machine)
 
 - JDK 20 (no 21 present) — Gradle toolchain targets 20; fine for jpackage/jlink later.
 - Gradle 8.12 (wrapper committed). Kotlin 2.1.0, coroutines 1.9.0, jgit 6.7.0.
 - Swift 6.3 / Xcode 26.5 available (the SwiftUI client lives in its own repo).
-- **Ollama is NOT installed** — required for step 2 embeddings (`multilingual-e5-large`).
-  Install before starting the index/embedding pipeline.
+- **Ollama installed** (`brew`, v0.30) running on `127.0.0.1:11434`; model
+  `zylonai/multilingual-e5-large` (1024-dim) pulled and used by step 2.
+- Lucene pinned to **9.12** (Lucene 10 needs JDK 21, absent here).
