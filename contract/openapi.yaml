@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.1.0
+  version: 0.3.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -307,6 +307,62 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Conflicts" }
 
+  /api/v1/conflicts/resolve:
+    post:
+      tags: [meta]
+      summary: >
+        Resolve a surfaced sync conflict. Writes the chosen/merged content through the single
+        writer (a normal attributed commit) and clears the conflict. The data for a 3-way merge
+        (base/ours/theirs) is on each entry of GET /api/v1/conflicts.
+      operationId: resolveConflict
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResolveConflictRequest" }
+      responses:
+        "200":
+          description: Resolved (conflict cleared, merged content committed)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WriteResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/vaults:
+    get:
+      tags: [meta]
+      summary: List the configured vaults (each its own git repo, lock, index, and sync).
+      operationId: vaults
+      responses:
+        "200":
+          description: Vaults
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Vaults" }
+
+  /api/v1/import:
+    post:
+      tags: [meta]
+      summary: >
+        One-shot import of an existing Obsidian vault (markdown + attachments) through the single
+        writer. Idempotent — re-running reconciles rather than duplicating; a present-but-differing
+        file is skipped (never clobbered). `.obsidian/` and dot-dirs are skipped.
+      operationId: importVault
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ImportRequest" }
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ImportResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
   /api/v1/events:
     get:
       tags: [events]
@@ -325,6 +381,15 @@ components:
       in: query
       required: true
       description: Vault-relative note path (e.g. "vault/note.md"). URL-encoded; may contain Cyrillic.
+      schema: { type: string }
+    VaultQuery:
+      name: vault
+      in: query
+      required: false
+      description: >
+        Target vault id (see GET /api/v1/vaults). Omitted ⇒ the default vault. Every per-vault
+        route (tree, file*, search, graph, tags, settings, index/status, conflicts*, metrics,
+        import) accepts this parameter; an unknown id is a 404.
       schema: { type: string }
 
   responses:
@@ -478,6 +543,7 @@ components:
         matchedKeyword: { type: boolean }
         matchedSemantic: { type: boolean }
         tags: { type: array, items: { type: string } }
+        vault: { type: string, nullable: true, description: Vault id of this hit (set on federated across=true search). }
 
     Graph:
       type: object
@@ -523,6 +589,10 @@ components:
               resolved: { type: string, nullable: true }
         backlinks: { type: array, items: { type: string } }
         unresolved: { type: array, items: { type: string } }
+        crossVaultBacklinks:
+          type: array
+          description: Notes in OTHER vaults that link here, as global ids ("vault:path"). Qualified [[vault:note]] links.
+          items: { type: string }
 
     Tags:
       type: object
@@ -567,9 +637,66 @@ components:
           items:
             type: object
             required: [path]
+            description: >
+              A surfaced conflict. base/ours/theirs carry the three versions a client needs to
+              render a 3-way merge UI; any may be null (e.g. a file added on one side only).
             properties:
               path: { type: string }
               reasons: { type: array, items: { type: string } }
+              base: { type: string, nullable: true }
+              ours: { type: string, nullable: true }
+              theirs: { type: string, nullable: true }
+              ts: { type: integer, format: int64, description: When the conflict was recorded (epoch millis). }
+
+    Vaults:
+      type: object
+      required: [vaults]
+      properties:
+        vaults:
+          type: array
+          items:
+            type: object
+            required: [id, name, default]
+            properties:
+              id: { type: string }
+              name: { type: string }
+              default: { type: boolean }
+              sync: { $ref: "#/components/schemas/SyncStatus" }
+
+    ImportRequest:
+      type: object
+      required: [source]
+      description: Import an Obsidian vault directory (local path) into a Svod vault.
+      properties:
+        source: { type: string, description: Local filesystem path to the Obsidian vault directory. }
+        into: { type: string, nullable: true, description: Optional subfolder prefix within the target vault. }
+        vault: { type: string, nullable: true, description: Target vault id; omitted ⇒ default vault. }
+
+    ImportResult:
+      type: object
+      required: [imported, unchanged, skipped]
+      description: >
+        imported = newly written, unchanged = already identical (idempotent re-run),
+        skipped = present-but-differing (left as-is) or blocked by secret scanning.
+      properties:
+        imported: { type: array, items: { type: string } }
+        unchanged: { type: array, items: { type: string } }
+        skipped: { type: array, items: { type: string } }
+
+    ResolveConflictRequest:
+      type: object
+      required: [path, content]
+      description: The merged/chosen content to commit, clearing the conflict for `path`.
+      properties:
+        path: { type: string }
+        content: { type: string }
+        expectedRevision:
+          type: string
+          nullable: true
+          description: >
+            Optional optimistic guard. Omit/null to resolve against the current on-disk
+            revision; set it to pin a specific one. Either way a change landing after you
+            resolved yields 409 (never a silent overwrite).
 
     Metrics:
       type: object
@@ -602,6 +729,14 @@ components:
             role: { type: string }
             lastHead: { type: string, nullable: true }
             conflicts: { type: integer }
+
+    SyncStatus:
+      type: object
+      required: [role, conflicts]
+      properties:
+        role: { type: string }
+        lastHead: { type: string, nullable: true }
+        conflicts: { type: integer }
 
     Event:
       type: object

@@ -54,10 +54,15 @@ import kotlinx.serialization.json.putJsonObject
  * every tool call carries the right identity — which becomes the git commit author.
  */
 class SvodMcpServer(
-    private val tools: SvodTools,
+    /** Resolves the SvodTools for an agent — bound to that agent's vault (multi-vault scoping). */
+    private val toolsFor: (AgentIdentity) -> SvodTools,
     private val registry: AgentRegistry,
     private val host: String = "127.0.0.1",
 ) {
+    /** Single-vault convenience: every agent shares one tool set. */
+    constructor(tools: SvodTools, registry: AgentRegistry, host: String = "127.0.0.1")
+        : this({ tools }, registry, host)
+
     class Running(val embedded: EmbeddedServer<*, *>, val port: Int) {
         fun stop() = embedded.stop(500, 1000)
     }
@@ -155,8 +160,9 @@ class SvodMcpServer(
         return transport
     }
 
-    /** A fresh MCP server whose every tool handler is bound to [agent]. */
+    /** A fresh MCP server whose every tool handler is bound to [agent] and its vault. */
     private fun buildServer(agent: AgentIdentity): Server {
+        val tools = toolsFor(agent)
         val server = Server(
             Implementation(name = "svod", version = "0.1.0"),
             ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = false))),

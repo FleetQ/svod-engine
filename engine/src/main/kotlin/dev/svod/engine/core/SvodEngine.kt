@@ -66,12 +66,27 @@ class SvodEngine private constructor(
     suspend fun write(path: String, content: String, expectedRevision: Revision?, author: Author): WriteOutcome =
         timed { actor.submit { doWrite(VaultPath.of(path), content, expectedRevision, author) } }.also(::notifyCommit)
 
+    /**
+     * Binary-safe write: stores arbitrary [bytes] verbatim (attachments — images, PDF, …) through
+     * the same single writer with the same atomic + optimistic-concurrency guarantees. Unlike
+     * [write] it does not secret-scan (binaries aren't prose). Binaries are committed but the
+     * index leaves them un-embedded (it only indexes `.md`).
+     */
+    suspend fun writeBytes(path: String, bytes: ByteArray, expectedRevision: Revision?, author: Author): WriteOutcome =
+        timed { actor.submit { doWriteBytes(VaultPath.of(path), bytes, expectedRevision, author) } }.also(::notifyCommit)
+
     suspend fun read(path: String): FileContent? = actor.submit {
         val vp = VaultPath.of(path)
         val target = vp.resolveAgainst(root)
         if (!Files.isRegularFile(target)) return@submit null
         val bytes = Files.readAllBytes(target)
         FileContent(vp.value, git.blobId(bytes), String(bytes, UTF_8))
+    }
+
+    /** Raw bytes of [path], or null if absent. Byte-accurate (unlike [read], which decodes UTF-8). */
+    suspend fun readBytes(path: String): ByteArray? = actor.submit {
+        val target = VaultPath.of(path).resolveAgainst(root)
+        if (Files.isRegularFile(target)) Files.readAllBytes(target) else null
     }
 
     suspend fun delete(path: String, expectedRevision: Revision?, author: Author): WriteOutcome =
@@ -194,6 +209,20 @@ class SvodEngine private constructor(
             return WriteOutcome.Conflict(vp.value, expected, current, live)
         }
         val bytes = content.toByteArray(UTF_8)
+        AtomicFile.write(target, bytes, crash)
+        val commit = git.commitAll("write: ${vp.value}", author) ?: git.headId()!!
+        return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)
+    }
+
+    private fun doWriteBytes(vp: VaultPath, bytes: ByteArray, expected: Revision?, author: Author): WriteOutcome {
+        val target = vp.resolveAgainst(root)
+        val exists = Files.isRegularFile(target)
+        val current = if (exists) git.blobId(Files.readAllBytes(target)) else null
+        if (current != expected) {
+            // Binary live content isn't returned (a lossy UTF-8 decode would be meaningless); the
+            // current blob id is what a caller needs to retry.
+            return WriteOutcome.Conflict(vp.value, expected, current, null)
+        }
         AtomicFile.write(target, bytes, crash)
         val commit = git.commitAll("write: ${vp.value}", author) ?: git.headId()!!
         return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)

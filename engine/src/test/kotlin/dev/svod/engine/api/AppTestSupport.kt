@@ -13,6 +13,7 @@ import dev.svod.engine.mcp.SvodTools
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.serialization.json.put
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -30,8 +31,15 @@ class ApiFixture : AutoCloseable {
     val audit = AuditLog(root.resolve(".svod").resolve("audit").resolve("audit.log"))
     val registry = AgentRegistry(listOf(AgentRegistry.AgentSpec("w", "scribe", AgentRole.WRITE, name = "Scribe")))
     val tools = SvodTools(engine, index, audit, RateLimiter.default(), eventBus)
-    private val api = AppApiServer(engine, index, eventBus)
+    val conflicts = dev.svod.engine.sync.ConflictStore()
+    private val api = AppApiServer(engine, index, eventBus, conflicts = conflicts)
     private val running = api.start(0)
+
+    init {
+        // The server no longer owns onSynced (per-vault wiring lives in VaultContext); the
+        // fixture bridges index → index.updated events so the events test keeps working.
+        index.onSynced = { head -> eventBus.publish(dev.svod.engine.events.EventTypes.INDEX_UPDATED) { put("head", head) } }
+    }
 
     val port: Int get() = running.port
     val writeAgent: AgentIdentity get() = registry.byAgentId("scribe")!!

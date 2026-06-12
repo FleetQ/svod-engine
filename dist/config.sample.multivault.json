@@ -1,0 +1,35 @@
+{
+  "_comment": "Multi-vault example: a personal and a work vault in one engine. Each vault is its own git repo, lock, index, and sync remote. Agents are scoped to a vault. Omit the legacy top-level vaultPath when using `vaults`.",
+
+  "host": "127.0.0.1",
+  "appApiPort": 7517,
+  "mcpPort": 7518,
+
+  "vaults": [
+    {
+      "id": "personal",
+      "name": "Personal",
+      "path": "/Users/you/Svod/personal"
+    },
+    {
+      "id": "work",
+      "name": "Work",
+      "path": "/Users/you/Svod/work",
+      "syncRemotes": ["ssh://git@company.example/svod-work.git"],
+      "hostId": "mac",
+      "mergeAuthority": true,
+      "syncIntervalSeconds": 30
+    }
+  ],
+  "defaultVault": "personal",
+
+  "embedder": { "provider": "onnx-local", "onnxModelId": "multilingual-e5-small" },
+
+  "agents": [
+    { "token": "env:SVOD_ASSISTANT_TOKEN", "agentId": "assistant", "role": "WRITE", "name": "Assistant", "vaults": ["personal"] },
+    { "token": "env:SVOD_WORK_CREW_TOKEN", "agentId": "work-crew", "role": "WRITE", "name": "Work Crew", "vaults": ["work"] }
+  ],
+
+  "secretScanning": true,
+  "webViewerPath": "/Users/you/htdocs/svod/examples/web-viewer"
+}
