@@ -46,6 +46,7 @@ class AppApiServer(
     private val index: IndexService,
     private val eventBus: EventBus,
     private val config: Config = Config(),
+    private val readiness: () -> Boolean = { true },
 ) {
     data class Config(
         val host: String = "127.0.0.1",
@@ -80,8 +81,9 @@ class AppApiServer(
         routing {
             get("/health") { call.respond(HealthDto()) }
             get("/ready") {
-                val ready = ReadyDto(ready = true, engine = true, index = index.docCount() >= 0)
-                call.respond(if (ready.ready) HttpStatusCode.OK else HttpStatusCode.ServiceUnavailable, ready)
+                val r = readiness()
+                val ready = ReadyDto(ready = r, engine = true, index = index.docCount() >= 0)
+                call.respond(if (r) HttpStatusCode.OK else HttpStatusCode.ServiceUnavailable, ready)
             }
 
             get("/api/v1/tree") { call.respond(buildTree(svod.list())) }
