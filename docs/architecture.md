@@ -78,22 +78,27 @@ handle) and runs entirely **off** the write path.
 | Type | Responsibility |
 |---|---|
 | `IndexService` | Owns the index; sync/reconcile/migrate on one `svod-indexer` thread; hybrid `search()`. |
-| `LuceneIndex` | BM25 + HNSW kNN (cosine) in one doc per chunk; stores vectors for reuse. |
+| `LuceneIndex` | BM25 always; HNSW kNN (cosine) **when vectors exist**; one doc per chunk. |
 | `MarkdownChunker` | YAML frontmatter + heading-level chunks; SHA-256 content hash per chunk. |
-| `OllamaEmbedder` | e5 embeddings via Ollama (`passage:`/`query:` prefixes); `Embedder` is the seam. |
+| `Embedder` / `Embedders` | Pluggable seam + factory: `onnx-local` (default) / `ollama` / `none`. |
+| `OnnxLocalEmbedder` | In-process e5-small via DJL + ONNX Runtime (`query:`/`passage:`, mean-pool, L2). |
+| `ModelManager` | Resolves model.onnx + tokenizer.json: pre-placed or checksum-pinned download. |
+| `OllamaEmbedder` / `NoneEmbedder` | Optional external provider / BM25-only baseline. |
 | `GitReader` | Read-only jgit: HEAD tree, blobs, commit diffs — decoupled from the write actor. |
 | `Rrf` | Reciprocal Rank Fusion (k=60) of the BM25 and kNN legs. |
 | `IndexMeta` | Versioned `{schema, model, dim, headCommit}`; drives migration + self-heal. |
 
-The engine notifies the index via an additive `onCommit` listener; the handler only
-enqueues a sync, so writes never wait on embedding or Lucene I/O. See
-[ADR-0003](adr/0003-hybrid-index.md).
+Semantic retrieval is opt-in over BM25: with `none` there are no vectors and search is
+lexical-only. The engine notifies the index via an additive `onCommit` listener; the
+handler only enqueues a sync, so writes never wait on embedding or Lucene I/O. See
+[ADR-0003](adr/0003-hybrid-index.md) and [ADR-0004](adr/0004-embedder-providers-and-license.md).
 
 ## Toolchain notes (this machine)
 
 - JDK 20 (no 21 present) — Gradle toolchain targets 20; fine for jpackage/jlink later.
 - Gradle 8.12 (wrapper committed). Kotlin 2.1.0, coroutines 1.9.0, jgit 6.7.0.
 - Swift 6.3 / Xcode 26.5 available (the SwiftUI client lives in its own repo).
-- **Ollama installed** (`brew`, v0.30) running on `127.0.0.1:11434`; model
-  `zylonai/multilingual-e5-large` (1024-dim) pulled and used by step 2.
+- **No external embedding server required.** Default `onnx-local` runs `multilingual-e5-small`
+  (MIT, 384-dim, int8) in-process via DJL 0.30 + ONNX Runtime; model cached under
+  `.svod/models/`. Ollama is an optional provider (installed here at `127.0.0.1:11434`).
 - Lucene pinned to **9.12** (Lucene 10 needs JDK 21, absent here).

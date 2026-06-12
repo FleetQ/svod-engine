@@ -41,12 +41,13 @@ BM25 and a `KnnFloatVectorField` (cosine) for semantic kNN. Results are combined
 - Filters (tag / path-prefix / created-date-range) are applied as Lucene `FILTER` clauses
   to **both** legs before fusion, so constraints hold regardless of retrieval path.
 
-### 4. Embeddings: Ollama + multilingual-e5-large, asymmetric prefixes
-`OllamaEmbedder` calls `/api/embed` with e5's `passage:` / `query:` prefixes and probes
-its dimension (1024) once at construction so Lucene can size the vector field. The
-`Embedder` interface keeps the index model-agnostic; tests use a deterministic fake, and a
-live-Ollama integration test (auto-skipped when unavailable) proves true semantic and
-cross-lingual retrieval.
+### 4. Embeddings via a pluggable `Embedder`; semantic is opt-in over BM25
+The index is embedder-agnostic. Vectors are **optional**: with the `none` provider no
+`vec` field is written and search is pure BM25 — fully functional, zero prerequisites.
+When an embedder is active, chunks carry an HNSW vector and HYBRID fuses both legs. The
+provider model, default (in-process ONNX e5-small), and embedding-model licensing are
+covered in **[ADR-0004](0004-embedder-providers-and-license.md)**. (This decision
+supersedes the original Ollama-as-default sketch.)
 
 ### 5. Versioned index; model change ⇒ migration
 `meta.json` stores `{schemaVersion, embeddingModel, embeddingDim, headCommit}`. If the

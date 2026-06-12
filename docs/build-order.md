@@ -6,7 +6,7 @@ integrity core until its concurrency + crash tests pass.**
 | # | Subsystem | Status | Notes |
 |---|---|---|---|
 | 1 | **Integrity core** — write-actor, jgit atomic commit, optimistic revision, soft-delete, crash recovery, vault lock, single-instance | ✅ **done, gate green** | `dev.svod.engine.core`; 12 tests passing (concurrency, crash-injection, Cyrillic). See ADR-0001. |
-| 2 | **Lucene hybrid index** — BM25 + HNSW kNN + RRF, heading chunking, Ollama e5 embeddings, incremental-from-commits, model-change migration, self-heal vs HEAD | ✅ **done, gate green** | `dev.svod.engine.index`; 17 tests (incl. live-Ollama semantic). See ADR-0003. |
+| 2 | **Lucene hybrid index** — BM25 baseline + opt-in HNSW kNN + RRF, heading chunking, **pluggable embedder** (`onnx-local` default / `ollama` / `none`), incremental-from-commits, model-change migration, self-heal vs HEAD | ✅ **done, gate green** | `dev.svod.engine.index`; 27 tests (incl. in-process ONNX e5-small + live-Ollama). See ADR-0003, ADR-0004. |
 | 3 | MCP server — read/write/delete/move/search/list/history/diff/get_revision/link/graph_query/promote; audit log; token auth; roles; rate limiting; `messy/`→`vault/` promotion | ⬜ todo | |
 | 4 | App API + OpenAPI contract + file watcher + wikilink/backlink graph + link-integrity on rename/move | ⬜ todo | `contract/openapi.yaml` first. |
 | 5 | Lifecycle — launchd socket activation, `/health` + `/ready`, single-instance, graceful shutdown, self-update w/ API-compat check | ⬜ todo | `dist/`. |
@@ -31,22 +31,27 @@ integrity core until its concurrency + crash tests pass.**
 
 ## Step-2 acceptance (met)
 
-- [x] Hybrid search (BM25 + HNSW kNN, RRF k=60) correct on a seeded corpus incl. Cyrillic.
+- [x] BM25-only (`none`) returns correct results incl. Cyrillic; hybrid (with e5) correct;
+      RRF improves ranking over either leg alone on a designed case.
+- [x] e5 prefix + attention-mask mean-pool + L2-normalize verified; a known query/passage
+      pair is pinned (unit-length, `cos≈0.88`, cross-lingual alignment).
+- [x] Embedder swap via config works: `onnx-local ↔ none ↔ ollama`; `none` leaves a fully
+      usable lexical search.
 - [x] Index reconstructs exactly from git HEAD after a full wipe (self-heal proven).
 - [x] Incremental update re-embeds only changed chunks (asserted: 3 sections → edit 1 → 1 re-embed).
-- [x] Reindex-on-model-change (and dim-change) produces a consistent, queryable index.
+- [x] Reindex-on-model/dims-change produces a consistent, queryable index.
 - [x] Indexing runs off the write path; gated-embedder test proves writes never block and
       step-1 integrity (tree==HEAD, `git fsck` clean) is preserved under concurrent indexing.
 - [x] Filters (tag / path / date) + fuzzy / prefix / phrase / field-scoped queries.
-- [x] Real semantic + cross-lingual retrieval via live Ollama (auto-skipped in CI).
 
 ## How to run the gate
 
 ```sh
 cd engine
-JAVA_HOME=$(/usr/libexec/java_home -v 20) ./gradlew test          # 29 tests (Ollama test auto-skips if down)
+JAVA_HOME=$(/usr/libexec/java_home -v 20) ./gradlew test          # ONNX/Ollama tests auto-skip if model/server absent
 JAVA_HOME=$(/usr/libexec/java_home -v 20) ./gradlew test --rerun-tasks   # force a non-cached run
 ```
 
-Ollama must be running for the semantic integration test to execute (it skips cleanly if not):
-`brew services start ollama` and pull `zylonai/multilingual-e5-large` (1024-dim).
+The default `onnx-local` embedder needs no server: `multilingual-e5-small` (MIT, 384-dim,
+int8 ONNX) is downloaded once into `.svod/models/` (checksum-pinned) and cached. `none` is
+the BM25-only baseline with no model at all. `ollama` is an optional provider.
