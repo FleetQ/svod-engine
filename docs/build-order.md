@@ -6,7 +6,7 @@ integrity core until its concurrency + crash tests pass.**
 | # | Subsystem | Status | Notes |
 |---|---|---|---|
 | 1 | **Integrity core** — write-actor, jgit atomic commit, optimistic revision, soft-delete, crash recovery, vault lock, single-instance | ✅ **done, gate green** | `dev.svod.engine.core`; 12 tests passing (concurrency, crash-injection, Cyrillic). See ADR-0001. |
-| 2 | **Lucene hybrid index** — BM25 baseline + opt-in HNSW kNN + RRF, heading chunking, **pluggable embedder** (`onnx-local` default / `ollama` / `none`), incremental-from-commits, model-change migration, self-heal vs HEAD | ✅ **done, gate green** | `dev.svod.engine.index`; 27 tests (incl. in-process ONNX e5-small + live-Ollama). See ADR-0003, ADR-0004. |
+| 2 | **Lucene hybrid index** — BM25 baseline + opt-in HNSW kNN + RRF, heading chunking, **pluggable embedder** (`onnx-local` default / `ollama` / `none`), incremental-from-commits, model-change migration, self-heal vs HEAD | ✅ **done, gate green** | `dev.svod.engine.index`; 25 tests (incl. in-process ONNX e5-small + live-Ollama). See ADR-0003, ADR-0004. |
 | 3 | MCP server — read/write/delete/move/search/list/history/diff/get_revision/link/graph_query/promote; audit log; token auth; roles; rate limiting; `messy/`→`vault/` promotion | ⬜ todo | |
 | 4 | App API + OpenAPI contract + file watcher + wikilink/backlink graph + link-integrity on rename/move | ⬜ todo | `contract/openapi.yaml` first. |
 | 5 | Lifecycle — launchd socket activation, `/health` + `/ready`, single-instance, graceful shutdown, self-update w/ API-compat check | ⬜ todo | `dist/`. |
