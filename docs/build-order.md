@@ -7,7 +7,7 @@ integrity core until its concurrency + crash tests pass.**
 |---|---|---|---|
 | 1 | **Integrity core** — write-actor, jgit atomic commit, optimistic revision, soft-delete, crash recovery, vault lock, single-instance | ✅ **done, gate green** | `dev.svod.engine.core`; 12 tests passing (concurrency, crash-injection, Cyrillic). See ADR-0001. |
 | 2 | **Lucene hybrid index** — BM25 baseline + opt-in HNSW kNN + RRF, heading chunking, **pluggable embedder** (`onnx-local` default / `ollama` / `none`), incremental-from-commits, model-change migration, self-heal vs HEAD | ✅ **done, gate green** | `dev.svod.engine.index`; 25 tests (incl. in-process ONNX e5-small + live-Ollama). See ADR-0003, ADR-0004. |
-| 3 | MCP server — read/write/delete/move/search/list/history/diff/get_revision/link/graph_query/promote; audit log; token auth; roles; rate limiting; `messy/`→`vault/` promotion | ⬜ todo | |
+| 3 | **MCP server** — all 12 tools over streamable HTTP; per-agent token auth → git author; read-only/write roles; rate limiting; append-only audit; `messy/`→`vault/` promotion | ✅ **done, gate green** | `dev.svod.engine.mcp`; 10 tests (8 hermetic + 2 real-HTTP via MCP client). See ADR-0005. |
 | 4 | App API + OpenAPI contract + file watcher + wikilink/backlink graph + link-integrity on rename/move | ⬜ todo | `contract/openapi.yaml` first. |
 | 5 | Lifecycle — launchd socket activation, `/health` + `/ready`, single-instance, graceful shutdown, self-update w/ API-compat check | ⬜ todo | `dist/`. |
 | 6 | Reference web viewer in `examples/` ("watch agents write, then `git diff` their memory") | ⬜ todo | Product demo; built once App API (step 4) exists. |
@@ -43,6 +43,17 @@ integrity core until its concurrency + crash tests pass.**
 - [x] Indexing runs off the write path; gated-embedder test proves writes never block and
       step-1 integrity (tree==HEAD, `git fsck` clean) is preserved under concurrent indexing.
 - [x] Filters (tag / path / date) + fuzzy / prefix / phrase / field-scoped queries.
+
+## Step-3 acceptance (met)
+
+- [x] All 12 tools callable over real streamable-HTTP via the MCP client.
+- [x] Per-agent bearer token → identity; a write's git commit is authored by that agent (proven over HTTP).
+- [x] Roles enforced: a read-only agent's mutation is denied before the engine is touched.
+- [x] Per-agent token-bucket rate limiting returns `rate_limited` past quota.
+- [x] Append-only audit log records every action (incl. denials/conflicts) with agent identity.
+- [x] `messy/`→`vault/` promotion (revision-checked move); bad namespace rejected.
+- [x] Conflict/not-found returned as structured results (current content for 3-way merge), not protocol errors.
+- [x] Unknown bearer token rejected at the transport.
 
 ## How to run the gate
 

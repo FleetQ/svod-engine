@@ -93,10 +93,30 @@ lexical-only. The engine notifies the index via an additive `onCommit` listener;
 handler only enqueues a sync, so writes never wait on embedding or Lucene I/O. See
 [ADR-0003](adr/0003-hybrid-index.md) and [ADR-0004](adr/0004-embedder-providers-and-license.md).
 
+## Engine internals: the MCP server (`dev.svod.engine.mcp`)
+
+The agent-facing surface. Streamable HTTP (Ktor, loopback-only) via the official Kotlin MCP
+SDK; per-agent bearer auth binds identity to each session.
+
+| Type | Responsibility |
+|---|---|
+| `SvodMcpServer` | Ktor + streamable-HTTP wiring; per-session MCP `Server` bound to the agent. |
+| `SvodTools` | Transport-agnostic 12-tool surface; enforces role + rate-limit + audit; maps to engine/index. |
+| `AgentRegistry` / `AgentIdentity` | Bearer token → identity (git author) + role; constant-time compare. |
+| `RateLimiter` | Per-agent token-bucket quota. |
+| `AuditLog` | Append-only JSONL trail of every action under `.svod/audit/`. |
+| `ToolResult` | `ok / conflict / not_found` (domain) vs `denied / rate_limited / bad_request` (`isError`). |
+| `LinkGraph` (`graph`) | Lightweight `[[wikilink]]` resolution + backlinks for `link`/`graph_query`. |
+
+Each tool call carries the authenticated agent, whose identity becomes the git commit author
+— so multi-agent writes stay attributable and auditable. See [ADR-0005](adr/0005-mcp-server.md).
+
 ## Toolchain notes (this machine)
 
 - JDK 20 (no 21 present) — Gradle toolchain targets 20; fine for jpackage/jlink later.
-- Gradle 8.12 (wrapper committed). Kotlin 2.1.0, coroutines 1.9.0, jgit 6.7.0.
+- Gradle 8.12 (wrapper committed). **Kotlin 2.3.21** (bumped from 2.1 to read the MCP SDK
+  0.13.0 metadata), coroutines 1.9.0, jgit 6.7.0.
+- MCP: `io.modelcontextprotocol:kotlin-sdk` **0.13.0** + **Ktor 3.4.3** (CIO), loopback-only.
 - Swift 6.3 / Xcode 26.5 available (the SwiftUI client lives in its own repo).
 - **No external embedding server required.** Default `onnx-local` runs `multilingual-e5-small`
   (MIT, 384-dim, int8) in-process via DJL 0.30 + ONNX Runtime; model cached under
