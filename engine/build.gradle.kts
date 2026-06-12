@@ -25,6 +25,12 @@ dependencies {
     implementation("org.apache.lucene:lucene-queryparser:$luceneVersion")
     implementation("org.apache.lucene:lucene-highlighter:$luceneVersion")
 
+    // In-process embeddings: DJL + ONNX Runtime + HuggingFace tokenizers (default provider).
+    implementation(platform("ai.djl:bom:0.30.0"))
+    implementation("ai.djl:api")
+    implementation("ai.djl.huggingface:tokenizers")
+    implementation("ai.djl.onnxruntime:onnxruntime-engine")
+
     // jgit logs via slf4j; provide a simple backend so warnings are not swallowed
     implementation("org.slf4j:slf4j-simple:2.0.13")
 

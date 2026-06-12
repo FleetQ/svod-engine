@@ -33,7 +33,7 @@ class IndexService(
     private val schemaVersion: Int = IndexMeta.SCHEMA_VERSION,
 ) : AutoCloseable {
 
-    private val index = LuceneIndex(indexDir, embedder.dim)
+    private val index = LuceneIndex(indexDir)
     private val reader = GitReader(root)
     private val metaFile = indexDir.resolve("meta.json")
     private val exec = Executors.newSingleThreadExecutor { r -> Thread(r, "svod-indexer").apply { isDaemon = true } }
@@ -64,6 +64,10 @@ class IndexService(
 
     fun headCommitIndexed(): String? = IndexMeta.load(metaFile)?.headCommit
 
+    fun indexedModel(): String? = IndexMeta.load(metaFile)?.embeddingModel
+
+    fun indexedDim(): Int? = IndexMeta.load(metaFile)?.embeddingDim
+
     fun docCount(): Int = index.numDocs()
 
     // ---- search (thread-safe; no executor needed) ----
@@ -73,17 +77,21 @@ class IndexService(
         val filter = index.buildFilter(q.filters)
         val cand = maxOf(q.limit * 5, 50)
 
-        val keyword = if (q.mode != SearchMode.SEMANTIC) keywordLeg(q.text, filter, cand) else emptyList()
-        val semantic = if (q.mode != SearchMode.KEYWORD) semanticLeg(q.text, filter, cand) else emptyList()
+        // Semantic is opt-in over BM25: with no active embedder, every mode is lexical.
+        val active = embedder.isActive
+        val wantKeyword = q.mode != SearchMode.SEMANTIC || !active
+        val wantSemantic = q.mode != SearchMode.KEYWORD && active
+        val keyword = if (wantKeyword) keywordLeg(q.text, filter, cand) else emptyList()
+        val semantic = if (wantSemantic) semanticLeg(q.text, filter, cand) else emptyList()
         val kwIds = keyword.map { it.first }
         val semIds = semantic.map { it.first }
         val kwSet = kwIds.toHashSet()
         val semSet = semIds.toHashSet()
 
-        val ordered: List<Pair<String, Double>> = when (q.mode) {
-            SearchMode.HYBRID -> Rrf.fuse(listOf(kwIds, semIds)).entries.map { it.key to it.value }
-            SearchMode.KEYWORD -> keyword.map { it.first to it.second.toDouble() }
-            SearchMode.SEMANTIC -> semantic.map { it.first to it.second.toDouble() }
+        val ordered: List<Pair<String, Double>> = when {
+            !active || q.mode == SearchMode.KEYWORD -> keyword.map { it.first to it.second.toDouble() }
+            q.mode == SearchMode.SEMANTIC -> semantic.map { it.first to it.second.toDouble() }
+            else -> Rrf.fuse(listOf(kwIds, semIds)).entries.map { it.key to it.value }
         }
 
         val hits = ordered.asSequence()
@@ -207,17 +215,21 @@ class IndexService(
         val doc = MarkdownChunker.parse(String(bytes, Charsets.UTF_8))
         if (doc.chunks.isEmpty()) { index.deletePath(path); return }
 
-        val reusable = index.existingVectors(path)
-        val toEmbed = doc.chunks.filter { it.contentHash !in reusable }
-        val freshVectors: Map<String, FloatArray> = if (toEmbed.isEmpty()) {
-            emptyMap()
+        val chunkDocs = if (!embedder.isActive) {
+            // BM25-only: no vectors at all.
+            doc.chunks.map { LuceneIndex.ChunkDoc(it, null) }
         } else {
-            val vecs = embedder.embedPassages(toEmbed.map { embedText(it) })
-            toEmbed.mapIndexed { i, c -> c.contentHash to vecs[i] }.toMap()
-        }
-
-        val chunkDocs = doc.chunks.map { c ->
-            LuceneIndex.ChunkDoc(c, reusable[c.contentHash] ?: freshVectors.getValue(c.contentHash))
+            val reusable = index.existingVectors(path)
+            val toEmbed = doc.chunks.filter { it.contentHash !in reusable }
+            val freshVectors: Map<String, FloatArray> = if (toEmbed.isEmpty()) {
+                emptyMap()
+            } else {
+                val vecs = embedder.embedPassages(toEmbed.map { embedText(it) })
+                toEmbed.mapIndexed { i, c -> c.contentHash to vecs[i] }.toMap()
+            }
+            doc.chunks.map { c ->
+                LuceneIndex.ChunkDoc(c, reusable[c.contentHash] ?: freshVectors.getValue(c.contentHash))
+            }
         }
         index.upsertFile(path, blob, doc.tags, doc.created, chunkDocs)
     }

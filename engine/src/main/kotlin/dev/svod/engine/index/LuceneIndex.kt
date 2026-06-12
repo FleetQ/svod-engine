@@ -29,22 +29,26 @@ import java.nio.ByteOrder
 import java.nio.file.Path
 
 /**
- * Lucene-backed chunk index: BM25 over text + HNSW kNN over embeddings, in one document
- * per chunk. The embedding bytes are stored alongside each chunk so that incremental
+ * Lucene-backed chunk index: BM25 over text always, plus HNSW kNN over embeddings when an
+ * embedder is active. The embedding bytes are stored alongside each chunk so incremental
  * reindexing can reuse the vector of an unchanged section instead of re-embedding it.
+ *
+ * Vectors are optional: with the `none` embedder, documents carry no `vec` field and the
+ * index is a pure BM25 store. Switching providers changes the recorded model, which forces
+ * a full reindex, so segments are never mixed across vector dimensions.
  *
  * Writes are expected to come from a single thread (the [IndexService]); reads are
  * thread-safe via [SearcherManager].
  */
-class LuceneIndex(private val dir: Path, val dim: Int) : AutoCloseable {
+class LuceneIndex(private val dir: Path) : AutoCloseable {
 
     private val analyzer = StandardAnalyzer()
     private val directory = FSDirectory.open(dir)
     private val writer = IndexWriter(directory, IndexWriterConfig(analyzer).setOpenMode(IndexWriterConfig.OpenMode.CREATE_OR_APPEND))
     private val searcherManager = SearcherManager(writer, null)
 
-    /** A chunk plus its embedding, ready to be written. */
-    data class ChunkDoc(val chunk: Chunk, val vector: FloatArray)
+    /** A chunk plus its embedding (null in BM25-only mode), ready to be written. */
+    data class ChunkDoc(val chunk: Chunk, val vector: FloatArray?)
 
     fun numDocs(): Int = withSearcher { it.indexReader.numDocs() }
 
@@ -91,8 +95,10 @@ class LuceneIndex(private val dir: Path, val dim: Int) : AutoCloseable {
             d.add(StoredField("ord", cd.chunk.ordinal))
             for (t in tags) d.add(StringField("tag", t, Field.Store.YES))
             if (created != null) d.add(LongPoint("created", created))
-            d.add(KnnFloatVectorField("vec", cd.vector, VectorSimilarityFunction.COSINE))
-            d.add(StoredField("vecBytes", floatsToBytes(cd.vector)))
+            if (cd.vector != null) {
+                d.add(KnnFloatVectorField("vec", cd.vector, VectorSimilarityFunction.COSINE))
+                d.add(StoredField("vecBytes", floatsToBytes(cd.vector)))
+            }
             writer.addDocument(d)
         }
     }
