@@ -70,6 +70,27 @@ class SvodEngine private constructor(
     suspend fun history(path: String, max: Int = 50): List<CommitInfo> =
         actor.submit { git.log(VaultPath.of(path).value, max) }
 
+    /** Content of [path] at a specific [revision] (commit id / ref), or null if absent there. */
+    suspend fun getRevision(path: String, revision: String): FileContent? = actor.submit {
+        val vp = VaultPath.of(path)
+        val bytes = git.readAtRevision(vp.value, revision) ?: return@submit null
+        FileContent(vp.value, git.blobId(bytes), String(bytes, UTF_8))
+    }
+
+    /** Unified diff of [path] between two revisions (commit ids / refs). */
+    suspend fun diff(path: String, fromRevision: String, toRevision: String): String =
+        actor.submit { git.diff(VaultPath.of(path).value, fromRevision, toRevision) }
+
+    /**
+     * Promote a draft from `messy/` into the curated vault — a transactional move that
+     * enforces the namespace policy (source under `messy/`, target outside it).
+     */
+    suspend fun promote(from: String, to: String, expectedRevision: Revision?, author: Author): WriteOutcome {
+        require(from.replace('\\', '/').trimStart('/').startsWith("messy/")) { "promote source must be under messy/: $from" }
+        require(!to.replace('\\', '/').trimStart('/').startsWith("messy/")) { "promote target must not be under messy/: $to" }
+        return move(from, to, expectedRevision, author)
+    }
+
     /** Vault-relative paths of all user files (excludes dot-directories and engine internals). */
     suspend fun list(): List<String> = actor.submit {
         val out = ArrayList<String>()

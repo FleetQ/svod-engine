@@ -1,0 +1,70 @@
+package dev.svod.engine.graph
+
+/**
+ * A lightweight `[[wikilink]]` graph computed from current note content.
+ *
+ * This is the read-only graph the MCP `link`/`graph_query` tools serve. The full graph
+ * subsystem — tag taxonomy, graph-view payloads, and **link-integrity on rename/move**
+ * (transactionally rewriting references) — is Step 4; this is intentionally just resolution
+ * + backlinks.
+ */
+class LinkGraph private constructor(
+    private val outById: Map<String, List<ResolvedLink>>,
+    private val backById: Map<String, List<String>>,
+) {
+    /** Outgoing links from [path]: each target plus the note it resolves to (or null). */
+    fun outlinks(path: String): List<ResolvedLink> = outById[path].orEmpty()
+
+    /** Notes that link to [path]. */
+    fun backlinks(path: String): List<String> = backById[path].orEmpty()
+
+    /** Unresolved targets referenced from [path] (broken links). */
+    fun unresolved(path: String): List<String> = outlinks(path).filter { it.resolvedPath == null }.map { it.target }
+
+    /** 1-hop neighborhood for graph_query. */
+    fun neighborhood(path: String): Neighborhood =
+        Neighborhood(path, outlinks(path), backlinks(path))
+
+    data class ResolvedLink(val target: String, val resolvedPath: String?)
+    data class Neighborhood(val path: String, val outlinks: List<ResolvedLink>, val backlinks: List<String>)
+
+    companion object {
+        /** Build the graph from a snapshot of note path → content. */
+        fun build(notes: Map<String, String>): LinkGraph {
+            val paths = notes.keys
+            // Resolution indexes: exact path (with/without .md) and unique basename.
+            val byPath = HashSet(paths)
+            val byBasename = HashMap<String, MutableList<String>>()
+            for (p in paths) {
+                val base = p.substringAfterLast('/').removeSuffix(".md").lowercase()
+                byBasename.getOrPut(base) { mutableListOf() }.add(p)
+            }
+
+            fun resolve(rawTarget: String): String? {
+                val target = rawTarget.substringBefore('#').substringBefore('|').trim().replace('\\', '/').trimStart('/')
+                if (target.isEmpty()) return null
+                if (target in byPath) return target
+                if ("$target.md" in byPath) return "$target.md"
+                val matches = byBasename[target.substringAfterLast('/').removeSuffix(".md").lowercase()]
+                return if (matches != null && matches.size == 1) matches.single() else null
+            }
+
+            val out = HashMap<String, List<ResolvedLink>>()
+            val back = HashMap<String, MutableList<String>>()
+            for ((path, content) in notes) {
+                val links = WikiLinks.extract(content).map { ResolvedLink(it, resolve(it)) }
+                out[path] = links
+                for (l in links) if (l.resolvedPath != null) back.getOrPut(l.resolvedPath) { mutableListOf() }.add(path)
+            }
+            return LinkGraph(out, back)
+        }
+    }
+}
+
+/** Extracts `[[wikilink]]` targets, tolerating `[[target|alias]]` and `[[target#heading]]`. */
+object WikiLinks {
+    private val LINK = Regex("\\[\\[([^\\[\\]]+?)]]")
+
+    fun extract(content: String): List<String> =
+        LINK.findAll(content).map { it.groupValues[1].trim() }.filter { it.isNotEmpty() }.toList()
+}

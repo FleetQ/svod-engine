@@ -1,10 +1,18 @@
 package dev.svod.engine.core
 
 import org.eclipse.jgit.api.Git
+import org.eclipse.jgit.diff.DiffFormatter
 import org.eclipse.jgit.lib.Constants
+import org.eclipse.jgit.lib.ObjectId
 import org.eclipse.jgit.lib.PersonIdent
 import org.eclipse.jgit.lib.Repository
+import org.eclipse.jgit.revwalk.RevWalk
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
+import org.eclipse.jgit.treewalk.CanonicalTreeParser
+import org.eclipse.jgit.treewalk.TreeWalk
+import org.eclipse.jgit.treewalk.filter.PathFilter
+import java.io.ByteArrayOutputStream
+import java.nio.charset.StandardCharsets
 import java.nio.file.Path
 
 /**
@@ -68,6 +76,36 @@ class GitRepo private constructor(
                 epochSeconds = c.authorIdent.whenAsInstant.epochSecond,
                 message = c.fullMessage.trim(),
             )
+        }
+    }
+
+    /** Content of [path] as it existed at [revision] (a commit id, ref, or "HEAD"). */
+    fun readAtRevision(path: String, revision: String): ByteArray? {
+        val id = repo.resolve(revision) ?: return null
+        RevWalk(repo).use { rw ->
+            val tree = rw.parseCommit(id).tree
+            TreeWalk.forPath(repo, path, tree)?.use { tw -> return repo.open(tw.getObjectId(0)).bytes }
+        }
+        return null
+    }
+
+    /** Unified diff of [path] between two revisions (commit ids/refs). Empty if unchanged. */
+    fun diff(path: String, fromRevision: String, toRevision: String): String {
+        val from = repo.resolve(fromRevision) ?: throw IllegalArgumentException("unknown revision: $fromRevision")
+        val to = repo.resolve(toRevision) ?: throw IllegalArgumentException("unknown revision: $toRevision")
+        val out = ByteArrayOutputStream()
+        DiffFormatter(out).use { df ->
+            df.setRepository(repo)
+            df.pathFilter = PathFilter.create(path)
+            df.format(treeParser(from), treeParser(to))
+        }
+        return out.toString(StandardCharsets.UTF_8)
+    }
+
+    private fun treeParser(commit: ObjectId): CanonicalTreeParser {
+        val tree = RevWalk(repo).use { it.parseCommit(commit).tree }
+        return CanonicalTreeParser().also { p ->
+            repo.newObjectReader().use { reader -> p.reset(reader, tree) }
         }
     }
 
