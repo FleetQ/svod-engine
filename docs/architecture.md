@@ -148,6 +148,21 @@ then `git diff` their memory*. It consumes only the App API + WebSocket, and the
 serves it **same-origin** at `/` when `webViewerPath` is configured (off by default, no CORS).
 Verified end-to-end in a browser; see [ADR-0008](adr/0008-reference-web-viewer.md).
 
+## Engine internals: multi-host sync (`dev.svod.engine.sync`)
+
+Replicated engines converging over git, with a designated merge authority for determinism.
+
+| Type | Responsibility |
+|---|---|
+| `SyncEngine` | fetch → reconcile → push; authority merges proposals, replicas propose + fast-forward. |
+| `FrontmatterMerge` | structured 3-way: YAML frontmatter key-level (tag union) + body via jgit `MergeAlgorithm`. |
+| `SyncGit` | read-only/network jgit handle (fetch/push/ancestry/tree reads), separate from the writer. |
+| `ConflictStore` | surfaced, unresolved conflicts → `GET /api/v1/conflicts`; never auto-resolved. |
+| `SvodEngine.applyMerge` / `fastForwardTo` | actor-serialized merge-commit + FF (single-writer preserved). |
+
+Conflicts keep *ours* in the tree and preserve *theirs* (conflict record + history) — no
+silent overwrite, nothing lost. See [ADR-0009](adr/0009-multihost-sync.md).
+
 ## Toolchain notes (this machine)
 
 - JDK 20 (no 21 present) — Gradle toolchain targets 20; fine for jpackage/jlink later.

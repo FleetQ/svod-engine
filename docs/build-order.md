@@ -11,7 +11,7 @@ integrity core until its concurrency + crash tests pass.**
 | 4 | **App API + OpenAPI contract** + file watcher + wikilink/backlink graph + link-integrity on rename/move | ✅ **done, gate green** | `contract/openapi.yaml` (contract-first) + `dev.svod.engine.{api,events,graph,watch}`; 8 tests (contract conformance, WS events, watcher, link-integrity). See ADR-0006. |
 | 5 | **Lifecycle** — launchd (KeepAlive + kickstart), `/health` + `/ready`, single-instance, graceful shutdown, validated config, self-update API-compat check | ✅ **done, gate green** | `dev.svod.engine.lifecycle` + `dist/`; 10 tests (config, compat matrix, node start/shutdown/no-loss, single-instance, readiness). See ADR-0007. |
 | 6 | **Reference web viewer** in `examples/web-viewer` ("watch agents write, then `git diff` their memory") | ✅ **done, verified in browser** | Dependency-free; served same-origin (opt-in) by the App API; live feed + git-diff. See ADR-0008. |
-| 7 | Multi-host sync — replicated engines + git transport, frontmatter-aware merge, designated merge authority, conflicts surfaced | ⬜ todo | |
+| 7 | **Multi-host sync** — replicated engines + git transport, frontmatter-aware merge, designated merge authority, conflicts surfaced | ✅ **done, gate green** | `dev.svod.engine.sync`; 10 tests (frontmatter merge incl. Cyrillic + two-engine replication: converge, structural merge, conflict surfacing). See ADR-0009. |
 | 8 | Hardening — TLS, Keychain tokens, secret scanning, observability metrics, Obsidian import, full test suite | ⬜ todo | |
 
 > The personal **SwiftUI client** moved to its own repo (`FleetQ/svod-ui-macos`) and is
@@ -78,6 +78,17 @@ integrity core until its concurrency + crash tests pass.**
       write → shutdown → fresh node reads it back; port closed.
 - [x] launchd plist (RunAtLoad + KeepAlive) + one-button start via `launchctl kickstart`.
 - [x] Self-update gated on App API semver compatibility (major-match; downgrade refused).
+
+## Step-7 acceptance (met)
+
+- [x] Replicated engines over git; each host holds the full history (never lose files).
+- [x] Designated merge authority: only it creates merge commits; replicas propose + fast-forward
+      (deterministic history across the fleet).
+- [x] Frontmatter-aware structured merge: YAML keys merge at the key level (tag union, one-side
+      wins), body via git's 3-way; Cyrillic + YAML proven.
+- [x] Conflicts surfaced via `/api/v1/conflicts`, never auto-resolved; both versions preserved
+      (theirs in the conflict record + git history). No silent overwrite.
+- [x] Sync's ref-moving writes go through the single writer; `git fsck` clean after merges.
 
 ## How to run the gate
 
