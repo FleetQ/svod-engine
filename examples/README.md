@@ -3,19 +3,33 @@
 Reference integrations and demos for the Svod engine. These are **examples**, not
 supported product surfaces.
 
-## Reference web viewer — *planned, built at Step 4*
+## Reference web viewer — `web-viewer/` ✅ built
 
-A trivial, dependency-light web viewer that tells the Svod story in one screen:
+A trivial, dependency-free web viewer (`index.html` + `style.css` + `app.js`, no build step)
+that tells the Svod story in one screen:
 
 > **Watch agents write, then `git diff` their memory.**
 
-It will consume the engine's **App API + WebSocket** (`agent.activity`, `commit.created`,
-`file.changed`) to show a live feed of what each agent is writing, with a one-click jump to
-the underlying git diff — making "auditable, git-backed agent memory" tangible.
+It consumes the engine's **App API + WebSocket** (`agent.activity`, `commit.created`,
+`index.updated`, …) to show a live, per-agent activity feed; click any change to see the
+colorized `git diff` of that write.
 
-**Status: not built yet.** It depends on the App API, which lands in **Step 4** of the
-build order. There is no HTTP surface to build against before then. See
-[`../docs/build-order.md`](../docs/build-order.md).
+### Run it
+
+Set `webViewerPath` in your engine config to this directory, then open the App API root:
+
+```jsonc
+// config.json
+{ "...": "...", "webViewerPath": "/Users/you/htdocs/svod/examples/web-viewer" }
+```
+
+```sh
+open http://127.0.0.1:7517/
+```
+
+The engine serves it **same-origin** (so its WebSocket + fetch need no CORS). It is off
+unless `webViewerPath` is set. You can also point the endpoint box at any reachable engine.
+See [ADR-0008](../docs/adr/0008-reference-web-viewer.md).
 
 ## FleetQ integration
 

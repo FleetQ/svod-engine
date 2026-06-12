@@ -141,6 +141,13 @@ The contract is the single source of truth: a test validates every live response
 The engine stays OS-agnostic; all macOS specifics live in `dist/`. launchd uses KeepAlive +
 kickstart rather than fd socket activation (JVM limitation). See [ADR-0007](adr/0007-lifecycle.md).
 
+## Reference web viewer (`examples/web-viewer`)
+
+A dependency-free static viewer (HTML/CSS/JS) for the product story — *watch agents write,
+then `git diff` their memory*. It consumes only the App API + WebSocket, and the App API
+serves it **same-origin** at `/` when `webViewerPath` is configured (off by default, no CORS).
+Verified end-to-end in a browser; see [ADR-0008](adr/0008-reference-web-viewer.md).
+
 ## Toolchain notes (this machine)
 
 - JDK 20 (no 21 present) — Gradle toolchain targets 20; fine for jpackage/jlink later.
