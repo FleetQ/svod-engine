@@ -30,10 +30,24 @@ class SvodEngine private constructor(
     val crash: CrashInjection,
 ) : AutoCloseable {
 
+    /**
+     * Optional observer notified (off the actor thread) with the new HEAD after each
+     * successful mutating commit. Used to drive derived state — e.g. the index — without
+     * coupling it into the write path. The callback must be non-blocking.
+     */
+    @Volatile
+    private var commitListener: ((commit: String) -> Unit)? = null
+
+    fun onCommit(listener: (commit: String) -> Unit) { commitListener = listener }
+
+    private fun notifyCommit(outcome: WriteOutcome) {
+        if (outcome is WriteOutcome.Success) commitListener?.invoke(outcome.commit)
+    }
+
     // ---- public API (all serialized through the write-actor) ----
 
     suspend fun write(path: String, content: String, expectedRevision: Revision?, author: Author): WriteOutcome =
-        actor.submit { doWrite(VaultPath.of(path), content, expectedRevision, author) }
+        actor.submit { doWrite(VaultPath.of(path), content, expectedRevision, author) }.also(::notifyCommit)
 
     suspend fun read(path: String): FileContent? = actor.submit {
         val vp = VaultPath.of(path)
@@ -44,14 +58,14 @@ class SvodEngine private constructor(
     }
 
     suspend fun delete(path: String, expectedRevision: Revision?, author: Author): WriteOutcome =
-        actor.submit { doDelete(VaultPath.of(path), expectedRevision, author) }
+        actor.submit { doDelete(VaultPath.of(path), expectedRevision, author) }.also(::notifyCommit)
 
     suspend fun move(from: String, to: String, expectedRevision: Revision?, author: Author): WriteOutcome =
-        actor.submit { doMove(VaultPath.of(from), VaultPath.of(to), expectedRevision, author) }
+        actor.submit { doMove(VaultPath.of(from), VaultPath.of(to), expectedRevision, author) }.also(::notifyCommit)
 
     /** Restore a soft-deleted file from `.trash/` back to [to] (defaults to its original path). */
     suspend fun restore(trashRelPath: String, to: String? = null, author: Author): WriteOutcome =
-        actor.submit { doRestore(trashRelPath, to, author) }
+        actor.submit { doRestore(trashRelPath, to, author) }.also(::notifyCommit)
 
     suspend fun history(path: String, max: Int = 50): List<CommitInfo> =
         actor.submit { git.log(VaultPath.of(path).value, max) }
