@@ -84,7 +84,7 @@ class SvodNode private constructor(
 
             // Single-instance: SvodEngine.open acquires the exclusive vault lock and fails if
             // another instance already holds it.
-            val engine = SvodEngine.open(vault, workScope)
+            val engine = SvodEngine.open(vault, workScope, dev.svod.engine.security.SecretScanner(config.secretScanning))
             try {
                 val embedder = Embedders.create(config.toEmbedderConfig(), vault)
                 val index = IndexService(vault, vault.resolve(".svod").resolve("index"), embedder).start()
@@ -118,8 +118,24 @@ class SvodNode private constructor(
                     ),
                     readiness = { ready.get() },
                     conflicts = conflicts,
+                    syncStatus = {
+                        syncEngine?.let { se ->
+                            val r = se.lastResult
+                            dev.svod.engine.api.SyncStatusDto(role = se.role, lastHead = r?.head, conflicts = r?.conflicts ?: 0)
+                        }
+                    },
                 ).start(config.appApiPort)
-                val mcp = dev.svod.engine.mcp.SvodMcpServer(tools, registry, host = config.host).start(config.mcpPort)
+                val mcpServer = dev.svod.engine.mcp.SvodMcpServer(tools, registry, host = config.host)
+                val mcpTls = config.mcpTls?.let { t ->
+                    val ks = dev.svod.engine.security.Keystores.load(
+                        java.nio.file.Paths.get(t.keystorePath),
+                        dev.svod.engine.security.Secrets.resolve(t.keystorePassword).toCharArray(),
+                    )
+                    dev.svod.engine.mcp.SvodMcpServer.Tls(ks, t.keyAlias,
+                        dev.svod.engine.security.Secrets.resolve(t.keystorePassword).toCharArray(),
+                        dev.svod.engine.security.Secrets.resolve(t.keyPassword).toCharArray())
+                }
+                val mcp = mcpServer.start(config.mcpPort, mcpTls)
                 val watcher = FileWatcher(vault, engine, index, eventBus).start()
 
                 if (syncEngine != null && config.syncIntervalSeconds > 0) {

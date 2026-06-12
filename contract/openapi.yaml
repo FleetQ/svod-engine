@@ -283,6 +283,18 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/IndexStatus" }
 
+  /api/v1/metrics:
+    get:
+      tags: [meta]
+      summary: Observability metrics (write latency, queue depth, index lag, sync status)
+      operationId: metrics
+      responses:
+        "200":
+          description: Metrics
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Metrics" }
+
   /api/v1/conflicts:
     get:
       tags: [meta]
@@ -558,6 +570,38 @@ components:
             properties:
               path: { type: string }
               reasons: { type: array, items: { type: string } }
+
+    Metrics:
+      type: object
+      required: [write, queueDepth, peakQueueDepth, index, conflicts]
+      properties:
+        write:
+          type: object
+          required: [count, avgMs, maxMs, lastMs]
+          properties:
+            count: { type: integer, format: int64 }
+            avgMs: { type: number }
+            maxMs: { type: number }
+            lastMs: { type: number }
+        queueDepth: { type: integer }
+        peakQueueDepth: { type: integer }
+        index:
+          type: object
+          required: [docCount, lagging]
+          properties:
+            docCount: { type: integer }
+            head: { type: string, nullable: true }
+            indexedHead: { type: string, nullable: true }
+            lagging: { type: boolean }
+        conflicts: { type: integer }
+        sync:
+          type: object
+          nullable: true
+          required: [role, conflicts]
+          properties:
+            role: { type: string }
+            lastHead: { type: string, nullable: true }
+            conflicts: { type: integer }
 
     Event:
       type: object

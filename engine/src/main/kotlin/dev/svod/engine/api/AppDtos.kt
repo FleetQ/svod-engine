@@ -104,3 +104,22 @@ data class ConflictEntryDto(val path: String, val reasons: List<String> = emptyL
 
 @Serializable
 data class ConflictsDto(val conflicts: List<ConflictEntryDto>)
+
+@Serializable
+data class WriteStatsDto(val count: Long, val avgMs: Double, val maxMs: Double, val lastMs: Double)
+
+@Serializable
+data class IndexLagDto(val docCount: Int, val head: String? = null, val indexedHead: String? = null, val lagging: Boolean)
+
+@Serializable
+data class SyncStatusDto(val role: String, val lastHead: String? = null, val conflicts: Int)
+
+@Serializable
+data class MetricsDto(
+    val write: WriteStatsDto,
+    val queueDepth: Int,
+    val peakQueueDepth: Int,
+    val index: IndexLagDto,
+    val conflicts: Int,
+    val sync: SyncStatusDto? = null,
+)

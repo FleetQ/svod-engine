@@ -29,6 +29,10 @@ data class SvodConfig(
     val hostId: String = "local",
     /** This host is the canonical merge authority (only it creates merge commits). */
     val mergeAuthority: Boolean = false,
+    /** Secret scanning before commit (blocks leaked credentials from entering git). */
+    val secretScanning: Boolean = false,
+    /** Optional TLS for the MCP endpoint. */
+    val mcpTls: TlsSettings? = null,
     /** Auto-sync interval in seconds; 0 disables the background loop (manual sync only). */
     val syncIntervalSeconds: Int = 0,
     /** Optional path to the reference web viewer (examples/web-viewer); served at `/` when set. */
@@ -50,6 +54,15 @@ data class SvodConfig(
         val role: String,
         val name: String? = null,
         val email: String? = null,
+    )
+
+    /** Optional TLS for the MCP endpoint (remote agents reach MCP over HTTPS). Passwords are secret refs. */
+    @Serializable
+    data class TlsSettings(
+        val keystorePath: String,
+        val keystorePassword: String,
+        val keyAlias: String,
+        val keyPassword: String,
     )
 
     /** All configuration problems, empty when valid. */
@@ -94,7 +107,7 @@ data class SvodConfig(
     fun toAgentSpecs(): List<AgentRegistry.AgentSpec> = agents.map { a ->
         val role = if (a.role.equals("WRITE", ignoreCase = true)) AgentRole.WRITE else AgentRole.READ_ONLY
         AgentRegistry.AgentSpec(
-            token = a.token,
+            token = dev.svod.engine.security.Secrets.resolve(a.token), // supports env:/file: refs
             agentId = a.agentId,
             role = role,
             name = a.name ?: a.agentId,

@@ -37,6 +37,7 @@ dependencies {
     // MCP server (agents) over streamable HTTP. Ktor is NOT transitive from the SDK.
     implementation("io.modelcontextprotocol:kotlin-sdk-server:$mcpVersion")
     implementation("io.ktor:ktor-server-cio:$ktorVersion")
+    implementation("io.ktor:ktor-server-netty:$ktorVersion") // MCP uses Netty so it can serve TLS
     implementation("io.ktor:ktor-server-auth:$ktorVersion")
     implementation("io.ktor:ktor-server-sse:$ktorVersion")
     implementation("io.ktor:ktor-server-websockets:$ktorVersion")
@@ -49,6 +50,7 @@ dependencies {
     testImplementation("io.modelcontextprotocol:kotlin-sdk-client:$mcpVersion")
     testImplementation("io.ktor:ktor-client-cio:$ktorVersion")
     testImplementation("io.ktor:ktor-client-websockets:$ktorVersion")
+    testImplementation("io.ktor:ktor-network-tls-certificates:$ktorVersion") // self-signed cert for the TLS test
     // Validate live App API responses against contract/openapi.yaml (contract test)
     testImplementation("com.atlassian.oai:swagger-request-validator-core:2.43.0")
 

@@ -50,6 +50,7 @@ class AppApiContractTest {
             validate("$ap/tags", Request.Method.GET, 200, fx.get("$ap/tags").body())
             validate("$ap/settings", Request.Method.GET, 200, fx.get("$ap/settings").body())
             validate("$ap/index/status", Request.Method.GET, 200, fx.get("$ap/index/status").body())
+            validate("$ap/metrics", Request.Method.GET, 200, fx.get("$ap/metrics").body())
             validate("$ap/conflicts", Request.Method.GET, 200, fx.get("$ap/conflicts").body())
         }
     }
@@ -90,7 +91,7 @@ class AppApiContractTest {
             "/health", "/ready", "/api/v1/tree", "/api/v1/file", "/api/v1/file/move", "/api/v1/file/restore",
             "/api/v1/file/history", "/api/v1/file/diff", "/api/v1/file/revision", "/api/v1/file/links",
             "/api/v1/search", "/api/v1/graph", "/api/v1/tags", "/api/v1/settings", "/api/v1/index/status",
-            "/api/v1/conflicts", "/api/v1/events",
+            "/api/v1/metrics", "/api/v1/conflicts", "/api/v1/events",
         )
         assertEquals(declared, implemented, "contract paths and implemented routes must match exactly")
         assertTrue(Files.exists(specPath), "contract file present")

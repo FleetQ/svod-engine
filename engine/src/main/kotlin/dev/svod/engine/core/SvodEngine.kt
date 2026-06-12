@@ -1,6 +1,7 @@
 package dev.svod.engine.core
 
 import dev.svod.engine.graph.LinkRewriter
+import dev.svod.engine.security.SecretScanner
 import kotlinx.coroutines.CoroutineScope
 import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
@@ -29,7 +30,22 @@ class SvodEngine private constructor(
     private val actor: WriteActor,
     /** Test-only crash injector; null-armed (no-op) in production. */
     val crash: CrashInjection,
+    private val secretScanner: SecretScanner,
 ) : AutoCloseable {
+
+    /** Write-path metrics (latency); queue depth is read from the actor. */
+    val metrics = dev.svod.engine.obs.Metrics()
+    fun queueDepth(): Int = actor.queueDepth()
+    fun peakQueueDepth(): Int = actor.peakQueueDepth()
+
+    private suspend fun <T> timed(op: suspend () -> T): T {
+        val start = System.nanoTime()
+        try {
+            return op()
+        } finally {
+            metrics.recordWrite(System.nanoTime() - start)
+        }
+    }
 
     /**
      * Optional observer notified (off the actor thread) with the new HEAD after each
@@ -48,7 +64,7 @@ class SvodEngine private constructor(
     // ---- public API (all serialized through the write-actor) ----
 
     suspend fun write(path: String, content: String, expectedRevision: Revision?, author: Author): WriteOutcome =
-        actor.submit { doWrite(VaultPath.of(path), content, expectedRevision, author) }.also(::notifyCommit)
+        timed { actor.submit { doWrite(VaultPath.of(path), content, expectedRevision, author) } }.also(::notifyCommit)
 
     suspend fun read(path: String): FileContent? = actor.submit {
         val vp = VaultPath.of(path)
@@ -59,10 +75,10 @@ class SvodEngine private constructor(
     }
 
     suspend fun delete(path: String, expectedRevision: Revision?, author: Author): WriteOutcome =
-        actor.submit { doDelete(VaultPath.of(path), expectedRevision, author) }.also(::notifyCommit)
+        timed { actor.submit { doDelete(VaultPath.of(path), expectedRevision, author) } }.also(::notifyCommit)
 
     suspend fun move(from: String, to: String, expectedRevision: Revision?, author: Author): WriteOutcome =
-        actor.submit { doMove(VaultPath.of(from), VaultPath.of(to), expectedRevision, author) }.also(::notifyCommit)
+        timed { actor.submit { doMove(VaultPath.of(from), VaultPath.of(to), expectedRevision, author) } }.also(::notifyCommit)
 
     /**
      * Move a note and transactionally rewrite every `[[wikilink]]` that referenced it, so the
@@ -70,7 +86,7 @@ class SvodEngine private constructor(
      * rename never silently breaks backlinks.
      */
     suspend fun moveWithLinks(from: String, to: String, expectedRevision: Revision?, author: Author): TransactionalMove =
-        actor.submit { doMoveWithLinks(VaultPath.of(from), VaultPath.of(to), expectedRevision, author) }
+        timed { actor.submit { doMoveWithLinks(VaultPath.of(from), VaultPath.of(to), expectedRevision, author) } }
             .also { notifyCommit(it.outcome) }
 
     /** Restore a soft-deleted file from `.trash/` back to [to] (defaults to its original path). */
@@ -166,6 +182,10 @@ class SvodEngine private constructor(
     // ---- mutation handlers (run ON the actor thread; blocking I/O is fine here) ----
 
     private fun doWrite(vp: VaultPath, content: String, expected: Revision?, author: Author): WriteOutcome {
+        val secrets = secretScanner.scan(content)
+        if (secrets.isNotEmpty()) {
+            return WriteOutcome.Blocked(vp.value, secrets.map { "${it.rule} (line ${it.line})" })
+        }
         val target = vp.resolveAgainst(root)
         val exists = Files.isRegularFile(target)
         val current = if (exists) git.blobId(Files.readAllBytes(target)) else null
@@ -372,13 +392,13 @@ class SvodEngine private constructor(
          * ensures git + scaffold exist, then runs crash recovery before returning a
          * ready engine. [scope] owns the write-actor coroutine.
          */
-        fun open(root: Path, scope: CoroutineScope): SvodEngine {
+        fun open(root: Path, scope: CoroutineScope, secretScanner: SecretScanner = SecretScanner.OFF): SvodEngine {
             Files.createDirectories(root)
             val lock = VaultLock.acquire(root)
             try {
                 val git = GitRepo.openOrInit(root)
                 ensureScaffold(root, git)
-                val engine = SvodEngine(root, lock, git, WriteActor(scope), CrashInjection())
+                val engine = SvodEngine(root, lock, git, WriteActor(scope), CrashInjection(), secretScanner)
                 engine.recover()
                 return engine
             } catch (t: Throwable) {

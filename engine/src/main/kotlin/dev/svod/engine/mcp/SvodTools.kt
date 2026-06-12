@@ -188,6 +188,10 @@ class SvodTools(
                 audit.record(agent.agentId, tool, "not_found", path, target)
                 ToolResult.notFound(outcome.path)
             }
+            is WriteOutcome.Blocked -> {
+                audit.record(agent.agentId, tool, "blocked", path, target, detail = outcome.findings.joinToString(", "))
+                ToolResult.blocked(outcome.path, outcome.findings)
+            }
         }
 
     // Link graph cached by HEAD; rebuilt only when the vault advances.

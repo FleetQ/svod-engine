@@ -163,6 +163,18 @@ Replicated engines converging over git, with a designated merge authority for de
 Conflicts keep *ours* in the tree and preserve *theirs* (conflict record + history) — no
 silent overwrite, nothing lost. See [ADR-0009](adr/0009-multihost-sync.md).
 
+## Engine internals: hardening (`security` / `obs` / `migrate`)
+
+| Type | Responsibility |
+|---|---|
+| `SecretScanner` | Blocks leaked secrets on the write path before they reach git (`WriteOutcome.Blocked`). |
+| `Secrets` / `Keystores` | Resolve `env:`/`file:` secret refs; load TLS keystores. |
+| `Metrics` (`obs`) | Write latency; queue depth + index lag + sync status read live → `/api/v1/metrics`. |
+| `ObsidianImport` (`migrate`) | Faithful import (frontmatter + wikilinks preserved); zero lock-in. |
+
+MCP serves over TLS on Netty (`sslConnector`); the App API stays CIO/loopback. See
+[ADR-0010](adr/0010-hardening.md).
+
 ## Toolchain notes (this machine)
 
 - JDK 20 (no 21 present) — Gradle toolchain targets 20; fine for jpackage/jlink later.

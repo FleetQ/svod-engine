@@ -40,6 +40,12 @@ class SyncEngine(
 
     data class Result(val head: String?, val conflicts: Int, val role: String)
 
+    @Volatile
+    var lastResult: Result? = null
+        private set
+
+    val role: String get() = if (isMergeAuthority) "authority" else "replica"
+
     suspend fun sync(): Result = mutex.withLock {
         git.fetch(remote)
 
@@ -47,7 +53,7 @@ class SyncEngine(
         if (isMergeAuthority) mergeProposals()
         pushLocal()
 
-        Result(engine.head(), conflicts.all().size, if (isMergeAuthority) "authority" else "replica")
+        Result(engine.head(), conflicts.all().size, role).also { lastResult = it }
     }
 
     private suspend fun reconcile(remoteMain: String) {

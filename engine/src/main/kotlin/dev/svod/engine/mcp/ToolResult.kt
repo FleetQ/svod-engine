@@ -1,8 +1,10 @@
 package dev.svod.engine.mcp
 
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 /**
  * Outcome of a tool call, transport-agnostic.
@@ -31,5 +33,12 @@ data class ToolResult(val status: String, val data: JsonObject, val isError: Boo
 
         fun badRequest(message: String): ToolResult =
             ToolResult("bad_request", buildJsonObject { put("status", "bad_request"); put("message", message) }, isError = true)
+
+        fun blocked(path: String, findings: List<String>): ToolResult =
+            ToolResult("blocked", buildJsonObject {
+                put("status", "blocked"); put("path", path)
+                put("message", "write refused: possible secret(s) detected")
+                putJsonArray("findings") { findings.forEach { add(it) } }
+            }, isError = true)
     }
 }

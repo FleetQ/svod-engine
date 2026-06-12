@@ -49,6 +49,7 @@ class AppApiServer(
     private val config: Config = Config(),
     private val readiness: () -> Boolean = { true },
     private val conflicts: dev.svod.engine.sync.ConflictStore? = null,
+    private val syncStatus: () -> SyncStatusDto? = { null },
 ) {
     data class Config(
         val host: String = "127.0.0.1",
@@ -118,6 +119,7 @@ class AppApiServer(
                     }
                     is WriteOutcome.Conflict -> { publishConflict(o.path); call.respond(HttpStatusCode.Conflict, o.toConflictDto()) }
                     is WriteOutcome.NotFound -> call.notFound(o.path)
+                    is WriteOutcome.Blocked -> call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("blocked", o.findings.joinToString(", ")))
                 }
             }
 
@@ -201,6 +203,19 @@ class AppApiServer(
                 val entries = conflicts?.all()?.map { ConflictEntryDto(it.path, it.reasons) } ?: emptyList()
                 call.respond(ConflictsDto(entries))
             }
+            get("/api/v1/metrics") {
+                val w = svod.metrics.snapshot()
+                val head = svod.head()
+                val indexedHead = index.headCommitIndexed()
+                call.respond(MetricsDto(
+                    write = WriteStatsDto(w.count, w.avgMs, w.maxMs, w.lastMs),
+                    queueDepth = svod.queueDepth(),
+                    peakQueueDepth = svod.peakQueueDepth(),
+                    index = IndexLagDto(index.docCount(), head, indexedHead, head != indexedHead),
+                    conflicts = conflicts?.all()?.size ?: 0,
+                    sync = syncStatus(),
+                ))
+            }
 
             webSocket("/api/v1/events") {
                 eventBus.events.collect { e -> send(Frame.Text(encodeEvent(e))) }
@@ -225,6 +240,7 @@ class AppApiServer(
             is WriteOutcome.Success -> { publishCommit(outcome, tool); call.respond(WriteResultDto(outcome.path, outcome.revision, outcome.commit)) }
             is WriteOutcome.Conflict -> { publishConflict(outcome.path); call.respond(HttpStatusCode.Conflict, outcome.toConflictDto()) }
             is WriteOutcome.NotFound -> call.notFound(outcome.path)
+            is WriteOutcome.Blocked -> call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("blocked", "secret(s) detected: ${outcome.findings.joinToString(", ")}"))
         }
     }
 

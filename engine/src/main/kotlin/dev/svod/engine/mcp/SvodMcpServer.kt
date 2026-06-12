@@ -14,9 +14,11 @@ import io.ktor.server.auth.bearer
 import io.ktor.server.auth.principal
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.engine.sslConnector
+import io.ktor.server.netty.Netty
 import io.ktor.server.request.header
 import io.ktor.server.response.respond
 import io.ktor.server.routing.delete
@@ -60,8 +62,25 @@ class SvodMcpServer(
         fun stop() = embedded.stop(500, 1000)
     }
 
-    fun start(requestedPort: Int = 0): Running {
-        val embedded = embeddedServer(CIO, host = host, port = requestedPort) { configure() }
+    /** TLS material for serving MCP over HTTPS (remote agents reach MCP encrypted). */
+    data class Tls(
+        val keyStore: java.security.KeyStore,
+        val keyAlias: String,
+        val keyStorePassword: CharArray,
+        val privateKeyPassword: CharArray,
+    )
+
+    fun start(requestedPort: Int = 0, tls: Tls? = null): Running {
+        val h = host
+        val embedded = embeddedServer(Netty, configure = {
+            if (tls == null) {
+                connector { host = h; port = requestedPort }
+            } else {
+                sslConnector(tls.keyStore, tls.keyAlias, { tls.keyStorePassword }, { tls.privateKeyPassword }) {
+                    host = h; port = requestedPort
+                }
+            }
+        }) { configure() }
         embedded.start(wait = false)
         val port = runBlocking { embedded.engine.resolvedConnectors().first().port }
         return Running(embedded, port)

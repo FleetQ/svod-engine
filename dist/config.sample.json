@@ -8,8 +8,22 @@
     "onnxModelId": "multilingual-e5-small"
   },
   "agents": [
-    { "token": "CHANGE_ME_friday", "agentId": "friday", "role": "WRITE", "name": "Friday" },
-    { "token": "CHANGE_ME_reader", "agentId": "reader", "role": "READ_ONLY" }
+    { "token": "env:SVOD_FRIDAY_TOKEN", "agentId": "friday", "role": "WRITE", "name": "Friday" },
+    { "token": "env:SVOD_READER_TOKEN", "agentId": "reader", "role": "READ_ONLY" }
   ],
-  "syncRemotes": []
+  "secretScanning": true,
+
+  "syncRemotes": ["ssh://git@hetzner.example/svod-vault.git"],
+  "hostId": "mac",
+  "mergeAuthority": true,
+  "syncIntervalSeconds": 30,
+
+  "mcpTls": {
+    "keystorePath": "/Users/you/.config/svod/mcp.p12",
+    "keystorePassword": "env:SVOD_MCP_KEYSTORE_PASSWORD",
+    "keyAlias": "svod",
+    "keyPassword": "env:SVOD_MCP_KEY_PASSWORD"
+  },
+
+  "webViewerPath": "/Users/you/htdocs/svod/examples/web-viewer"
 }

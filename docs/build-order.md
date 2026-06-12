@@ -1,6 +1,10 @@
 # Svod — build order & status
 
-Each step is fully done + tested before the next. The gate rule: **do not move past the
+**All 8 steps complete and green — 89 tests, 0 failed.** Svod is a runnable, replicating,
+contract-driven engine: integrity core → hybrid index → MCP → App API/contract/graph →
+lifecycle → reference viewer → multi-host sync → hardening.
+
+Each step was fully done + tested before the next. The gate rule: **do not move past the
 integrity core until its concurrency + crash tests pass.**
 
 | # | Subsystem | Status | Notes |
@@ -12,7 +16,7 @@ integrity core until its concurrency + crash tests pass.**
 | 5 | **Lifecycle** — launchd (KeepAlive + kickstart), `/health` + `/ready`, single-instance, graceful shutdown, validated config, self-update API-compat check | ✅ **done, gate green** | `dev.svod.engine.lifecycle` + `dist/`; 10 tests (config, compat matrix, node start/shutdown/no-loss, single-instance, readiness). See ADR-0007. |
 | 6 | **Reference web viewer** in `examples/web-viewer` ("watch agents write, then `git diff` their memory") | ✅ **done, verified in browser** | Dependency-free; served same-origin (opt-in) by the App API; live feed + git-diff. See ADR-0008. |
 | 7 | **Multi-host sync** — replicated engines + git transport, frontmatter-aware merge, designated merge authority, conflicts surfaced | ✅ **done, gate green** | `dev.svod.engine.sync`; 10 tests (frontmatter merge incl. Cyrillic + two-engine replication: converge, structural merge, conflict surfacing). See ADR-0009. |
-| 8 | Hardening — TLS, Keychain tokens, secret scanning, observability metrics, Obsidian import, full test suite | ⬜ todo | |
+| 8 | **Hardening** — secret scanning, metrics, TLS for MCP, secret store, Obsidian import, full test suite | ✅ **done, gate green** | `dev.svod.engine.{security,obs,migrate}` + Netty TLS; 11 tests. See ADR-0010. |
 
 > The personal **SwiftUI client** moved to its own repo (`FleetQ/svod-ui-macos`) and is
 > **out of product scope** — not a build step here. See [ADR-0002](adr/0002-repo-split-and-license.md).
@@ -89,6 +93,15 @@ integrity core until its concurrency + crash tests pass.**
 - [x] Conflicts surfaced via `/api/v1/conflicts`, never auto-resolved; both versions preserved
       (theirs in the conflict record + git history). No silent overwrite.
 - [x] Sync's ref-moving writes go through the single writer; `git fsck` clean after merges.
+
+## Step-8 acceptance (met)
+
+- [x] Secret scanning blocks leaked credentials before they enter git (`WriteOutcome.Blocked`).
+- [x] Metrics at `/api/v1/metrics`: write latency, queue depth, index lag, conflicts, sync status.
+- [x] MCP served over TLS (Netty + sslConnector); proven by a real client TLS handshake.
+- [x] Secrets resolved from `env:` / `file:` refs (tokens, keystore passwords) — not plaintext.
+- [x] Obsidian import preserves frontmatter + wikilinks, skips `.obsidian/`; zero lock-in.
+- [x] Full suite green (89 tests).
 
 ## How to run the gate
 

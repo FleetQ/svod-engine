@@ -43,6 +43,9 @@ sealed interface WriteOutcome {
 
     /** The target did not exist. */
     data class NotFound(val path: String) : WriteOutcome
+
+    /** The write was refused because [findings] (e.g. leaked secrets) were detected; nothing committed. */
+    data class Blocked(val path: String, val findings: List<String>) : WriteOutcome
 }
 
 /** A file's content together with its current revision. */
