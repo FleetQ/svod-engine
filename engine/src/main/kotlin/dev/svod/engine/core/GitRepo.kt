@@ -63,6 +63,29 @@ class GitRepo private constructor(
     /** True if the working tree differs from the index/HEAD in any tracked way. */
     fun isClean(): Boolean = git.status().call().isClean
 
+    /** Current branch name (e.g. "master"). */
+    fun branch(): String = repo.branch
+
+    fun resolveRev(rev: String): String? = repo.resolve(rev)?.name
+
+    /** Fast-forward the current branch to [commit] (hard) — moves the ref + working tree. */
+    fun resetHardTo(commit: String) {
+        git.reset().setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD).setRef(commit).call()
+    }
+
+    /**
+     * Commit the current working tree as a MERGE commit with parents [HEAD, theirs].
+     * Caller has already written the merged file contents into the working tree.
+     */
+    fun commitMerge(message: String, author: Author, theirs: String): String {
+        git.add().addFilepattern(".").call()
+        git.add().setUpdate(true).addFilepattern(".").call()
+        repo.writeMergeHeads(listOf(ObjectId.fromString(theirs)))
+        repo.writeMergeCommitMsg(message)
+        val ident = PersonIdent(author.name, author.email)
+        return git.commit().setAuthor(ident).setCommitter(ident).setMessage(message).call().name
+    }
+
     /** History for a single path (most recent first), or vault-wide when [path] is null. */
     fun log(path: String?, max: Int): List<CommitInfo> {
         if (headId() == null) return emptyList()

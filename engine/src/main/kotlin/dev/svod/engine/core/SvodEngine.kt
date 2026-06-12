@@ -110,6 +110,39 @@ class SvodEngine private constructor(
 
     suspend fun head(): String? = actor.submit { git.headId() }
 
+    fun branch(): String = git.branch()
+
+    // ---- sync write primitives (actor-serialized; keep the single-writer guarantee) ----
+
+    /** Fast-forward the vault to [commit] (a descendant fetched from a peer). */
+    suspend fun fastForwardTo(commit: String) {
+        actor.submit { git.resetHardTo(commit) }
+        commitListener?.invoke(commit)
+    }
+
+    /**
+     * Apply a merge: write [writes] (merged file contents) and remove [deletes], then create a
+     * MERGE commit with parents [HEAD, theirs]. Conflicted files are simply not in [writes]
+     * (ours is kept), so they are never silently overwritten.
+     */
+    suspend fun applyMerge(
+        writes: Map<String, String>,
+        deletes: List<String>,
+        theirs: String,
+        message: String,
+        author: Author,
+    ): String {
+        val commit = actor.submit {
+            for ((path, content) in writes) {
+                AtomicFile.write(VaultPath.of(path).resolveAgainst(root), content.toByteArray(UTF_8), crash)
+            }
+            for (path in deletes) Files.deleteIfExists(VaultPath.of(path).resolveAgainst(root))
+            git.commitMerge(message, author, theirs)
+        }
+        commitListener?.invoke(commit)
+        return commit
+    }
+
     /**
      * Commit any working-tree changes made OUTSIDE the engine (e.g. a user editing a file in
      * another app, or a git pull) as an [author] commit, so they enter history + the index.
