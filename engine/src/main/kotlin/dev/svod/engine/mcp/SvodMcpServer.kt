@@ -196,8 +196,11 @@ class SvodMcpServer(
 
 // ---- request/result adapters (MCP wire ↔ domain) ----
 
-private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.str(key: String): String? =
-    arguments?.get(key)?.jsonPrimitive?.content?.takeIf { it.isNotEmpty() }
+private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.str(key: String): String? {
+    val element = arguments?.get(key) ?: return null
+    if (element is kotlinx.serialization.json.JsonNull) return null // explicit JSON null, not the string "null"
+    return element.jsonPrimitive.content.takeIf { it.isNotEmpty() }
+}
 
 private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.int(key: String, default: Int): Int =
     runCatching { arguments?.get(key)?.jsonPrimitive?.int }.getOrNull() ?: default

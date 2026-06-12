@@ -78,6 +78,20 @@ class McpHttpIntegrationTest {
     }
 
     @Test
+    fun `explicit null expectedRevision creates a new file, not a conflict`() = runBlocking {
+        McpFixture().use { fx ->
+            val server = SvodMcpServer(fx.tools, fx.registry).start(0)
+            try {
+                val c = connect(server.port, "write-token")
+                try {
+                    val r = c.callTool("write", mapOf("path" to "n/fresh.md", "content" to "# Fresh", "expectedRevision" to null))
+                    assertTrue(r.text().contains("\"status\":\"ok\""), "JSON null must mean create, got: ${r.text()}")
+                } finally { c.close() }
+            } finally { server.stop() }
+        }
+    }
+
+    @Test
     fun `an unknown bearer token is rejected`() = runBlocking {
         McpFixture().use { fx ->
             val server = SvodMcpServer(fx.tools, fx.registry).start(0)
