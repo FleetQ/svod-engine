@@ -1,6 +1,7 @@
 plugins {
-    kotlin("jvm") version "2.1.0"
-    kotlin("plugin.serialization") version "2.1.0"
+    // Bumped to 2.3.21 to read the MCP Kotlin SDK 0.13.0 bytecode metadata.
+    kotlin("jvm") version "2.3.21"
+    kotlin("plugin.serialization") version "2.3.21"
     application
 }
 
@@ -13,6 +14,8 @@ repositories {
 
 // Lucene 10 requires JDK 21; this machine has JDK 20, so we pin Lucene 9.x.
 val luceneVersion = "9.12.0"
+val ktorVersion = "3.4.3"   // matches MCP Kotlin SDK 0.13.0
+val mcpVersion = "0.13.0"
 
 dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
@@ -30,6 +33,17 @@ dependencies {
     implementation("ai.djl:api")
     implementation("ai.djl.huggingface:tokenizers")
     implementation("ai.djl.onnxruntime:onnxruntime-engine")
+
+    // MCP server (agents) over streamable HTTP. Ktor is NOT transitive from the SDK.
+    implementation("io.modelcontextprotocol:kotlin-sdk-server:$mcpVersion")
+    implementation("io.ktor:ktor-server-cio:$ktorVersion")
+    implementation("io.ktor:ktor-server-auth:$ktorVersion")
+    implementation("io.ktor:ktor-server-sse:$ktorVersion")
+    implementation("io.ktor:ktor-server-content-negotiation:$ktorVersion")
+    implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
+
+    testImplementation("io.modelcontextprotocol:kotlin-sdk-client:$mcpVersion")
+    testImplementation("io.ktor:ktor-client-cio:$ktorVersion")
 
     // jgit logs via slf4j; provide a simple backend so warnings are not swallowed
     implementation("org.slf4j:slf4j-simple:2.0.13")
