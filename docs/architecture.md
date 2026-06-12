@@ -128,6 +128,19 @@ and bound to 127.0.0.1 only.
 The contract is the single source of truth: a test validates every live response against
 `openapi.yaml` and that routes == declared paths. See [ADR-0006](adr/0006-app-api-contract-watcher-graph.md).
 
+## Engine internals: lifecycle (`dev.svod.engine.lifecycle` + `dist/`)
+
+| Type | Responsibility |
+|---|---|
+| `SvodConfig` | Centralized JSON config; validated at startup (loopback enforced). |
+| `SvodNode` | Assembles + owns the node; single-instance; readiness; ordered graceful shutdown. |
+| `ApiCompatibility` / `SelfUpdate` | Semver gate: a self-update must keep the App API major compatible. |
+| `dist/launchd/*.plist` | macOS user agent: RunAtLoad + KeepAlive; one-button start via `kickstart`. |
+| `dist/self-update.sh` | Update skeleton gated on the compat preflight. |
+
+The engine stays OS-agnostic; all macOS specifics live in `dist/`. launchd uses KeepAlive +
+kickstart rather than fd socket activation (JVM limitation). See [ADR-0007](adr/0007-lifecycle.md).
+
 ## Toolchain notes (this machine)
 
 - JDK 20 (no 21 present) — Gradle toolchain targets 20; fine for jpackage/jlink later.

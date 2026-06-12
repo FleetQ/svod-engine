@@ -9,7 +9,7 @@ integrity core until its concurrency + crash tests pass.**
 | 2 | **Lucene hybrid index** — BM25 baseline + opt-in HNSW kNN + RRF, heading chunking, **pluggable embedder** (`onnx-local` default / `ollama` / `none`), incremental-from-commits, model-change migration, self-heal vs HEAD | ✅ **done, gate green** | `dev.svod.engine.index`; 25 tests (incl. in-process ONNX e5-small + live-Ollama). See ADR-0003, ADR-0004. |
 | 3 | **MCP server** — all 12 tools over streamable HTTP; per-agent token auth → git author; read-only/write roles; rate limiting; append-only audit; `messy/`→`vault/` promotion | ✅ **done, gate green** | `dev.svod.engine.mcp`; 10 tests (8 hermetic + 2 real-HTTP via MCP client). See ADR-0005. |
 | 4 | **App API + OpenAPI contract** + file watcher + wikilink/backlink graph + link-integrity on rename/move | ✅ **done, gate green** | `contract/openapi.yaml` (contract-first) + `dev.svod.engine.{api,events,graph,watch}`; 8 tests (contract conformance, WS events, watcher, link-integrity). See ADR-0006. |
-| 5 | Lifecycle — launchd socket activation, `/health` + `/ready`, single-instance, graceful shutdown, self-update w/ API-compat check | ⬜ todo | `dist/`. |
+| 5 | **Lifecycle** — launchd (KeepAlive + kickstart), `/health` + `/ready`, single-instance, graceful shutdown, validated config, self-update API-compat check | ✅ **done, gate green** | `dev.svod.engine.lifecycle` + `dist/`; 10 tests (config, compat matrix, node start/shutdown/no-loss, single-instance, readiness). See ADR-0007. |
 | 6 | Reference web viewer in `examples/` ("watch agents write, then `git diff` their memory") | ⬜ todo | Product demo; built once App API (step 4) exists. |
 | 7 | Multi-host sync — replicated engines + git transport, frontmatter-aware merge, designated merge authority, conflicts surfaced | ⬜ todo | |
 | 8 | Hardening — TLS, Keychain tokens, secret scanning, observability metrics, Obsidian import, full test suite | ⬜ todo | |
@@ -68,6 +68,16 @@ integrity core until its concurrency + crash tests pass.**
 - [x] Link-integrity: moving a note rewrites all backlinks in ONE commit (path + basename
       styles, alias/heading preserved); ambiguous basenames left untouched.
 - [x] App API binds 127.0.0.1 only; no per-agent auth (loopback-trusted UI identity).
+
+## Step-5 acceptance (met)
+
+- [x] Centralized config validated at startup (port/loopback/provider/tokens) — fails fast.
+- [x] Single-instance via the vault lock (second node on a vault refused).
+- [x] `/health` (liveness) + `/ready` (readiness flag; 503 before ready, 200 after).
+- [x] Graceful ordered shutdown drains the write-actor queue and releases the lock —
+      write → shutdown → fresh node reads it back; port closed.
+- [x] launchd plist (RunAtLoad + KeepAlive) + one-button start via `launchctl kickstart`.
+- [x] Self-update gated on App API semver compatibility (major-match; downgrade refused).
 
 ## How to run the gate
 
