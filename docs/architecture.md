@@ -1,0 +1,74 @@
+# Svod — architecture overview
+
+Svod is a local, git-backed markdown knowledge base that serves multiple local AI agents
+and **never loses files**. Two independently-released products around one versioned
+contract:
+
+- **Svod** — headless engine (Kotlin/JVM). The single writer and source of truth.
+- **Svod UI** — native macOS client (SwiftUI). A swappable controller/client.
+
+```
+        agents (Mac, friday, sage-production)         UI (SwiftUI, swappable)
+                     │  MCP (streamable HTTP,                 │  App API
+                     │  TLS + per-agent token)                │  (HTTP/JSON + WebSocket,
+                     ▼                                        ▼   loopback only, OpenAPI)
+        ┌─────────────────────────────────────────────────────────────────┐
+        │                          Svod engine (JVM)                        │
+        │   MCP server   │   App API + WS   │   lifecycle (launchd)         │
+        ├─────────────────────────────────────────────────────────────────┤
+        │   Lucene hybrid index (BM25 + HNSW kNN, RRF)  │  graph / links    │
+        ├─────────────────────────────────────────────────────────────────┤
+        │   ▓▓ INTEGRITY CORE ▓▓  single-writer actor · atomic write ·      │
+        │   jgit history · optimistic revision · soft-delete · recovery     │
+        └─────────────────────────────────────────────────────────────────┘
+                              │ working tree + .git
+                              ▼
+                     markdown vault (UTF-8, Cyrillic-safe)
+```
+
+## Invariants (non-negotiable)
+
+1. **Single writer.** All writes go through one serialized actor. No bypass.
+2. **Atomic writes only** — tmp → fsync → rename → fsync(dir). Never truncate-in-place.
+   Never hard `rm`; soft-delete to `.trash/` + commit.
+3. **Git is durable history.** Every mutation is a commit authored by the agent/UI. A
+   lost file is always git-recoverable.
+4. **Optimistic concurrency.** revision = blob hash; mismatch ⇒ `conflict` + current
+   content. Never silently overwrite.
+5. **Crash recovery on startup** reconciles tree ↔ git, completes partial writes, cleans
+   orphan `.tmp`.
+6. **Contract-first.** `contract/openapi.yaml` is the single source of truth; engine and
+   UI release independently against a versioned contract.
+7. **App API binds 127.0.0.1 only.** Remote agent access only via MCP (TLS + token).
+8. **UTF-8 / Cyrillic everywhere** — `core.quotepath=false`, tested.
+
+## Module layout
+
+- `engine/` — Kotlin + Gradle. `dev.svod.engine.core` is the integrity core (this step).
+- `ui-macos/` — SwiftUI client. Zero JVM. (later)
+- `contract/` — OpenAPI spec. (step 4)
+- `dist/` — launchd plist, jpackage/jlink config, installers. (step 5)
+- `docs/` — architecture + ADRs (one per major decision).
+
+## Engine internals: the integrity core (`dev.svod.engine.core`)
+
+| Type | Responsibility |
+|---|---|
+| `SvodEngine` | Public API; orchestrates open/recovery and the mutation handlers. |
+| `WriteActor` | The single writer — one coroutine on one dedicated thread. |
+| `AtomicFile` | tmp→fsync→rename→fsync(dir), with injectable `CrashPoint` for tests. |
+| `GitRepo` | jgit wrapper: blob-id revision, commit-per-mutation, history. |
+| `VaultLock` | OS advisory exclusive lock ⇒ single-instance. |
+| `VaultPath` | Validated vault-relative path; blocks traversal + reserved dirs. |
+| `WriteOutcome` | `Success \| Conflict \| NotFound` — failures as values. |
+
+See [ADR-0001](adr/0001-integrity-core.md) for the rationale behind each decision and
+[build-order.md](build-order.md) for status.
+
+## Toolchain notes (this machine)
+
+- JDK 20 (no 21 present) — Gradle toolchain targets 20; fine for jpackage/jlink later.
+- Gradle 8.12 (wrapper committed). Kotlin 2.1.0, coroutines 1.9.0, jgit 6.7.0.
+- Swift 6.3 / Xcode 26.5 available for `ui-macos`.
+- **Ollama is NOT installed** — required for step 2 embeddings (`multilingual-e5-large`).
+  Install before starting the index/embedding pipeline.

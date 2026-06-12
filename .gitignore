@@ -1,0 +1,23 @@
+# build outputs
+engine/.gradle/
+engine/build/
+**/build/
+.gradle/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# macOS
+.DS_Store
+
+# Xcode / SwiftPM (ui-macos)
+ui-macos/.build/
+ui-macos/.swiftpm/
+ui-macos/DerivedData/
+xcuserdata/
+
+# engine internals if a vault is ever checked out here
+.svod/
+*.svod-tmp
