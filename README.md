@@ -61,9 +61,10 @@ index. The result:
 | **MCP server for agents** | 12 tools over streamable HTTP, per-agent bearer tokens → git author, read-only/write roles, token-bucket rate limiting, append-only audit log, optional TLS. |
 | **Local App API + WebSocket** | A loopback-only HTTP/JSON API for UIs, plus a live `/api/v1/events` stream (agent activity, commits, index updates, conflicts) so a UI feels alive. |
 | **Wikilink graph** | `[[wikilinks]]` parsed into a backlink/outlink graph. Moving or renaming a note **rewrites every backlink in a single commit** — link integrity for free. |
+| **Multiple vaults** | Run N vaults in one engine (e.g. `personal` + `work`), each its own git repo, lock, index, and sync remote. Routes select a vault via `?vault=`; agents are scoped to their granted vault. Cross-vault `[[vault:note]]` links resolve and surface as backlinks. |
 | **Multi-host sync** | Replicate the vault across machines over git transport. Frontmatter-aware structured merge (YAML keys union, body via git 3-way). A designated merge authority keeps history deterministic; real conflicts are *surfaced*, never auto-resolved. |
 | **Hardening** | Pre-commit secret scanning (a leaked key never enters history), live metrics (write latency, queue depth, index lag, conflicts, sync status), secret refs (`env:` / `file:` / macOS `keychain:`) instead of plaintext tokens. |
-| **Obsidian import, zero lock-in** | Bring an existing Obsidian vault in faithfully (frontmatter + wikilinks preserved, `.obsidian/` skipped). Leaving is just `git clone`. |
+| **Obsidian import, zero lock-in** | One-shot migration of an existing Obsidian vault — markdown + **attachments** (images/PDF) preserved, frontmatter + wikilinks intact, `.obsidian/` skipped. Idempotent (re-run reconciles, never clobbers). Leaving is just `git clone`. |
 | **UTF-8 / Cyrillic everywhere** | Filenames and content in any script. `core.quotepath=false`, tested with Cyrillic paths + YAML. |
 
 ---

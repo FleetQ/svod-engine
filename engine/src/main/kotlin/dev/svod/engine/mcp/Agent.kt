@@ -22,7 +22,12 @@ data class AgentIdentity(
     val agentId: String,
     val role: AgentRole,
     val author: Author,
-)
+    /** Vault ids this agent may access. Empty ⇒ the default vault only. */
+    val vaults: List<String> = emptyList(),
+) {
+    /** The vault this agent's MCP session is bound to (its first grant, else [default]). */
+    fun primaryVault(default: String): String = vaults.firstOrNull() ?: default
+}
 
 /**
  * Maps bearer tokens to agent identities. In-memory and immutable; the lifecycle/config
@@ -37,13 +42,14 @@ class AgentRegistry(agents: List<AgentSpec>) {
         val role: AgentRole,
         val name: String = agentId,
         val email: String = "$agentId@agents.svod.local",
+        val vaults: List<String> = emptyList(),
     )
 
     private val byToken: Map<String, AgentIdentity> = agents.associate { spec ->
-        spec.token to AgentIdentity(spec.agentId, spec.role, Author(spec.name, spec.email))
+        spec.token to AgentIdentity(spec.agentId, spec.role, Author(spec.name, spec.email), spec.vaults)
     }
     private val agentIds: Map<String, AgentIdentity> = agents.associate { spec ->
-        spec.agentId to AgentIdentity(spec.agentId, spec.role, Author(spec.name, spec.email))
+        spec.agentId to AgentIdentity(spec.agentId, spec.role, Author(spec.name, spec.email), spec.vaults)
     }
 
     /** Resolve a bearer token to an agent, or null if unknown. Constant-time over tokens. */

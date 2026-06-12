@@ -3,55 +3,45 @@ package dev.svod.engine.lifecycle
 import dev.svod.engine.api.AppApiServer
 import dev.svod.engine.core.SvodEngine
 import dev.svod.engine.events.EventBus
-import dev.svod.engine.index.Embedders
-import dev.svod.engine.index.IndexService
 import dev.svod.engine.mcp.AgentRegistry
 import dev.svod.engine.mcp.AuditLog
 import dev.svod.engine.mcp.RateLimiter
 import dev.svod.engine.mcp.SvodTools
-import dev.svod.engine.sync.ConflictStore
-import dev.svod.engine.sync.SyncEngine
-import dev.svod.engine.sync.SyncGit
-import dev.svod.engine.watch.FileWatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.serialization.json.put
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * A running Svod engine: the assembled, lifecycle-managed node. [start] validates config,
- * acquires the single-instance lock (via the engine's vault lock), brings up the index, the
- * MCP endpoint, the App API, and the file watcher, then flips readiness on.
+ * A running Svod engine: the assembled, lifecycle-managed node. [start] validates config, opens
+ * every configured vault (each acquiring its own exclusive lock), brings up the MCP endpoint, the
+ * App API (routing to vaults), then flips readiness on.
  *
- * [shutdown] is graceful and ordered: stop accepting requests, stop watching, close the
- * index (Lucene), then close the engine — which drains the write-actor queue and releases
- * the lock. Nothing in flight is lost; a committed write is always recoverable.
+ * [shutdown] is graceful and ordered: stop accepting requests, then close every vault — which
+ * stops its watcher/sync, closes its index, and drains its write-actor queue before releasing the
+ * lock. Nothing in flight is lost; a committed write is always recoverable.
  */
 class SvodNode private constructor(
     val config: SvodConfig,
-    val engine: SvodEngine,
-    private val index: IndexService,
+    private val vaults: VaultManager,
     val eventBus: EventBus,
     private val mcp: dev.svod.engine.mcp.SvodMcpServer.Running,
     private val api: AppApiServer.Running,
-    private val watcher: FileWatcher,
     private val ready: AtomicBoolean,
     private val ownsScope: CoroutineScope,
-    private val syncEngine: SyncEngine?,
-    private val syncGit: SyncGit?,
 ) : AutoCloseable {
 
     val appApiPort: Int get() = api.port
     val mcpPort: Int get() = mcp.port
     fun isReady(): Boolean = ready.get()
 
-    /** Trigger one reconcile with peers (no-op if sync is not configured). */
+    /** The default vault's engine (back-compat convenience for single-vault callers/tests). */
+    val engine: SvodEngine get() = vaults.default().engine
+
+    /** Trigger one reconcile with peers across every vault (no-op where sync isn't configured). */
     suspend fun sync() {
-        syncEngine?.sync()
+        for (vc in vaults.contexts()) vc.sync()
     }
 
     @Volatile
@@ -64,12 +54,8 @@ class SvodNode private constructor(
         // 1. stop accepting new work
         runCatching { api.stop() }
         runCatching { mcp.stop() }
-        // 2. stop watching the filesystem + peers
-        runCatching { watcher.close() }
-        runCatching { syncGit?.close() }
-        // 3. close derived state, then the source of truth (drains the write-actor queue)
-        runCatching { index.close() }
-        runCatching { engine.close() }
+        // 2. close every vault: watcher + peers, then index, then the engine (drains the queue).
+        runCatching { vaults.close() }
     }
 
     override fun close() = shutdown()
@@ -80,36 +66,34 @@ class SvodNode private constructor(
             require(errors.isEmpty()) { "invalid config:\n - " + errors.joinToString("\n - ") }
 
             val workScope = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Default)
-            val vault = config.vault()
-
-            // Single-instance: SvodEngine.open acquires the exclusive vault lock and fails if
-            // another instance already holds it.
-            val engine = SvodEngine.open(vault, workScope, dev.svod.engine.security.SecretScanner(config.secretScanning))
+            val eventBus = EventBus()
+            val vaults = VaultManager.open(config, workScope, eventBus)
             try {
-                val embedder = Embedders.create(config.toEmbedderConfig(), vault)
-                val index = IndexService(vault, vault.resolve(".svod").resolve("index"), embedder).start()
-                engine.onCommit { index.onCommit(it) }
-
-                val eventBus = EventBus()
-                val audit = AuditLog(vault.resolve(".svod").resolve("audit").resolve("audit.log"))
+                // Per-agent vault scoping: each vault has its own tool set (own engine/index/audit),
+                // and an agent's MCP session is bound to its granted (primary) vault. An agent
+                // scoped to "work" gets only work's tools — it cannot reach another vault.
                 val registry = AgentRegistry(config.toAgentSpecs())
-                val tools = SvodTools(engine, index, audit, RateLimiter.default(), eventBus)
-
-                // Multi-host sync (optional): one remote drives the SyncEngine; conflicts feed the API.
-                val conflicts = ConflictStore()
-                val syncGit: SyncGit?
-                val syncEngine: SyncEngine?
-                if (config.syncRemotes.isNotEmpty()) {
-                    syncGit = SyncGit(vault)
-                    syncEngine = SyncEngine(engine, syncGit, conflicts, eventBus, config.hostId, config.mergeAuthority, config.syncRemotes.first())
-                } else {
-                    syncGit = null; syncEngine = null
+                val rateLimiter = RateLimiter.default()
+                val defaultId = vaults.defaultId()
+                val toolsByVault = vaults.contexts().associate { vc ->
+                    val audit = AuditLog(vc.engine.root.resolve(".svod").resolve("audit").resolve("audit.log"))
+                    vc.id to SvodTools(vc.engine, vc.index, audit, rateLimiter, eventBus)
+                }
+                val toolsFor: (dev.svod.engine.mcp.AgentIdentity) -> SvodTools =
+                    { agent -> toolsByVault[agent.primaryVault(defaultId)] ?: toolsByVault.getValue(defaultId) }
+                // A multi-grant agent currently binds to its FIRST vault only (per-request vault
+                // selection in MCP is a future increment, ADR-0011 §6). Surface this loudly so it is
+                // never a silent surprise rather than leaving extra grants quietly unreachable.
+                for (a in config.agents) if (a.vaults.size > 1) {
+                    System.err.println(
+                        "warning: agent '${a.agentId}' is granted ${a.vaults.size} vaults ${a.vaults}; " +
+                            "its MCP session binds to the first ('${a.vaults.first()}') — additional grants are not yet reachable (ADR-0011)"
+                    )
                 }
 
                 val ready = AtomicBoolean(false)
                 val api = AppApiServer(
-                    svod = engine,
-                    index = index,
+                    vaults = vaults,
                     eventBus = eventBus,
                     config = AppApiServer.Config(
                         host = config.host,
@@ -117,15 +101,9 @@ class SvodNode private constructor(
                         webViewerPath = config.webViewerPath,
                     ),
                     readiness = { ready.get() },
-                    conflicts = conflicts,
-                    syncStatus = {
-                        syncEngine?.let { se ->
-                            val r = se.lastResult
-                            dev.svod.engine.api.SyncStatusDto(role = se.role, lastHead = r?.head, conflicts = r?.conflicts ?: 0)
-                        }
-                    },
                 ).start(config.appApiPort)
-                val mcpServer = dev.svod.engine.mcp.SvodMcpServer(tools, registry, host = config.host)
+
+                val mcpServer = dev.svod.engine.mcp.SvodMcpServer(toolsFor, registry, host = config.host)
                 val mcpTls = config.mcpTls?.let { t ->
                     val ks = dev.svod.engine.security.Keystores.load(
                         java.nio.file.Paths.get(t.keystorePath),
@@ -136,22 +114,12 @@ class SvodNode private constructor(
                         dev.svod.engine.security.Secrets.resolve(t.keyPassword).toCharArray())
                 }
                 val mcp = mcpServer.start(config.mcpPort, mcpTls)
-                val watcher = FileWatcher(vault, engine, index, eventBus).start()
-
-                if (syncEngine != null && config.syncIntervalSeconds > 0) {
-                    workScope.launch {
-                        while (isActive) {
-                            delay(config.syncIntervalSeconds * 1000L)
-                            runCatching { syncEngine.sync() }.onFailure { System.err.println("sync failed: $it") }
-                        }
-                    }
-                }
 
                 ready.set(true)
                 eventBus.publish(dev.svod.engine.events.EventTypes.ENGINE_STATUS) { put("status", "ready") }
-                return SvodNode(config, engine, index, eventBus, mcp, api, watcher, ready, workScope, syncEngine, syncGit)
+                return SvodNode(config, vaults, eventBus, mcp, api, ready, workScope)
             } catch (t: Throwable) {
-                engine.close()
+                vaults.close()
                 throw t
             }
         }

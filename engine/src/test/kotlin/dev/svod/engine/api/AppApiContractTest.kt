@@ -111,6 +111,26 @@ class AppApiContractTest {
     }
 
     @Test
+    fun `import endpoint imports an obsidian vault and conforms to the contract`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            val ap = "/api/v1"
+            val src = Files.createTempDirectory("obs-src-")
+            Files.writeString(src.resolve("hello.md"), "# Hello\n[[world]]\n")
+            Files.write(src.resolve("pic.bin"), byteArrayOf(1, 2, 3))
+
+            val resp = fx.post("$ap/import", """{"source":"${src.toString().replace("\\", "\\\\")}"}""")
+            assertEquals(200, resp.statusCode())
+            validate("$ap/import", Request.Method.POST, 200, resp.body())
+            assertTrue(resp.body().contains("hello.md") && resp.body().contains("pic.bin"), resp.body())
+
+            // a bad source is a 400 that also conforms
+            val bad = fx.post("$ap/import", """{"source":"/nonexistent/path/xyz"}""")
+            assertEquals(400, bad.statusCode())
+            validate("$ap/import", Request.Method.POST, 400, bad.body())
+        }
+    }
+
+    @Test
     fun `every path declared in the contract is implemented`() {
         val openApi = OpenAPIV3Parser().read(specPath.toString())
         val declared = openApi.paths.keys.toSet()
@@ -118,7 +138,8 @@ class AppApiContractTest {
             "/health", "/ready", "/api/v1/tree", "/api/v1/file", "/api/v1/file/move", "/api/v1/file/restore",
             "/api/v1/file/history", "/api/v1/file/diff", "/api/v1/file/revision", "/api/v1/file/links",
             "/api/v1/search", "/api/v1/graph", "/api/v1/tags", "/api/v1/settings", "/api/v1/index/status",
-            "/api/v1/metrics", "/api/v1/conflicts", "/api/v1/conflicts/resolve", "/api/v1/events",
+            "/api/v1/vaults", "/api/v1/metrics", "/api/v1/conflicts", "/api/v1/conflicts/resolve",
+            "/api/v1/import", "/api/v1/events",
         )
         assertEquals(declared, implemented, "contract paths and implemented routes must match exactly")
         assertTrue(Files.exists(specPath), "contract file present")

@@ -60,6 +60,8 @@ data class SearchHitDto(
     val matchedKeyword: Boolean,
     val matchedSemantic: Boolean,
     val tags: List<String>,
+    /** Vault this hit belongs to (useful for federated `across=true` search). */
+    val vault: String? = null,
 )
 
 @Serializable
@@ -78,7 +80,14 @@ data class GraphDto(val nodes: List<GraphNodeDto>, val edges: List<GraphEdgeDto>
 data class OutlinkDto(val target: String, val resolved: String? = null)
 
 @Serializable
-data class FileLinksDto(val path: String, val outlinks: List<OutlinkDto>, val backlinks: List<String>, val unresolved: List<String>)
+data class FileLinksDto(
+    val path: String,
+    val outlinks: List<OutlinkDto>,
+    val backlinks: List<String>,
+    val unresolved: List<String>,
+    /** Cross-vault backlinks as global ids ("vault:path") — notes in OTHER vaults that link here. */
+    val crossVaultBacklinks: List<String> = emptyList(),
+)
 
 @Serializable
 data class TagCountDto(val tag: String, val count: Int)
@@ -115,6 +124,18 @@ data class ConflictsDto(val conflicts: List<ConflictEntryDto>)
 
 @Serializable
 data class ResolveConflictRequestDto(val path: String, val content: String, val expectedRevision: String? = null)
+
+@Serializable
+data class ImportRequestDto(val source: String, val into: String? = null, val vault: String? = null)
+
+@Serializable
+data class ImportResultDto(val imported: List<String>, val unchanged: List<String>, val skipped: List<String>)
+
+@Serializable
+data class VaultInfoDto(val id: String, val name: String, val default: Boolean, val sync: SyncStatusDto? = null)
+
+@Serializable
+data class VaultsDto(val vaults: List<VaultInfoDto>)
 
 @Serializable
 data class WriteStatsDto(val count: Long, val avgMs: Double, val maxMs: Double, val lastMs: Double)
