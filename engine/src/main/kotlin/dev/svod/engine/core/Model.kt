@@ -5,6 +5,7 @@ data class Author(val name: String, val email: String) {
     companion object {
         val SYSTEM = Author("svod", "svod@localhost")
         val RECOVERY = Author("svod-recovery", "recovery@svod.localhost")
+        val EXTERNAL = Author("external", "external@svod.localhost")
     }
 }
 
@@ -49,6 +50,12 @@ data class FileContent(
     val path: String,
     val revision: Revision,
     val text: String,
+)
+
+/** Result of a move that also rewrote backlinks; [rewrittenBacklinks] are the touched notes. */
+data class TransactionalMove(
+    val outcome: WriteOutcome,
+    val rewrittenBacklinks: List<String> = emptyList(),
 )
 
 /** One entry in a file's (or the vault's) history. */

@@ -2,6 +2,8 @@ package dev.svod.engine.mcp
 
 import dev.svod.engine.core.SvodEngine
 import dev.svod.engine.core.WriteOutcome
+import dev.svod.engine.events.EventBus
+import dev.svod.engine.events.EventTypes
 import dev.svod.engine.graph.LinkGraph
 import dev.svod.engine.index.IndexService
 import dev.svod.engine.index.SearchQuery
@@ -26,6 +28,7 @@ class SvodTools(
     private val index: IndexService,
     private val audit: AuditLog,
     private val rateLimiter: RateLimiter,
+    private val eventBus: EventBus = EventBus(),
 ) {
     // ---- read-only tools ----
 
@@ -119,7 +122,16 @@ class SvodTools(
 
     suspend fun move(agent: AgentIdentity, from: String, to: String, expectedRevision: String?): ToolResult =
         guarded(agent, "move", write = true) {
-            outcomeResult("move", agent, engine.move(from, to, expectedRevision, agent.author), from, to)
+            val moved = engine.moveWithLinks(from, to, expectedRevision, agent.author)
+            val base = outcomeResult("move", agent, moved.outcome, from, to)
+            if (moved.outcome is dev.svod.engine.core.WriteOutcome.Success && moved.rewrittenBacklinks.isNotEmpty()) {
+                ToolResult(base.status, kotlinx.serialization.json.buildJsonObject {
+                    base.data.forEach { (k, v) -> put(k, v) }
+                    putJsonArray("rewrittenBacklinks") { moved.rewrittenBacklinks.forEach { add(it) } }
+                }, base.isError)
+            } else {
+                base
+            }
         }
 
     suspend fun promote(agent: AgentIdentity, from: String, to: String, expectedRevision: String?): ToolResult =
@@ -156,10 +168,17 @@ class SvodTools(
         when (outcome) {
             is WriteOutcome.Success -> {
                 audit.record(agent.agentId, tool, "ok", path, target, outcome.revision, outcome.commit)
+                eventBus.publish(EventTypes.AGENT_ACTIVITY) {
+                    put("agentId", agent.agentId); put("tool", tool); put("path", outcome.path); put("commit", outcome.commit)
+                }
+                eventBus.publish(EventTypes.COMMIT_CREATED) {
+                    put("commit", outcome.commit); put("path", outcome.path); put("author", agent.author.name)
+                }
                 ToolResult.ok { put("path", outcome.path); put("revision", outcome.revision); put("commit", outcome.commit) }
             }
             is WriteOutcome.Conflict -> {
                 audit.record(agent.agentId, tool, "conflict", path, target, outcome.current)
+                eventBus.publish(EventTypes.CONFLICT) { put("path", outcome.path); put("agentId", agent.agentId); put("tool", tool) }
                 ToolResult.conflict {
                     put("path", outcome.path); put("expected", outcome.expected)
                     put("current", outcome.current); put("currentContent", outcome.currentContent)

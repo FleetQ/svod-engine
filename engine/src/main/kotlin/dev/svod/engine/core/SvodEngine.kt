@@ -1,5 +1,6 @@
 package dev.svod.engine.core
 
+import dev.svod.engine.graph.LinkRewriter
 import kotlinx.coroutines.CoroutineScope
 import java.io.IOException
 import java.nio.charset.StandardCharsets.UTF_8
@@ -63,6 +64,15 @@ class SvodEngine private constructor(
     suspend fun move(from: String, to: String, expectedRevision: Revision?, author: Author): WriteOutcome =
         actor.submit { doMove(VaultPath.of(from), VaultPath.of(to), expectedRevision, author) }.also(::notifyCommit)
 
+    /**
+     * Move a note and transactionally rewrite every `[[wikilink]]` that referenced it, so the
+     * move and all reference updates land in a single commit. This is link-integrity: a
+     * rename never silently breaks backlinks.
+     */
+    suspend fun moveWithLinks(from: String, to: String, expectedRevision: Revision?, author: Author): TransactionalMove =
+        actor.submit { doMoveWithLinks(VaultPath.of(from), VaultPath.of(to), expectedRevision, author) }
+            .also { notifyCommit(it.outcome) }
+
     /** Restore a soft-deleted file from `.trash/` back to [to] (defaults to its original path). */
     suspend fun restore(trashRelPath: String, to: String? = null, author: Author): WriteOutcome =
         actor.submit { doRestore(trashRelPath, to, author) }.also(::notifyCommit)
@@ -99,6 +109,20 @@ class SvodEngine private constructor(
     }
 
     suspend fun head(): String? = actor.submit { git.headId() }
+
+    /**
+     * Commit any working-tree changes made OUTSIDE the engine (e.g. a user editing a file in
+     * another app, or a git pull) as an [author] commit, so they enter history + the index.
+     * Runs on the write-actor, so it can never interleave with an engine write — a change
+     * made through the engine is already committed and yields no-op here. Returns the new
+     * commit id, or null if the working tree was already clean.
+     */
+    suspend fun ingestExternalChanges(author: Author = Author.EXTERNAL): String? = actor.submit {
+        cleanOrphanTmp()
+        val before = git.headId()
+        val after = git.commitAll("external: ingest working-tree changes", author)
+        if (after != null && after != before) after else null
+    }.also { commit -> if (commit != null) commitListener?.invoke(commit) }
 
     override fun close() {
         try { actor.close() } finally {
@@ -157,6 +181,57 @@ class SvodEngine private constructor(
         cleanupEmptyParents(from.parent)
         val commit = git.commitAll("move: ${fromP.value} -> ${toP.value}", author) ?: git.headId()!!
         return WriteOutcome.Success(toP.value, current, commit)
+    }
+
+    private fun doMoveWithLinks(fromP: VaultPath, toP: VaultPath, expected: Revision?, author: Author): TransactionalMove {
+        val from = fromP.resolveAgainst(root)
+        val to = toP.resolveAgainst(root)
+        if (!Files.isRegularFile(from)) return TransactionalMove(WriteOutcome.NotFound(fromP.value))
+        val bytes = Files.readAllBytes(from)
+        val current = git.blobId(bytes)
+        if (current != expected) {
+            return TransactionalMove(WriteOutcome.Conflict(fromP.value, expected, current, String(bytes, UTF_8)))
+        }
+        if (Files.exists(to)) {
+            val destBytes = Files.readAllBytes(to)
+            return TransactionalMove(WriteOutcome.Conflict(toP.value, null, git.blobId(destBytes), String(destBytes, UTF_8)))
+        }
+
+        // Snapshot every note BEFORE moving so backlink detection sees pre-move content/paths.
+        val notes = readAllNotesOnActor()
+        val rewriter = LinkRewriter(notes.keys)
+
+        Files.createDirectories(to.parent)
+        Files.move(from, to, StandardCopyOption.ATOMIC_MOVE)
+        cleanupEmptyParents(from.parent)
+
+        val rewritten = ArrayList<String>()
+        for ((path, content) in notes) {
+            if (path == fromP.value) continue
+            val (updated, changed) = rewriter.rewrite(content, fromP.value, toP.value)
+            if (changed) {
+                AtomicFile.write(root.resolve(path), updated.toByteArray(UTF_8), crash)
+                rewritten.add(path)
+            }
+        }
+
+        val message = if (rewritten.isEmpty()) {
+            "move: ${fromP.value} -> ${toP.value}"
+        } else {
+            "move: ${fromP.value} -> ${toP.value} (+${rewritten.size} backlinks)"
+        }
+        val commit = git.commitAll(message, author) ?: git.headId()!!
+        return TransactionalMove(WriteOutcome.Success(toP.value, current, commit), rewritten.sorted())
+    }
+
+    private fun readAllNotesOnActor(): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        walkUserFiles { f ->
+            if (f.fileName.toString().endsWith(".md")) {
+                out[root.relativize(f).toString().replace('\\', '/')] = Files.readString(f, UTF_8)
+            }
+        }
+        return out
     }
 
     private fun doRestore(trashRelPath: String, to: String?, author: Author): WriteOutcome {

@@ -25,6 +25,17 @@ class LinkGraph private constructor(
     fun neighborhood(path: String): Neighborhood =
         Neighborhood(path, outlinks(path), backlinks(path))
 
+    /** Every note path in the snapshot (graph nodes). */
+    fun nodePaths(): Set<String> = outById.keys
+
+    /** Resolved edges (source → target path). */
+    fun edges(): List<Pair<String, String>> =
+        outById.entries.flatMap { (src, links) -> links.mapNotNull { it.resolvedPath?.let { tgt -> src to tgt } } }
+
+    /** Unresolved edges (source → raw target). */
+    fun unresolvedEdges(): List<Pair<String, String>> =
+        outById.entries.flatMap { (src, links) -> links.filter { it.resolvedPath == null }.map { src to it.target } }
+
     data class ResolvedLink(val target: String, val resolvedPath: String?)
     data class Neighborhood(val path: String, val outlinks: List<ResolvedLink>, val backlinks: List<String>)
 

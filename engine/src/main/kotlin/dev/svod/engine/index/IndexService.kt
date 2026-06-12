@@ -38,6 +38,10 @@ class IndexService(
     private val metaFile = indexDir.resolve("meta.json")
     private val exec = Executors.newSingleThreadExecutor { r -> Thread(r, "svod-indexer").apply { isDaemon = true } }
 
+    /** Invoked on the indexer thread after the index advances to a new HEAD (drives index.updated). */
+    @Volatile
+    var onSynced: ((headCommit: String?) -> Unit)? = null
+
     /** Open the index and bring it consistent with HEAD (migrating if the model changed). */
     fun start(): IndexService {
         submitBlocking {
@@ -177,6 +181,7 @@ class IndexService(
         for ((path, blob) in desired) if (indexed[path] != blob) indexFile(path, head)
         index.commit()
         saveMeta(head)
+        onSynced?.invoke(head)
     }
 
     private fun sync() {
@@ -203,6 +208,7 @@ class IndexService(
         }
         index.commit()
         saveMeta(head)
+        onSynced?.invoke(head)
     }
 
     /**
