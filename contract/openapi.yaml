@@ -1,0 +1,567 @@
+openapi: 3.0.3
+info:
+  title: Svod App API
+  version: 0.1.0
+  description: >
+    Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
+    access goes through the MCP endpoint, not this API. This contract is the single source of
+    truth for all UI clients (Swift, web, …) and is versioned independently of the engine.
+  license:
+    name: Apache-2.0
+
+servers:
+  - url: http://127.0.0.1:7517
+    description: Loopback only
+
+tags:
+  - name: lifecycle
+  - name: files
+  - name: search
+  - name: graph
+  - name: meta
+  - name: events
+
+paths:
+  /health:
+    get:
+      tags: [lifecycle]
+      summary: Liveness probe
+      operationId: health
+      responses:
+        "200":
+          description: Process is up
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  /ready:
+    get:
+      tags: [lifecycle]
+      summary: Readiness probe
+      operationId: ready
+      responses:
+        "200":
+          description: Engine + index are ready
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ready" }
+        "503":
+          description: Not ready
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Ready" }
+
+  /api/v1/tree:
+    get:
+      tags: [files]
+      summary: Vault file tree
+      operationId: tree
+      responses:
+        "200":
+          description: Hierarchical tree of notes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TreeNode" }
+
+  /api/v1/file:
+    get:
+      tags: [files]
+      summary: Read a note's current content + revision
+      operationId: readFile
+      parameters:
+        - $ref: "#/components/parameters/PathQuery"
+      responses:
+        "200":
+          description: File content
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileContent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [files]
+      summary: Create or update a note (optimistic concurrency)
+      operationId: writeFile
+      parameters:
+        - $ref: "#/components/parameters/PathQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteRequest" }
+      responses:
+        "200":
+          description: Written
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WriteResult" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      tags: [files]
+      summary: Soft-delete a note to .trash/
+      operationId: deleteFile
+      parameters:
+        - $ref: "#/components/parameters/PathQuery"
+        - { name: expectedRevision, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WriteResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/file/move:
+    post:
+      tags: [files]
+      summary: Move/rename a note (rewrites backlinks transactionally)
+      operationId: moveFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MoveRequest" }
+      responses:
+        "200":
+          description: Moved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MoveResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/file/restore:
+    post:
+      tags: [files]
+      summary: Restore a soft-deleted note from .trash/
+      operationId: restoreFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RestoreRequest" }
+      responses:
+        "200":
+          description: Restored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WriteResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/file/history:
+    get:
+      tags: [files]
+      summary: Commit history for a note
+      operationId: history
+      parameters:
+        - $ref: "#/components/parameters/PathQuery"
+        - { name: max, in: query, required: false, schema: { type: integer, default: 50 } }
+      responses:
+        "200":
+          description: History (most recent first)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [commits]
+                properties:
+                  commits:
+                    type: array
+                    items: { $ref: "#/components/schemas/CommitInfo" }
+
+  /api/v1/file/diff:
+    get:
+      tags: [files]
+      summary: Unified diff of a note between two revisions
+      operationId: diff
+      parameters:
+        - $ref: "#/components/parameters/PathQuery"
+        - { name: from, in: query, required: true, schema: { type: string } }
+        - { name: to, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Diff
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiffResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/file/revision:
+    get:
+      tags: [files]
+      summary: Read a note's content at a specific revision
+      operationId: getRevision
+      parameters:
+        - $ref: "#/components/parameters/PathQuery"
+        - { name: revision, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Content at revision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileContent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/file/links:
+    get:
+      tags: [graph]
+      summary: Outgoing + incoming wikilinks for a note
+      operationId: fileLinks
+      parameters:
+        - $ref: "#/components/parameters/PathQuery"
+      responses:
+        "200":
+          description: Links
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileLinks" }
+
+  /api/v1/search:
+    get:
+      tags: [search]
+      summary: Hybrid search (keyword / semantic / hybrid) with filters
+      operationId: search
+      parameters:
+        - { name: q, in: query, required: true, schema: { type: string } }
+        - { name: mode, in: query, required: false, schema: { type: string, enum: [hybrid, keyword, semantic], default: hybrid } }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 10 } }
+        - { name: tags, in: query, required: false, schema: { type: array, items: { type: string } } }
+        - { name: pathPrefix, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SearchResult" }
+
+  /api/v1/graph:
+    get:
+      tags: [graph]
+      summary: Global wikilink graph (nodes + edges)
+      operationId: graph
+      responses:
+        "200":
+          description: Graph
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Graph" }
+
+  /api/v1/tags:
+    get:
+      tags: [meta]
+      summary: Tag taxonomy with counts
+      operationId: tags
+      responses:
+        "200":
+          description: Tags
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tags" }
+
+  /api/v1/settings:
+    get:
+      tags: [meta]
+      summary: Engine settings (read-only view)
+      operationId: settings
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Settings" }
+
+  /api/v1/index/status:
+    get:
+      tags: [meta]
+      summary: Index status
+      operationId: indexStatus
+      responses:
+        "200":
+          description: Index status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IndexStatus" }
+
+  /api/v1/conflicts:
+    get:
+      tags: [meta]
+      summary: Surfaced merge conflicts (populated by multi-host sync, Step 7)
+      operationId: conflicts
+      responses:
+        "200":
+          description: Conflicts
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conflicts" }
+
+  /api/v1/events:
+    get:
+      tags: [events]
+      summary: WebSocket stream of live engine events
+      operationId: events
+      description: >
+        Upgrade to a WebSocket. The server pushes JSON-encoded Event objects. Event types:
+        file.changed, index.updated, commit.created, conflict, engine.status, agent.activity.
+      responses:
+        "101": { description: Switching Protocols (WebSocket) }
+
+components:
+  parameters:
+    PathQuery:
+      name: path
+      in: query
+      required: true
+      description: Vault-relative note path (e.g. "vault/note.md"). URL-encoded; may contain Cyrillic.
+      schema: { type: string }
+
+  responses:
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: Optimistic-concurrency conflict; current state returned for a 3-way merge
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ConflictBody" }
+
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok] }
+
+    Ready:
+      type: object
+      required: [ready, engine, index]
+      properties:
+        ready: { type: boolean }
+        engine: { type: boolean }
+        index: { type: boolean }
+
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error: { type: string }
+        message: { type: string }
+
+    FileContent:
+      type: object
+      required: [path, revision, content]
+      properties:
+        path: { type: string }
+        revision: { type: string }
+        content: { type: string }
+
+    WriteRequest:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string }
+        expectedRevision:
+          type: string
+          nullable: true
+          description: Blob revision the client last saw; null/omitted means "create new".
+
+    WriteResult:
+      type: object
+      required: [path, revision, commit]
+      properties:
+        path: { type: string }
+        revision: { type: string }
+        commit: { type: string }
+
+    ConflictBody:
+      type: object
+      required: [path]
+      properties:
+        path: { type: string }
+        expected: { type: string, nullable: true }
+        current: { type: string, nullable: true }
+        currentContent: { type: string, nullable: true }
+
+    MoveRequest:
+      type: object
+      required: [from, to]
+      properties:
+        from: { type: string }
+        to: { type: string }
+        expectedRevision: { type: string, nullable: true }
+
+    MoveResult:
+      type: object
+      required: [path, revision, commit, rewrittenBacklinks]
+      properties:
+        path: { type: string }
+        revision: { type: string }
+        commit: { type: string }
+        rewrittenBacklinks:
+          type: array
+          description: Notes whose [[wikilinks]] were rewritten in the same commit.
+          items: { type: string }
+
+    RestoreRequest:
+      type: object
+      required: [trashPath]
+      properties:
+        trashPath: { type: string }
+        to: { type: string, nullable: true }
+
+    TreeNode:
+      type: object
+      required: [name, path, type]
+      properties:
+        name: { type: string }
+        path: { type: string }
+        type: { type: string, enum: [file, dir] }
+        children:
+          type: array
+          items: { $ref: "#/components/schemas/TreeNode" }
+
+    CommitInfo:
+      type: object
+      required: [commit, author, email, epochSeconds, message]
+      properties:
+        commit: { type: string }
+        author: { type: string }
+        email: { type: string }
+        epochSeconds: { type: integer, format: int64 }
+        message: { type: string }
+
+    DiffResult:
+      type: object
+      required: [path, from, to, diff]
+      properties:
+        path: { type: string }
+        from: { type: string }
+        to: { type: string }
+        diff: { type: string }
+
+    SearchResult:
+      type: object
+      required: [mode, hits]
+      properties:
+        mode: { type: string, enum: [HYBRID, KEYWORD, SEMANTIC] }
+        hits:
+          type: array
+          items: { $ref: "#/components/schemas/SearchHit" }
+
+    SearchHit:
+      type: object
+      required: [path, heading, snippet, score, matchedKeyword, matchedSemantic, tags]
+      properties:
+        path: { type: string }
+        heading: { type: string }
+        snippet: { type: string }
+        score: { type: number }
+        matchedKeyword: { type: boolean }
+        matchedSemantic: { type: boolean }
+        tags: { type: array, items: { type: string } }
+
+    Graph:
+      type: object
+      required: [nodes, edges, unresolved]
+      properties:
+        nodes:
+          type: array
+          items:
+            type: object
+            required: [id, path]
+            properties:
+              id: { type: string }
+              path: { type: string }
+        edges:
+          type: array
+          items:
+            type: object
+            required: [source, target]
+            properties:
+              source: { type: string }
+              target: { type: string }
+        unresolved:
+          type: array
+          items:
+            type: object
+            required: [source, target]
+            properties:
+              source: { type: string }
+              target: { type: string }
+
+    FileLinks:
+      type: object
+      required: [path, outlinks, backlinks, unresolved]
+      properties:
+        path: { type: string }
+        outlinks:
+          type: array
+          items:
+            type: object
+            required: [target]
+            properties:
+              target: { type: string }
+              resolved: { type: string, nullable: true }
+        backlinks: { type: array, items: { type: string } }
+        unresolved: { type: array, items: { type: string } }
+
+    Tags:
+      type: object
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          items:
+            type: object
+            required: [tag, count]
+            properties:
+              tag: { type: string }
+              count: { type: integer }
+
+    Settings:
+      type: object
+      required: [vaultPath, apiVersion, embedderProvider, host]
+      properties:
+        vaultPath: { type: string }
+        apiVersion: { type: string }
+        embedderProvider: { type: string }
+        embedderModel: { type: string }
+        embedderDim: { type: integer }
+        host: { type: string }
+
+    IndexStatus:
+      type: object
+      required: [docCount, model, dim]
+      properties:
+        docCount: { type: integer }
+        headIndexed: { type: string, nullable: true }
+        model: { type: string }
+        dim: { type: integer }
+
+    Conflicts:
+      type: object
+      required: [conflicts]
+      properties:
+        conflicts:
+          type: array
+          items:
+            type: object
+            properties:
+              path: { type: string }
+
+    Event:
+      type: object
+      required: [type, ts, data]
+      properties:
+        type:
+          type: string
+          enum: [file.changed, index.updated, commit.created, conflict, engine.status, agent.activity]
+        ts: { type: integer, format: int64 }
+        data: { type: object, additionalProperties: true }
