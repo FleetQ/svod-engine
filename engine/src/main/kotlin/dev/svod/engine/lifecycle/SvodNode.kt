@@ -86,7 +86,11 @@ class SvodNode private constructor(
                     svod = engine,
                     index = index,
                     eventBus = eventBus,
-                    config = AppApiServer.Config(host = config.host, embedderProvider = config.embedder.provider),
+                    config = AppApiServer.Config(
+                        host = config.host,
+                        embedderProvider = config.embedder.provider,
+                        webViewerPath = config.webViewerPath,
+                    ),
                     readiness = { ready.get() },
                 ).start(config.appApiPort)
                 val mcp = dev.svod.engine.mcp.SvodMcpServer(tools, registry, host = config.host).start(config.mcpPort)

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Svod — agent memory</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <span class="mark">⌘</span>
+      <span class="name">Svod</span>
+      <span class="tag">auditable agent memory</span>
+    </div>
+    <div class="conn">
+      <input id="endpoint" class="endpoint" spellcheck="false" />
+      <span id="status" class="status off">disconnected</span>
+    </div>
+  </header>
+
+  <main class="grid">
+    <section class="feed-pane">
+      <div class="pane-head">
+        <h2>Agent activity</h2>
+        <span id="indexInfo" class="muted"></span>
+      </div>
+      <ol id="feed" class="feed">
+        <li class="empty" id="feedEmpty">
+          Watching for agents… make a write through MCP or the App API and it appears here, live.
+        </li>
+      </ol>
+    </section>
+
+    <section class="diff-pane">
+      <div class="pane-head">
+        <h2>git diff</h2>
+        <span id="diffPath" class="muted mono"></span>
+      </div>
+      <pre id="diff" class="diff">
+<span class="empty">Select a change on the left to see the diff of an agent's memory.</span></pre>
+    </section>
+  </main>
+
+  <div id="offline" class="offline hidden">
+    <p>The Svod engine isn't reachable on <span id="offlineUrl" class="mono"></span>.</p>
+    <p class="muted">Start it (the macOS UI does this for you):</p>
+    <pre class="mono small">launchctl kickstart -k gui/$(id -u)/dev.svod.engine</pre>
+    <button id="retry">Retry</button>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

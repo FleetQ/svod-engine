@@ -25,6 +25,8 @@ data class SvodConfig(
     val embedder: EmbedderSettings = EmbedderSettings(),
     val agents: List<AgentSettings> = emptyList(),
     val syncRemotes: List<String> = emptyList(),
+    /** Optional path to the reference web viewer (examples/web-viewer); served at `/` when set. */
+    val webViewerPath: String? = null,
 ) {
     @Serializable
     data class EmbedderSettings(

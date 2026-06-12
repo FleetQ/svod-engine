@@ -19,6 +19,7 @@ import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.http.content.staticFiles
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
@@ -53,6 +54,8 @@ class AppApiServer(
         val apiVersion: String = "0.1.0",
         val embedderProvider: String = "onnx-local",
         val uiAuthor: Author = Author("svod-ui", "ui@svod.local"),
+        /** When set to a directory, the reference web viewer is served same-origin at `/`. */
+        val webViewerPath: String? = null,
     )
 
     class Running(val embedded: EmbeddedServer<*, *>, val port: Int) {
@@ -197,6 +200,13 @@ class AppApiServer(
 
             webSocket("/api/v1/events") {
                 eventBus.events.collect { e -> send(Frame.Text(encodeEvent(e))) }
+            }
+
+            // Opt-in: serve the reference web viewer same-origin (so its WS + fetch need no CORS).
+            // Explicit API routes above take precedence; this catches everything else.
+            config.webViewerPath?.let { viewerPath ->
+                val dir = java.io.File(viewerPath)
+                if (dir.isDirectory) staticFiles("/", dir) { default("index.html") }
             }
         }
     }
