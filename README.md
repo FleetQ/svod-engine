@@ -324,7 +324,4 @@ client (its own personal repo).
 
 ## License
 
-Licensed under the **Apache License 2.0** — see [LICENSE](LICENSE).
-
-> **Note:** Apache-2.0 is the *proposed default* and is pending owner confirmation before the
-> first public release. Do not treat the license as final until that confirmation lands.
+Licensed under the **Apache License 2.0** — see [LICENSE](LICENSE). Copyright 2026 FleetQ.

@@ -42,6 +42,5 @@ single-vault convenience constructor is unchanged, so existing MCP tests pass un
 
 ## NOT done (owner decision, not code)
 
-- **License** — `Apache-2.0` remains "proposed, pending owner confirmation". This is the repository
-  owner's call to make; nothing in the engine can settle it.
+- **License** — `Apache-2.0`, **confirmed by the owner (2026-06-13)**; `LICENSE` carries Copyright 2026 FleetQ.
 - **Encryption-at-rest** — reconfirmed out of scope for this deployment (relies on disk encryption).

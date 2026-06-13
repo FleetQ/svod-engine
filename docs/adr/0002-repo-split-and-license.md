@@ -1,6 +1,6 @@
 # ADR-0002 — Repo split, FleetQ-agnostic engine, Apache-2.0
 
-- Status: **Accepted** (license: *proposed default, pending owner confirmation before public release*)
+- Status: **Accepted** (license: **Apache-2.0 — confirmed by the owner, 2026-06-13; Copyright 2026 FleetQ**)
 - Date: 2026-06-12
 - Supersedes the original single-brief assumption of a bundled macOS UI.
 
@@ -35,10 +35,10 @@ The engine exposes the activity/audit stream plus a trivial reference web viewer
 `examples/` (built at Step 4, when the App API exists). The narrative — *"watch agents
 write, then `git diff` their memory"* — is demonstrable without the macOS app.
 
-### 4. License: Apache-2.0 (proposed default)
+### 4. License: Apache-2.0 (confirmed)
 Adoption-first permissive license; the commercial layer comes later as a separate
-hosted/control-plane product (Boruna playbook), not via copyleft on the core. **Flagged as
-a proposed default — the owner confirms before any public release.**
+hosted/control-plane product (Boruna playbook), not via copyleft on the core. **Confirmed by the
+owner on 2026-06-13; `LICENSE` carries Copyright 2026 FleetQ.**
 
 ## UI extraction mechanics
 

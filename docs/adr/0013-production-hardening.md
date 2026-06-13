@@ -68,6 +68,6 @@ batch). The remaining floor is the per-file fsync of atomic writes (durability),
 - **Encryption-at-rest** — confirmed out of scope for this deployment (relies on disk encryption).
 - **Per-vault backup remotes** — backup is one global remote today; a per-vault remote (each
   environment to its own server) is a natural follow-up.
-- **License** — `Apache-2.0` is still "proposed, pending owner confirmation" (owner decision).
+- **License** — `Apache-2.0`, **confirmed by the owner (2026-06-13)**; `LICENSE` carries Copyright 2026 FleetQ.
 - **Per-request MCP vault selection** — a multi-grant agent still binds to its first vault
   (warned at startup), per ADR-0011.
