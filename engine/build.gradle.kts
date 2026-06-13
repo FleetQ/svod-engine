@@ -3,10 +3,16 @@ plugins {
     kotlin("jvm") version "2.3.21"
     kotlin("plugin.serialization") version "2.3.21"
     application
+    // GraalVM native-image (AOT). Builds a self-contained `svod-engine` binary per host platform
+    // via `./gradlew nativeCompile` on a GraalVM JDK. Reachability metadata for reflective libs
+    // (jgit, lucene, netty, snakeyaml, …) comes from the community metadata repository + the
+    // committed dev/svod metadata; see docs/adr/0015. onnx-local (DJL) is JVM-only — a native
+    // binary serves BM25 (`none`) and Ollama embedders.
+    id("org.graalvm.buildtools.native") version "0.10.3"
 }
 
 group = "dev.svod"
-version = "0.1.0"
+version = "0.4.0"
 
 repositories {
     mavenCentral()
@@ -65,11 +71,36 @@ dependencies {
 }
 
 kotlin {
-    jvmToolchain(20)
+    // Local dev uses JDK 20; release/native CI overrides to a GraalVM-provided JDK via
+    // `-Psvod.jdk=21` (GraalVM has no JDK 20 build), so one GraalVM serves compile + native-image.
+    jvmToolchain((findProperty("svod.jdk") as String?)?.toInt() ?: 20)
 }
 
 application {
     mainClass.set("dev.svod.engine.MainKt")
+}
+
+graalvmNative {
+    // Use the GraalVM JDK on PATH (CI's setup-graalvm provides it); don't auto-download a toolchain.
+    toolchainDetection.set(false)
+    // Pull community reachability metadata for common libs (netty, etc.) automatically.
+    metadataRepository { enabled.set(true) }
+    binaries {
+        named("main") {
+            imageName.set("svod-engine")
+            mainClass.set("dev.svod.engine.MainKt")
+            // --no-fallback: fail the build rather than silently embedding a JVM fallback image.
+            buildArgs.add("--no-fallback")
+            buildArgs.add("-H:+ReportExceptionStackTraces")
+            // logback + the bundled web viewer assets must be embedded as resources.
+            buildArgs.add("-H:IncludeResources=logback.xml")
+            // Defer static init of libraries that touch native libs / the filesystem to run time,
+            // so the closed-world analysis doesn't try to run them at build time. onnx-local (DJL)
+            // is not exercised by a native binary (BM25 / Ollama only).
+            buildArgs.add("--initialize-at-run-time=org.eclipse.jgit,org.apache.lucene,io.netty,ai.djl,ai.onnxruntime")
+            resources.autodetect()
+        }
+    }
 }
 
 tasks.test {

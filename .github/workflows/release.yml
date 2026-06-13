@@ -1,0 +1,79 @@
+name: release
+
+# Cut a release by pushing a tag, e.g. `git tag v0.4.0 && git push origin v0.4.0`.
+# A `-rc`/`-beta` tag publishes a prerelease. Each OS runner builds in place — native-image is
+# host-only, so cross-platform binaries require this matrix (you cannot cross-compile them).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # create the GitHub Release + upload assets
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14,       label: macos-arm64,   exe: "" }
+          - { os: ubuntu-latest,  label: linux-x64,     exe: "" }
+          - { os: windows-latest, label: windows-x64,   exe: ".exe" }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@v4
+
+      # GraalVM provides native-image AND a JDK 21 (with jpackage) — one toolchain for both builds.
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: "21"
+          distribution: graalvm-community
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- Reliable artifact: self-contained app-image (full features, incl. onnx-local) ---
+      - name: Build app-image (jpackage)
+        run: |
+          ./gradlew -Psvod.jdk=21 installDist --no-daemon
+          MAIN_JAR=$(basename "$(ls build/install/svod-engine/lib/svod-engine-*.jar)")
+          jpackage --type app-image --name SvodEngine \
+            --input build/install/svod-engine/lib \
+            --main-jar "$MAIN_JAR" --main-class dev.svod.engine.MainKt \
+            --app-version 1.0.0 --java-options "-Dfile.encoding=UTF-8" \
+            --dest out
+
+      - name: Archive app-image (unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd out
+          if [ -d SvodEngine.app ]; then tar -czf "../SvodEngine-${{ matrix.label }}.tar.gz" SvodEngine.app
+          else tar -czf "../SvodEngine-${{ matrix.label }}.tar.gz" SvodEngine; fi
+
+      - name: Archive app-image (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path out/SvodEngine -DestinationPath SvodEngine-${{ matrix.label }}.zip
+
+      # --- Best-effort artifact: native-image single binary (BM25 / Ollama; not onnx-local) ---
+      - name: Build native-image
+        id: native
+        continue-on-error: true
+        run: |
+          ./gradlew -Psvod.jdk=21 nativeCompile --no-daemon
+          BIN="build/native/nativeCompile/svod-engine${{ matrix.exe }}"
+          test -f "$BIN" && cp "$BIN" "svod-engine-${{ matrix.label }}${{ matrix.exe }}"
+
+      - name: Publish to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: false
+          generate_release_notes: true
+          files: |
+            engine/SvodEngine-${{ matrix.label }}.tar.gz
+            engine/SvodEngine-${{ matrix.label }}.zip
+            engine/svod-engine-${{ matrix.label }}
+            engine/svod-engine-${{ matrix.label }}.exe

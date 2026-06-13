@@ -142,6 +142,47 @@ The WebSocket streams `agent.activity` / `commit.created` / `index.updated` / `f
 
 ---
 
+## Download & install
+
+Prebuilt binaries for every release are on the
+**[Releases page](https://github.com/FleetQ/svod-engine/releases/latest)**. Two flavours per OS:
+
+| OS | Native binary (tiny, instant start) | App-image (full, incl. semantic search) |
+|---|---|---|
+| **macOS** (Apple Silicon) | `svod-engine-macos-arm64` | `SvodEngine-macos-arm64.tar.gz` |
+| **Linux** (x64) | `svod-engine-linux-x64` | `SvodEngine-linux-x64.tar.gz` |
+| **Windows** (x64) | `svod-engine-windows-x64.exe` | `SvodEngine-windows-x64.zip` |
+
+- **Native binary** (GraalVM `native-image`): a single self-contained executable — no JVM, ~10–50 ms
+  cold start, tiny footprint. Serves the `none` (BM25) and `ollama` embedders. *Semantic
+  `onnx-local` search needs the JVM, so use the app-image for that.*
+- **App-image** (jpackage): a self-contained folder/bundle with a trimmed JVM — larger, but supports
+  **every** embedder including in-process `onnx-local` semantic search.
+
+```sh
+# macOS / Linux — native binary
+chmod +x svod-engine-macos-arm64
+./svod-engine-macos-arm64 /path/to/config.json          # see Quickstart for the config
+
+# macOS / Linux — app-image
+tar xzf SvodEngine-macos-arm64.tar.gz
+./SvodEngine.app/Contents/MacOS/SvodEngine /path/to/config.json   # macOS
+./SvodEngine/bin/SvodEngine /path/to/config.json                  # Linux
+
+# Windows — native binary (PowerShell)
+.\svod-engine-windows-x64.exe C:\path\to\config.json
+```
+
+> macOS Gatekeeper: release binaries are signed + notarized when a signing identity is configured;
+> an unsigned local build needs `xattr -dr com.apple.quarantine <file>` (or right-click → Open) once.
+
+**Run as a background service** so the engine is always up (and the UI's "Start Svod" can wake it):
+- **macOS** — launchd; see [`dist/`](dist/) (`dev.svod.engine.plist` + `launchctl bootstrap`).
+- **Linux** — a `systemd --user` unit running the binary with your config; enable + start it.
+- **Windows** — Task Scheduler "At log on", or a service wrapper (e.g. NSSM) around the `.exe`.
+
+Build from source instead? Read on.
+
 ## Quickstart
 
 Requires a JDK (20 used here; the Gradle wrapper is committed).
