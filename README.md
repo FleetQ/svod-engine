@@ -322,7 +322,7 @@ dependency. The engine stays vendor-agnostic (see
 
 ## Status
 
-**v1.0.1 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
+**v1.1.0 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
 watcher → lifecycle → reference viewer → multi-host sync → hardening → multi-vault + Obsidian
 import → backup/DR + ops surface → external sources (prune + auto-sync). Full suite green (127 tests);
 CI gates every change; packaged as self-contained app-images **and** GraalVM `native-image` single
