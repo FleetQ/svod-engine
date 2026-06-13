@@ -107,11 +107,15 @@ graalvmNative {
             // building". The enum is safe at build time; pin it there to resolve the conflict.
             buildArgs.add("--initialize-at-build-time=kotlin.DeprecationLevel")
             // ktor-server-netty 3.4.3 ships a bundled native-image.properties that injects
-            // `-H:+SharedArenaSupport` — a JDK 22+ FFM option that GraalVM 21 rejects outright
+            // `-H:+SharedArenaSupport` — a JDK 22+ FFM option that GraalVM CE rejects outright
             // ("Could not find option 'SharedArenaSupport'"), aborting the build in seconds. Strip it.
+            // The resource-path regex uses a separator-agnostic class ([/\\]) because GraalVM presents
+            // the config resource path with the host file separator: forward slashes on macOS/Linux,
+            // backslashes on Windows. A literal `/` matched on Unix but silently failed on Windows,
+            // letting SharedArenaSupport through and failing only the Windows native build.
             buildArgs.add("--exclude-config")
             buildArgs.add(".*ktor-server-netty.*\\.jar")
-            buildArgs.add("META-INF/native-image/io\\.ktor/ktor-server-netty/native-image\\.properties")
+            buildArgs.add("META-INF[/\\\\]native-image[/\\\\]io[.]ktor[/\\\\]ktor-server-netty[/\\\\]native-image[.]properties")
             // Defer Netty's native (kqueue/epoll) transport to run-time init so the closed-world
             // analysis doesn't initialize its JNI loaders at build time (Netty runs on NIO here).
             buildArgs.add(
