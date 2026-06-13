@@ -108,16 +108,16 @@ graalvmNative {
             buildArgs.add("--initialize-at-build-time=kotlin.DeprecationLevel")
             // ktor-server-netty 3.4.3 ships a bundled native-image.properties that injects
             // `-H:+SharedArenaSupport` — a JDK 22+ FFM option that GraalVM CE rejects outright
-            // ("Could not find option 'SharedArenaSupport'"), aborting the build in seconds. Strip it.
-            // Use the plugin's excludeConfig DSL (jar regex -> resource regexes) rather than a raw
-            // `--exclude-config` buildArg: the DSL normalises the option per OS via the args file, so
-            // the strip applies on Windows too. The raw buildArg matched on macOS/Linux but was not
-            // applied through native-image.cmd on Windows, letting SharedArenaSupport through and
-            // failing only the Windows native build.
-            excludeConfig.put(
-                ".*ktor-server-netty.*\\.jar",
-                listOf(".*native-image\\.properties")
-            )
+            // ("Could not find option 'SharedArenaSupport'"), aborting the build in seconds. Strip it
+            // via the raw --exclude-config buildArg (the excludeConfig DSL does not match this jar and
+            // regressed all three OSes). GraalVM reports the config resource with forward slashes on
+            // every OS (the error URI is `...jar!/META-INF/native-image/...` even on Windows), so the
+            // resource regex uses plain `/`. Both regexes avoid backslash-escaped metacharacters
+            // (`[.]` not `\.`) because the native-image.cmd argfile on Windows mangles `\.`, which is
+            // why earlier escaped variants matched on macOS/Linux but silently failed on Windows.
+            buildArgs.add("--exclude-config")
+            buildArgs.add(".*ktor-server-netty.*[.]jar")
+            buildArgs.add("META-INF/native-image/io[.]ktor/ktor-server-netty/native-image[.]properties")
             // Defer Netty's native (kqueue/epoll) transport to run-time init so the closed-world
             // analysis doesn't initialize its JNI loaders at build time (Netty runs on NIO here).
             buildArgs.add(
