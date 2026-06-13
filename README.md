@@ -312,15 +312,17 @@ dependency. The engine stays vendor-agnostic (see
 
 ## Status
 
-**Production-complete.** All 8 build steps are done and gated green — integrity core → hybrid
-index → MCP → App API/contract/graph/watcher → lifecycle → reference viewer → multi-host sync
-→ hardening. Full suite green, packaged via jpackage + jlink. See
-[`docs/build-order.md`](docs/build-order.md) for the per-step acceptance checklist and
-[`docs/adr/`](docs/adr/) for the decision record.
+**v1.0.0 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
+watcher → lifecycle → reference viewer → multi-host sync → hardening → multi-vault + Obsidian
+import → backup/DR + ops surface. Full suite green (118 tests); CI gates every change; packaged as
+self-contained app-images for macOS / Linux / Windows (see **Download & install**). App API
+**contract 0.5.0** (versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001
+through 0015) for the decision record.
 
-Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk
-encryption today), GraalVM `native-image` (2nd packaging iteration), and the macOS SwiftUI
-client (its own personal repo).
+Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption),
+and the GraalVM `native-image` binary (build wired + DJL decoupled, but blocked on a JVM-only
+native-library wall in the Netty/ONNX stack — app-image ships instead; see
+[ADR-0015](docs/adr/0015-native-image-and-cross-platform-releases.md)).
 
 ## License
 
