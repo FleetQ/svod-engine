@@ -142,26 +142,26 @@ class AppApiContractTest {
             assertEquals(200, cfg.statusCode())
             validate("$ap/sync/config", Request.Method.GET, 200, cfg.body())
 
-            // sync/now: not configured ⇒ 501 NotImplemented (conforms).
+            // sync/now: no peers ⇒ 200 SyncAck with ok=false (a no-op, not an error).
             val syncNow = fx.post("$ap/sync/now", "")
-            assertEquals(501, syncNow.statusCode())
-            validate("$ap/sync/now", Request.Method.POST, 501, syncNow.body())
+            assertEquals(200, syncNow.statusCode())
+            validate("$ap/sync/now", Request.Method.POST, 200, syncNow.body())
+            assertTrue(syncNow.body().contains("\"ok\":false"), syncNow.body())
 
-            // backup/now: no backup wired ⇒ disabled ack (conforms).
+            // backup/now: no backup remote configured ⇒ 409 Error (not a 200, not a 500).
             val backup = fx.post("$ap/backup/now", "")
-            assertEquals(200, backup.statusCode())
-            validate("$ap/backup/now", Request.Method.POST, 200, backup.body())
-            assertTrue(backup.body().contains("\"status\":\"disabled\""), backup.body())
+            assertEquals(409, backup.statusCode())
+            validate("$ap/backup/now", Request.Method.POST, 409, backup.body())
 
-            // settings/backup: a credential-free remote is accepted and echoed (redacted).
+            // settings/backup: a credential-free remote is accepted; returns the SyncConfig.
             val setOk = fx.put("$ap/settings/backup", """{"remote":"https://git.example.com/backup.git","enabled":true}""")
             assertEquals(200, setOk.statusCode())
             validate("$ap/settings/backup", Request.Method.PUT, 200, setOk.body())
 
-            // settings/backup: an inline-credential remote is rejected (400, conforms).
+            // settings/backup: an inline-credential remote is rejected (422, conforms).
             val setBad = fx.put("$ap/settings/backup", """{"remote":"https://user:secret@git.example.com/backup.git","enabled":true}""")
-            assertEquals(400, setBad.statusCode())
-            validate("$ap/settings/backup", Request.Method.PUT, 400, setBad.body())
+            assertEquals(422, setBad.statusCode())
+            validate("$ap/settings/backup", Request.Method.PUT, 422, setBad.body())
 
             // maintenance/reindex: full HEAD reconcile ack (conforms).
             val reindex = fx.post("$ap/maintenance/reindex", "")

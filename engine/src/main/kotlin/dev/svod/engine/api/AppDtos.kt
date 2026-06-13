@@ -156,43 +156,32 @@ data class MetricsDto(
     val sync: SyncStatusDto? = null,
 )
 
-// ---- Ops surface: backup / sync-config / maintenance (Step: backup & disaster recovery) ----
+// ---- Ops surface: per-vault backup / sync-config / maintenance (the UI's Sync & Backup panel) ----
+// Wire shapes match FleetQ/svod-ui-macos exactly. Credentials in any remote URL are REDACTED before
+// they leave the process (invariant: secrets never on the wire).
 
-/** Backup destination as the UI sees it; [remote] is always credential-free (redacted/secret-ref). */
-@Serializable
-data class BackupConfigDto(val remote: String, val enabled: Boolean)
-
-/** Request to set the backup destination. [remote] must be credential-free or a `Secrets` ref. */
+/** Request to set a vault's backup destination. [remote] must be credential-free or a `Secrets` ref. */
 @Serializable
 data class BackupConfigRequestDto(val remote: String, val enabled: Boolean)
 
-/**
- * Read-only view of this host's sync + backup configuration. Any credentials embedded in peer or
- * backup remote URLs are REDACTED before they leave the process (invariant: secrets never on the
- * wire). [peers] are the configured remotes with userinfo stripped.
- */
+/** A vault's sync + backup configuration (GET /sync/config; also the body PUT /settings/backup returns). */
 @Serializable
 data class SyncConfigDto(
-    val role: String,
-    val hostId: String,
-    val syncConfigured: Boolean,
-    val syncIntervalSeconds: Int,
-    val peers: List<String>,
-    val backup: BackupConfigDto? = null,
+    val backupRemote: String? = null,
+    val backupEnabled: Boolean = false,
+    val syncPeers: List<String> = emptyList(),
+    val role: String? = null,        // "authority" | "follower" | "solo"
+    val hostId: String? = null,
 )
 
 /** Ack for POST /api/v1/maintenance/reindex (index self-heal from git HEAD). */
 @Serializable
-data class MaintenanceAckDto(val action: String, val status: String, val docCount: Int, val head: String? = null)
+data class MaintenanceAckDto(val started: Boolean, val docCount: Int? = null)
 
-/** Ack for POST /api/v1/backup/now. [head] is the canonical head pushed; [pushed] false ⇒ no-op (disabled). */
+/** Ack for POST /api/v1/backup/now. [head] = pushed commit sha, null when nothing was pushed. */
 @Serializable
-data class BackupAckDto(val action: String, val status: String, val remote: String? = null, val head: String? = null, val pushed: Boolean = false)
+data class BackupAckDto(val ok: Boolean, val head: String? = null)
 
-/** Ack for POST /api/v1/sync/now when multi-host sync is configured. */
+/** Ack for POST /api/v1/sync/now. [conflicts] = merge conflicts surfaced (then visible via /conflicts). */
 @Serializable
-data class SyncAckDto(val action: String, val status: String, val role: String, val head: String? = null, val conflicts: Int = 0)
-
-/** 501 body for routes whose backing feature isn't configured/built yet. */
-@Serializable
-data class NotImplementedDto(val error: String, val message: String, val reason: String, val plannedStep: String? = null)
+data class SyncAckDto(val ok: Boolean, val head: String? = null, val conflicts: Int? = null)

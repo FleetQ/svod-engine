@@ -57,17 +57,10 @@ class AppApiServer(
     private val readiness: () -> Boolean = { true },
     /** Per-vault off-site backup; null ⇒ backup unconfigured (POST /backup/now is a graceful no-op). */
     private val backup: dev.svod.engine.sync.BackupService? = null,
-    /** Per-vault sync + backup configuration for GET /sync/config; default ⇒ standalone, no peers. */
-    private val syncConfig: (VaultView) -> SyncConfigDto = { vc ->
-        SyncConfigDto(
-            role = vc.syncStatus()?.role ?: "standalone",
-            hostId = "local",
-            syncConfigured = false,
-            syncIntervalSeconds = 0,
-            peers = emptyList(),
-            backup = null,
-        )
-    },
+    /** Per-vault sync + backup configuration for GET /sync/config; default ⇒ solo, no peers/backup. */
+    private val syncConfig: (VaultView) -> SyncConfigDto = { SyncConfigDto(role = "solo") },
+    /** Per-vault sync status for the GET /vaults `sync` field; null ⇒ no sync/backup dot. */
+    private val vaultStatus: (VaultView) -> SyncStatusDto? = { null },
 ) {
     /** Back-compat single-vault constructor (one engine/index, optional conflicts + sync status). */
     constructor(
@@ -82,7 +75,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.4.0",
+        val apiVersion: String = "0.5.0",
         val embedderProvider: String = "onnx-local",
         val uiAuthor: Author = Author("svod-ui", "ui@svod.local"),
         /** When set to a directory, the reference web viewer is served same-origin at `/`. */
@@ -122,7 +115,7 @@ class AppApiServer(
             }
 
             get("/api/v1/vaults") {
-                call.respond(VaultsDto(vaults.all().map { VaultInfoDto(it.id, it.name, it.id == vaults.defaultId(), it.syncStatus()) }))
+                call.respond(VaultsDto(vaults.all().map { VaultInfoDto(it.id, it.name, it.id == vaults.defaultId(), vaultStatus(it)) }))
             }
 
             get("/api/v1/tree") {
@@ -339,63 +332,59 @@ class AppApiServer(
 
             post("/api/v1/sync/now") {
                 val vc = vault() ?: return@post call.notFound("vault")
-                val cfg = syncConfig(vc)
-                if (!cfg.syncConfigured) {
-                    return@post call.respond(HttpStatusCode.NotImplemented, NotImplementedDto(
-                        error = "not_implemented",
-                        message = "multi-host sync is not configured for this vault",
-                        reason = "no sync remotes configured",
-                        plannedStep = "configure vault.syncRemotes to enable peer reconciliation",
-                    ))
+                // No peers ⇒ nothing to reconcile: a successful no-op (ok=false), not an error.
+                if (syncConfig(vc).syncPeers.isEmpty()) {
+                    return@post call.respond(SyncAckDto(ok = false, head = vc.engine.head(), conflicts = 0))
                 }
                 vaults.syncNow(vc.id)
                 val status = vc.syncStatus()
-                call.respond(SyncAckDto(
-                    action = "sync.now",
-                    status = "ok",
-                    role = status?.role ?: cfg.role,
-                    head = status?.lastHead,
-                    conflicts = status?.conflicts ?: 0,
-                ))
+                call.respond(SyncAckDto(ok = true, head = status?.lastHead ?: vc.engine.head(), conflicts = status?.conflicts ?: 0))
             }
 
             post("/api/v1/backup/now") {
                 val vc = vault() ?: return@post call.notFound("vault")
-                val b = backup ?: return@post call.respond(BackupAckDto(action = "backup.now", status = "disabled", pushed = false))
+                val cfg = backup?.configOf(vc.id)
+                if (cfg == null || !cfg.enabled) {
+                    return@post call.respond(HttpStatusCode.Conflict, ErrorDto(
+                        "no_backup_remote",
+                        "no backup remote is configured for vault '${vc.id}' — set one via PUT /api/v1/settings/backup",
+                    ))
+                }
                 // Back up THIS vault to its own remote (each environment to its own server).
-                val r = b.backupNow(vc.id)
-                call.respond(BackupAckDto(
-                    action = "backup.now",
-                    status = r.status,
-                    remote = r.remote?.let { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it) },
-                    head = r.head,
-                    pushed = r.pushed,
-                ))
+                val r = backup.backupNow(vc.id)
+                when (r.status) {
+                    "ok" -> call.respond(BackupAckDto(ok = true, head = r.head))
+                    "noop" -> call.respond(BackupAckDto(ok = false, head = r.head))
+                    else -> call.respond(HttpStatusCode.Conflict, ErrorDto(
+                        "backup_failed",
+                        "backup push failed (${r.status}) — check the remote is reachable and its credentials resolve",
+                    ))
+                }
             }
 
             put("/api/v1/settings/backup") {
                 val vc = vault() ?: return@put call.notFound("vault")
                 val req = call.receive<BackupConfigRequestDto>()
-                if (req.remote.isBlank()) return@put call.badRequest("backup remote must be non-blank")
-                if (dev.svod.engine.lifecycle.SvodConfig.remoteHasInlineCredentials(req.remote)) {
-                    return@put call.badRequest("backup remote must not embed credentials inline; use a credential helper or a Secrets ref")
+                if (req.remote.isBlank()) {
+                    return@put call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("invalid_remote", "backup remote must be non-blank"))
                 }
-                // Set + persist THIS vault's backup remote (survives restart via its BackupConfigStore).
+                if (dev.svod.engine.lifecycle.SvodConfig.remoteHasInlineCredentials(req.remote)) {
+                    return@put call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto(
+                        "inline_credentials",
+                        "backup remote must not embed credentials inline; reference them as a Secrets ref (keychain:/env:/file:)",
+                    ))
+                }
+                // Set + persist THIS vault's backup remote (survives restart via its BackupConfigStore),
+                // then return the vault's updated, redacted sync+backup config.
                 backup?.configure(vc.id, dev.svod.engine.lifecycle.SvodConfig.BackupSettings(req.remote, req.enabled))
-                // Echo back the redacted, accepted config (never the resolved credential).
-                call.respond(BackupConfigDto(dev.svod.engine.lifecycle.SvodConfig.redactRemote(req.remote), req.enabled))
+                call.respond(syncConfig(vc))
             }
 
             post("/api/v1/maintenance/reindex") {
                 val vc = vault() ?: return@post call.notFound("vault")
                 // Full HEAD reconcile (self-heal): rebuilds the index from git HEAD.
                 vc.index.reconcileNow()
-                call.respond(MaintenanceAckDto(
-                    action = "reindex",
-                    status = "ok",
-                    docCount = vc.index.docCount(),
-                    head = vc.index.headCommitIndexed(),
-                ))
+                call.respond(MaintenanceAckDto(started = true, docCount = vc.index.docCount()))
             }
 
             webSocket("/api/v1/events") {

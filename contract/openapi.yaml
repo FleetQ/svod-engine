@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.4.0
+  version: 0.5.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -388,36 +388,39 @@ paths:
         - $ref: "#/components/parameters/VaultQuery"
       responses:
         "200":
-          description: Reconcile triggered
+          description: Reconcile triggered (ok=false when no peers are configured — a no-op, not an error).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SyncAck" }
         "404": { $ref: "#/components/responses/NotFound" }
-        "501":
-          description: Multi-host sync is not configured for this vault
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/NotImplemented" }
 
   /api/v1/backup/now:
     post:
       tags: [ops]
-      summary: Push every vault's canonical branch to the off-site backup remote
+      summary: Push this vault's canonical branch to its off-site backup remote
       operationId: backupNow
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
       responses:
         "200":
-          description: >
-            Backup ack. status=ok when pushed, noop when nothing to push, disabled when backup is
-            unconfigured/disabled. The remote is redacted.
+          description: Backup ack — ok=true when pushed, ok=false when nothing to push (empty repo).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/BackupAck" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: No backup remote configured, or the push failed (remote unreachable / auth).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/settings/backup:
     put:
       tags: [ops]
-      summary: Set the off-site backup destination (credential-free remote or Secrets ref)
+      summary: Set this vault's off-site backup destination (credential-free remote or Secrets ref)
       operationId: setBackup
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
       requestBody:
         required: true
         content:
@@ -425,11 +428,16 @@ paths:
             schema: { $ref: "#/components/schemas/BackupConfigRequest" }
       responses:
         "200":
-          description: Accepted; the stored (redacted) backup config is echoed back.
+          description: Accepted; the vault's updated (redacted) sync + backup config is returned.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/BackupConfig" }
-        "400": { $ref: "#/components/responses/BadRequest" }
+              schema: { $ref: "#/components/schemas/SyncConfig" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: Remote is blank or embeds inline credentials (use a Secrets ref).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/maintenance/reindex:
     post:
@@ -816,81 +824,57 @@ components:
     SyncStatus:
       type: object
       required: [role, conflicts]
+      description: Per-vault sync status (the GET /vaults `sync` dot).
       properties:
-        role: { type: string }
+        role: { type: string, description: "authority | follower | solo" }
         lastHead: { type: string, nullable: true }
         conflicts: { type: integer }
-
-    BackupConfig:
-      type: object
-      required: [remote, enabled]
-      description: Backup destination as the UI sees it; `remote` is always credential-free (redacted/Secrets ref).
-      properties:
-        remote: { type: string }
-        enabled: { type: boolean }
 
     BackupConfigRequest:
       type: object
       required: [remote, enabled]
       description: >
-        Set the backup destination. `remote` must be a credential-free git URL or a `Secrets` ref
-        (env:/file:/keychain:) — a URL embedding a password (user:pass@) is rejected (400).
+        Set a vault's backup destination. `remote` must be a credential-free git URL or a `Secrets`
+        ref (env:/file:/keychain:) — a URL embedding a password (user:pass@) is rejected (422).
       properties:
         remote: { type: string }
         enabled: { type: boolean }
 
     SyncConfig:
       type: object
-      required: [role, hostId, syncConfigured, syncIntervalSeconds, peers]
-      description: This host's sync + backup configuration. Credentials in peer/backup remotes are redacted.
+      required: [backupEnabled, syncPeers]
+      description: A vault's sync + backup configuration. Credentials in any remote URL are redacted.
       properties:
-        role: { type: string, description: "authority | replica | standalone" }
-        hostId: { type: string }
-        syncConfigured: { type: boolean }
-        syncIntervalSeconds: { type: integer }
-        peers:
+        backupRemote: { type: string, nullable: true }
+        backupEnabled: { type: boolean }
+        syncPeers:
           type: array
           items: { type: string }
           description: Configured sync remotes, credentials redacted.
-        backup: { $ref: "#/components/schemas/BackupConfig" }
+        role: { type: string, nullable: true, description: "authority | follower | solo" }
+        hostId: { type: string, nullable: true }
 
     MaintenanceAck:
       type: object
-      required: [action, status, docCount]
+      required: [started]
       properties:
-        action: { type: string }
-        status: { type: string }
-        docCount: { type: integer }
-        head: { type: string, nullable: true, description: Git HEAD the index was reconciled to. }
+        started: { type: boolean }
+        docCount: { type: integer, nullable: true }
 
     BackupAck:
       type: object
-      required: [action, status, pushed]
+      required: [ok]
       properties:
-        action: { type: string }
-        status: { type: string, enum: [ok, noop, disabled, error] }
-        remote: { type: string, nullable: true, description: The backup remote (redacted). }
-        head: { type: string, nullable: true }
-        pushed: { type: boolean }
+        ok: { type: boolean }
+        head: { type: string, nullable: true, description: Pushed commit sha (null when nothing pushed). }
 
     SyncAck:
       type: object
-      required: [action, status, role, conflicts]
+      required: [ok]
       properties:
-        action: { type: string }
-        status: { type: string }
-        role: { type: string }
+        ok: { type: boolean }
         head: { type: string, nullable: true }
-        conflicts: { type: integer }
-
-    NotImplemented:
-      type: object
-      required: [error, message, reason]
-      properties:
-        error: { type: string }
-        message: { type: string }
-        reason: { type: string }
-        plannedStep: { type: string, nullable: true }
+        conflicts: { type: integer, nullable: true, description: Merge conflicts surfaced (see GET /conflicts). }
 
     Event:
       type: object

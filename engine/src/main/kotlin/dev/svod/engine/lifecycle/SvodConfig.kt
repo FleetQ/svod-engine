@@ -128,6 +128,13 @@ data class SvodConfig(
     fun backupFor(vaultId: String): BackupSettings? =
         resolvedVaults().firstOrNull { it.id == vaultId }?.backup ?: backup
 
+    /** Sync role for [vaultId]: `authority` (merge authority), `follower` (has peers), or `solo`. */
+    fun roleFor(vaultId: String): String {
+        if (syncRemotesFor(vaultId).isEmpty()) return "solo"
+        val authority = resolvedVaults().firstOrNull { it.id == vaultId }?.mergeAuthority ?: mergeAuthority
+        return if (authority) "authority" else "follower"
+    }
+
     /** All configuration problems, empty when valid. */
     fun validate(): List<String> {
         val errors = mutableListOf<String>()

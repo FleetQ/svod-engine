@@ -104,14 +104,22 @@ class SvodNode private constructor(
                     readiness = { ready.get() },
                     backup = backup,
                     syncConfig = { vc ->
-                        val peers = config.syncRemotesFor(vc.id).map { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it) }
+                        val b = backup.configOf(vc.id)
                         dev.svod.engine.api.SyncConfigDto(
-                            role = vc.syncStatus()?.role ?: "standalone",
+                            backupRemote = b?.let { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it.remote) },
+                            backupEnabled = b?.enabled ?: false,
+                            syncPeers = config.syncRemotesFor(vc.id).map { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it) },
+                            role = config.roleFor(vc.id),
                             hostId = config.hostIdFor(vc.id),
-                            syncConfigured = peers.isNotEmpty(),
-                            syncIntervalSeconds = config.syncIntervalSecondsFor(vc.id),
-                            peers = peers,
-                            backup = backup.configOf(vc.id)?.let { dev.svod.engine.api.BackupConfigDto(dev.svod.engine.lifecycle.SvodConfig.redactRemote(it.remote), it.enabled) },
+                        )
+                    },
+                    vaultStatus = { vc ->
+                        // A sync dot shows for vaults that have peers OR a backup remote configured.
+                        if (config.syncRemotesFor(vc.id).isEmpty() && backup.configOf(vc.id) == null) null
+                        else dev.svod.engine.api.SyncStatusDto(
+                            role = config.roleFor(vc.id),
+                            lastHead = vc.syncStatus()?.lastHead,
+                            conflicts = vc.syncStatus()?.conflicts ?: 0,
                         )
                     },
                 ).start(config.appApiPort)
