@@ -144,42 +144,36 @@ The WebSocket streams `agent.activity` / `commit.created` / `index.updated` / `f
 
 ## Download & install
 
-Prebuilt binaries for every release are on the
-**[Releases page](https://github.com/FleetQ/svod-engine/releases/latest)**. Two flavours per OS:
+Prebuilt, self-contained app-images for every release are on the
+**[Releases page](https://github.com/FleetQ/svod-engine/releases/latest)** — a bundled trimmed JVM,
+no Java needed, every embedder including in-process `onnx-local` semantic search:
 
-| OS | Native binary (tiny, instant start) | App-image (full, incl. semantic search) |
+| OS | Download | Run |
 |---|---|---|
-| **macOS** (Apple Silicon) | `svod-engine-macos-arm64` | `SvodEngine-macos-arm64.tar.gz` |
-| **Linux** (x64) | `svod-engine-linux-x64` | `SvodEngine-linux-x64.tar.gz` |
-| **Windows** (x64) | `svod-engine-windows-x64.exe` | `SvodEngine-windows-x64.zip` |
-
-- **Native binary** (GraalVM `native-image`): a single self-contained executable — no JVM, ~10–50 ms
-  cold start, tiny footprint. Serves the `none` (BM25) and `ollama` embedders. *Semantic
-  `onnx-local` search needs the JVM, so use the app-image for that.*
-- **App-image** (jpackage): a self-contained folder/bundle with a trimmed JVM — larger, but supports
-  **every** embedder including in-process `onnx-local` semantic search.
+| **macOS** (Apple Silicon) | `SvodEngine-macos-arm64.tar.gz` | `./SvodEngine.app/Contents/MacOS/SvodEngine config.json` |
+| **Linux** (x64) | `SvodEngine-linux-x64.tar.gz` | `./SvodEngine/bin/SvodEngine config.json` |
+| **Windows** (x64) | `SvodEngine-windows-x64.zip` | `SvodEngine\SvodEngine.exe config.json` |
 
 ```sh
-# macOS / Linux — native binary
-chmod +x svod-engine-macos-arm64
-./svod-engine-macos-arm64 /path/to/config.json          # see Quickstart for the config
-
-# macOS / Linux — app-image
+# macOS / Linux
 tar xzf SvodEngine-macos-arm64.tar.gz
-./SvodEngine.app/Contents/MacOS/SvodEngine /path/to/config.json   # macOS
+./SvodEngine.app/Contents/MacOS/SvodEngine /path/to/config.json   # macOS (see Quickstart for the config)
 ./SvodEngine/bin/SvodEngine /path/to/config.json                  # Linux
-
-# Windows — native binary (PowerShell)
-.\svod-engine-windows-x64.exe C:\path\to\config.json
 ```
 
 > macOS Gatekeeper: release binaries are signed + notarized when a signing identity is configured;
-> an unsigned local build needs `xattr -dr com.apple.quarantine <file>` (or right-click → Open) once.
+> an unsigned build needs `xattr -dr com.apple.quarantine SvodEngine.app` (or right-click → Open) once.
 
 **Run as a background service** so the engine is always up (and the UI's "Start Svod" can wake it):
 - **macOS** — launchd; see [`dist/`](dist/) (`dev.svod.engine.plist` + `launchctl bootstrap`).
 - **Linux** — a `systemd --user` unit running the binary with your config; enable + start it.
 - **Windows** — Task Scheduler "At log on", or a service wrapper (e.g. NSSM) around the `.exe`.
+
+> **Native binary (experimental):** a GraalVM `native-image` build (tiny, instant start, BM25/Ollama
+> only) is wired in `engine/build.gradle.kts` + the release workflow, but does **not** yet ship — the
+> closed-world build hits the JVM-only native-library-loading wall in the DJL/ONNX/Netty stack on
+> GraalVM 21. Tracked in [ADR-0015](docs/adr/0015-native-image-and-cross-platform-releases.md);
+> needs DJL excluded from the native classpath or a GraalVM 23/24 bump. Use the app-image for now.
 
 Build from source instead? Read on.
 
