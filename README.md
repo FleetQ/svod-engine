@@ -169,11 +169,20 @@ tar xzf SvodEngine-macos-arm64.tar.gz
 - **Linux** — a `systemd --user` unit running the binary with your config; enable + start it.
 - **Windows** — Task Scheduler "At log on", or a service wrapper (e.g. NSSM) around the `.exe`.
 
-> **Native binary (experimental):** a GraalVM `native-image` build (tiny, instant start, BM25/Ollama
-> only) is wired in `engine/build.gradle.kts` + the release workflow, but does **not** yet ship — the
-> closed-world build hits the JVM-only native-library-loading wall in the DJL/ONNX/Netty stack on
-> GraalVM 21. Tracked in [ADR-0015](docs/adr/0015-native-image-and-cross-platform-releases.md);
-> needs DJL excluded from the native classpath or a GraalVM 23/24 bump. Use the app-image for now.
+### Native binary (single executable, no JVM)
+
+Each release also ships a GraalVM `native-image` build — one self-contained executable with instant
+startup and no bundled runtime. It serves the `none` (BM25) and `ollama` embedders; it does **not**
+include in-process `onnx-local` semantic search (DJL/ONNX are JVM-only — use the app-image above for that).
+
+| OS | Download | Run |
+|---|---|---|
+| **macOS** (Apple Silicon) | `svod-engine-macos-arm64` | `chmod +x svod-engine-macos-arm64 && ./svod-engine-macos-arm64 config.json` |
+| **Linux** (x64) | `svod-engine-linux-x64` | `chmod +x svod-engine-linux-x64 && ./svod-engine-linux-x64 config.json` |
+| **Windows** (x64) | `svod-engine-windows-x64.exe` | `svod-engine-windows-x64.exe config.json` |
+
+Built on GraalVM CE for JDK 23 (the app-images stay on JDK 21); see
+[ADR-0015](docs/adr/0015-native-image-and-cross-platform-releases.md) for the closed-world build details.
 
 Build from source instead? Read on.
 
@@ -312,16 +321,16 @@ dependency. The engine stays vendor-agnostic (see
 
 ## Status
 
-**v1.0.0 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
+**v1.0.1 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
 watcher → lifecycle → reference viewer → multi-host sync → hardening → multi-vault + Obsidian
-import → backup/DR + ops surface. Full suite green (118 tests); CI gates every change; packaged as
-self-contained app-images for macOS / Linux / Windows (see **Download & install**). App API
-**contract 0.5.0** (versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001
-through 0015) for the decision record.
+import → backup/DR + ops surface. Full suite green (119 tests); CI gates every change; packaged as
+self-contained app-images **and** GraalVM `native-image` single binaries for macOS / Linux / Windows
+(see **Download & install**). App API **contract 0.5.1** (versioned independently of the engine). See
+[`docs/adr/`](docs/adr/) (ADR-0001 through 0015) for the decision record.
 
-Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption),
-and the GraalVM `native-image` binary (build wired + DJL decoupled, but blocked on a JVM-only
-native-library wall in the Netty/ONNX stack — app-image ships instead; see
+Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption).
+The GraalVM `native-image` binary now ships for all three OSes (built on GraalVM CE/JDK 23; serves
+BM25/Ollama, not in-process onnx-local — see
 [ADR-0015](docs/adr/0015-native-image-and-cross-platform-releases.md)).
 
 ## License

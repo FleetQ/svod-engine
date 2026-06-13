@@ -49,21 +49,24 @@ GraalVM has no JDK 20 build, so `kotlin.jvmToolchain` reads `-Psvod.jdk` (defaul
 - macOS release binaries are signed + notarized when a signing identity/notary profile is
   configured (ADR-0013); unsigned local builds need a one-time `xattr -dr com.apple.quarantine`.
 
-## Outcome (v0.4.0-rc1..rc3)
+## Outcome (shipped in v1.0.1)
 
 - **App-images: shipped on all 3 OSes** — `SvodEngine-{macos-arm64,linux-x64,windows-x64}` (~215 MB),
-  verified on the release assets. This is the working cross-platform download.
-- **native-image: not shipped (yet).** Three real walls were peeled in CI (each fix verified to
-  advance): (1) ktor-server-netty's bundled `native-image.properties` injects `-H:+SharedArenaSupport`
-  (a JDK 22+ option GraalVM 21 rejects) → stripped via `--exclude-config`; (2) `kotlin.DeprecationLevel`
-  build-time-init conflict → pinned with `--initialize-at-build-time`; (3) the hard wall —
-  `DeletedElementException: jdk.internal.loader.NativeLibrary.findEntry0 is reachable`, i.e. the
-  JVM-only native-library loader pulled in by DJL/onnxruntime/netty native transport. To get past (3)
-  the native classpath must **exclude DJL/onnxruntime wholesale** (a separate native-only source set
-  or dependency scope) or move to **GraalVM for JDK 23/24** (newer FFM/native-lib support). Both are
-  out of scope for the first release; the app-image covers cross-platform downloads meanwhile. The
-  `graalvmNative` config + the workflow's `continue-on-error` native job are kept so a future
-  GraalVM bump (or a DJL-excluded native source set) can finish the job.
+  built on GraalVM/JDK 21. The full-feature download (incl. in-process onnx-local).
+- **native-image: shipped on all 3 OSes** — `svod-engine-{macos-arm64,linux-x64,windows-x64.exe}`
+  (~98–108 MB), single self-contained executables serving BM25/Ollama (not onnx-local; DJL/ONNX are
+  JVM-only and excluded from the native classpath). Reached by peeling, in order: (1)
+  ktor-server-netty's bundled `native-image.properties` injects `-H:+SharedArenaSupport` (rejected
+  even by GraalVM 23) → stripped via `--exclude-config`; (2) `kotlin.DeprecationLevel` build-time-init
+  conflict → `--initialize-at-build-time`; (3) the `NativeLibrary.findEntry0` reachability wall from
+  DJL/onnxruntime/netty-native → **DJL/onnxruntime excluded from `nativeImageClasspath`**; (4) on
+  GraalVM CE **JDK 23** (FFM complete) the Lucene `PosixNativeAccess` findEntry0 wall disappears, so
+  the temporary SVM `@Substitute` was **removed**; (5) Windows-only failure — `native-image.cmd`'s
+  argfile mangles backslash-escaped regex metacharacters, so the `--exclude-config` pattern matched on
+  Unix but silently failed on Windows → switched `\.` to `[.]` character classes. Final design: two
+  `setup-graalvm` toolchains in one release job — JDK 21 builds the app-image, JDK 23 (`-Psvod.jdk=23`,
+  plus `ilammy/msvc-dev-cmd` on Windows) builds the native binary; the native step stays
+  `continue-on-error` so a transient native failure never blocks the app-image release.
 
 ## Alternatives considered
 - **native-only releases** — rejected: a metadata failure would leave no downloadable build. The
