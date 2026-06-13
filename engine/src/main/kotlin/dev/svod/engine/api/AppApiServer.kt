@@ -304,7 +304,7 @@ class AppApiServer(
                 // cannot reach it. Restricting `source` to vault roots would break the feature.
                 val src = java.nio.file.Paths.get(req.source)
                 if (!java.nio.file.Files.isDirectory(src)) return@post call.badRequest("source is not a directory: ${req.source}")
-                val r = dev.svod.engine.migrate.ObsidianImport.import(src, vc.engine, into = req.into ?: "")
+                val r = dev.svod.engine.migrate.ObsidianImport.import(src, vc.engine, into = req.into ?: "", followSymlinks = req.followSymlinks)
                 call.respond(ImportResultDto(r.imported, r.unchanged, r.skipped))
             }
             get("/api/v1/metrics") {

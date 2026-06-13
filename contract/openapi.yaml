@@ -764,6 +764,14 @@ components:
         source: { type: string, description: Local filesystem path to the Obsidian vault directory. }
         into: { type: string, nullable: true, description: Optional subfolder prefix within the target vault. }
         vault: { type: string, nullable: true, description: Target vault id; omitted ⇒ default vault. }
+        followSymlinks:
+          type: boolean
+          default: false
+          description: >
+            When false (default) symlinks are skipped and listed in `skipped`. When true they are
+            materialized — file links copied as files, directory links descended into and their
+            contents copied under the link's path (links may point outside `source`; loops are
+            detected and skipped). Use to pull in a vault whose notes are links into other projects.
 
     ImportResult:
       type: object

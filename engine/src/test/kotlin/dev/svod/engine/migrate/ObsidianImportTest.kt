@@ -119,6 +119,37 @@ class ObsidianImportTest {
     }
 
     @Test
+    fun `follows and materializes symlinks when followSymlinks=true`() = runBlocking {
+        val source = Files.createTempDirectory("obsidian-vault-")
+        Files.writeString(source.resolve("real.md"), "# Real\nkept\n")
+        Files.writeString(source.resolve("target.md"), "# Target\nlinked file body\n")
+        // an external project directory that a dir-symlink points at
+        val external = Files.createTempDirectory("external-project-")
+        Files.writeString(external.resolve("inner.md"), "# Inner\nfrom another project\n")
+        Files.write(external.resolve("pic.bin"), byteArrayOf(7, 8, 9))
+
+        try {
+            Files.createSymbolicLink(source.resolve("linked-dir"), external)
+            Files.createSymbolicLink(source.resolve("linked-file.md"), source.resolve("target.md"))
+        } catch (e: Exception) {
+            return@runBlocking // symlink creation needs privilege on Windows; skip there
+        }
+
+        engineOn().use { engine ->
+            val result = ObsidianImport.import(source, engine, followSymlinks = true)
+
+            // the file symlink is materialized with the TARGET's content, at the link's path
+            assertTrue("linked-file.md" in result.imported, "file symlink materialized")
+            assertEquals("# Target\nlinked file body\n", engine.read("linked-file.md")!!.text)
+            // the dir symlink is descended into; its contents land under the link path
+            assertTrue("linked-dir/inner.md" in result.imported, "dir symlink contents materialized")
+            assertTrue("from another project" in engine.read("linked-dir/inner.md")!!.text)
+            assertContentEquals(byteArrayOf(7, 8, 9), engine.readBytes("linked-dir/pic.bin"))
+            assertTrue("real.md" in result.imported && "target.md" in result.imported)
+        }
+    }
+
+    @Test
     fun `imports cyrillic note and attachment names`() = runBlocking {
         val source = Files.createTempDirectory("obsidian-vault-")
         Files.createDirectories(source.resolve("бележки"))

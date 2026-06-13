@@ -126,7 +126,7 @@ data class ConflictsDto(val conflicts: List<ConflictEntryDto>)
 data class ResolveConflictRequestDto(val path: String, val content: String, val expectedRevision: String? = null)
 
 @Serializable
-data class ImportRequestDto(val source: String, val into: String? = null, val vault: String? = null)
+data class ImportRequestDto(val source: String, val into: String? = null, val vault: String? = null, val followSymlinks: Boolean = false)
 
 @Serializable
 data class ImportResultDto(val imported: List<String>, val unchanged: List<String>, val skipped: List<String>)
