@@ -88,6 +88,37 @@ class ObsidianImportTest {
     }
 
     @Test
+    fun `skips symlinks (dir and file) without failing, importing the real notes`() = runBlocking {
+        val source = Files.createTempDirectory("obsidian-vault-")
+        Files.writeString(source.resolve("real.md"), "# Real\nkept\n")
+        // a directory outside the vault that a dir-symlink points at (repro: reading it as a file
+        // threw "Is a directory" → 500 before the fix)
+        val external = Files.createTempDirectory("external-")
+        Files.writeString(external.resolve("inner.md"), "# Inner\n")
+        Files.writeString(source.resolve("target.md"), "# Target\n")
+
+        val dirLink = source.resolve("linked-dir")
+        val fileLink = source.resolve("linked-file.md")
+        try {
+            Files.createSymbolicLink(dirLink, external)
+            Files.createSymbolicLink(fileLink, source.resolve("target.md"))
+        } catch (e: Exception) {
+            // Symlink creation needs privilege on Windows; skip the test there rather than fail.
+            return@runBlocking
+        }
+
+        engineOn().use { engine ->
+            val result = ObsidianImport.import(source, engine)
+
+            assertTrue("real.md" in result.imported && "target.md" in result.imported, "real notes imported")
+            assertTrue("linked-dir" in result.skipped, "dir symlink skipped, not read as a file")
+            assertTrue("linked-file.md" in result.skipped, "file symlink skipped")
+            // the symlink target's contents were NOT followed/imported under the link path
+            assertTrue(engine.list().none { it.startsWith("linked-dir/") }, "symlinked dir not descended into")
+        }
+    }
+
+    @Test
     fun `imports cyrillic note and attachment names`() = runBlocking {
         val source = Files.createTempDirectory("obsidian-vault-")
         Files.createDirectories(source.resolve("бележки"))

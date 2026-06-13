@@ -75,7 +75,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.5.0",
+        val apiVersion: String = "0.5.1",
         val embedderProvider: String = "onnx-local",
         val uiAuthor: Author = Author("svod-ui", "ui@svod.local"),
         /** When set to a directory, the reference web viewer is served same-origin at `/`. */
