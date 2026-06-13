@@ -1,8 +1,8 @@
 package dev.svod.engine.migrate
 
 import dev.svod.engine.core.Author
+import dev.svod.engine.core.BatchEntry
 import dev.svod.engine.core.SvodEngine
-import dev.svod.engine.core.WriteOutcome
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
@@ -29,6 +29,9 @@ object ObsidianImport {
     /** imported = newly written, unchanged = already identical, skipped = present-but-differs / blocked. */
     data class Result(val imported: List<String>, val unchanged: List<String>, val skipped: List<String>)
 
+    /** Files per batch commit — bounds in-flight memory while collapsing a big import to few commits. */
+    private const val CHUNK = 512
+
     suspend fun import(source: Path, engine: SvodEngine, author: Author = Author("obsidian-import", "import@svod.localhost"), into: String = ""): Result {
         val base = source.normalize()
         val files = collectFiles(base)
@@ -37,27 +40,17 @@ object ObsidianImport {
         val skipped = ArrayList<String>()
 
         val prefix = into.trim('/').let { if (it.isEmpty()) "" else "$it/" }
-        for (file in files) {
-            val rel = prefix + base.relativize(file).toString().replace('\\', '/')
-            val incoming = Files.readAllBytes(file)
-
-            val existing = engine.readBytes(rel)
-            if (existing != null) {
-                if (existing.contentEquals(incoming)) unchanged.add(rel) else skipped.add(rel)
-                continue
+        // Import in chunks, each a single batch commit — markdown as text (secret-scanned + indexed),
+        // everything else as raw bytes (attachments stored, not embedded). One commit per chunk
+        // instead of one per file is the difference between a few commits and tens of thousands.
+        for (chunk in files.chunked(CHUNK)) {
+            val entries = chunk.map { file ->
+                val rel = prefix + base.relativize(file).toString().replace('\\', '/')
+                val bytes = Files.readAllBytes(file)
+                if (rel.endsWith(".md")) BatchEntry.Text(rel, String(bytes, UTF_8)) else BatchEntry.Bytes(rel, bytes)
             }
-
-            // New file: markdown goes through the text path (so it is secret-scanned and indexed);
-            // everything else through the binary path (attachments are stored, not embedded).
-            val outcome = if (rel.endsWith(".md")) {
-                engine.write(rel, String(incoming, UTF_8), expectedRevision = null, author = author)
-            } else {
-                engine.writeBytes(rel, incoming, expectedRevision = null, author = author)
-            }
-            when (outcome) {
-                is WriteOutcome.Success -> imported.add(rel)
-                else -> skipped.add(rel) // blocked by secret scan, or a race
-            }
+            val r = engine.writeBatch(entries, author, "import: ${entries.size} files")
+            imported += r.written; unchanged += r.unchanged; skipped += r.skipped
         }
         return Result(imported.sorted(), unchanged.sorted(), skipped.sorted())
     }

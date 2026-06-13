@@ -54,11 +54,18 @@ throughput degrades super-linearly (15.9 → 6.1 notes/sec at 5k), so a 50k-note
 `docs/perf-report.md`. Build forwards the perf flags to the test JVM (previously the test silently
 skipped).
 
+### 7. Batch-commit import (fixes the bottleneck from #6)
+`SvodEngine.writeBatch(entries, author, message)` writes many files atomically through the single
+writer and seals them with **one** git commit (idempotent + non-clobbering like the per-file path:
+identical ⇒ unchanged, different ⇒ skipped, secret-laden text ⇒ skipped). `ObsidianImport` now
+imports in chunks of 512 (one commit per chunk — bounds memory, collapses tens of thousands of
+commits to a few). Measured: **6.1 → 77.7 notes/sec** at 5,000 notes (~12.7×); a 50k-note import
+drops from ≈2.3 h to ≈11 min. Single-writer integrity is unchanged (still one actor submission per
+batch). The remaining floor is the per-file fsync of atomic writes (durability), not the commit.
+
 ## Deliberately NOT done (documented, not hidden)
 
 - **Encryption-at-rest** — confirmed out of scope for this deployment (relies on disk encryption).
-- **Batch-commit import API** — the fix for the throughput bottleneck (#6); large (>10k-note)
-  imports stay slow until then. The clear, recommended next increment.
 - **Per-vault backup remotes** — backup is one global remote today; a per-vault remote (each
   environment to its own server) is a natural follow-up.
 - **License** — `Apache-2.0` is still "proposed, pending owner confirmation" (owner decision).

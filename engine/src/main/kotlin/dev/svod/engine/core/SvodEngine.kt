@@ -75,6 +75,18 @@ class SvodEngine private constructor(
     suspend fun writeBytes(path: String, bytes: ByteArray, expectedRevision: Revision?, author: Author): WriteOutcome =
         timed { actor.submit { doWriteBytes(VaultPath.of(path), bytes, expectedRevision, author) } }.also(::notifyCommit)
 
+    /**
+     * Write many files in ONE commit (bulk import). Each entry is atomically written, then a single
+     * git commit covers the whole batch — collapsing the per-write commit cost that dominates a
+     * large import. Idempotent + non-clobbering like the import path: a file already present with
+     * identical content is `unchanged`; one present with different content is `skipped` (never
+     * overwritten); a text entry tripping the secret scanner is `skipped`. Still one write-actor
+     * submission, so single-writer integrity holds and nothing else can interleave the batch.
+     */
+    suspend fun writeBatch(entries: List<BatchEntry>, author: Author, message: String = "import: ${entries.size} files"): BatchResult =
+        timed { actor.submit { doBatch(entries, author, message) } }
+            .also { r -> if (r.written.isNotEmpty()) r.commit?.let { commitListener?.invoke(it) } }
+
     suspend fun read(path: String): FileContent? = actor.submit {
         val vp = VaultPath.of(path)
         val target = vp.resolveAgainst(root)
@@ -226,6 +238,33 @@ class SvodEngine private constructor(
         AtomicFile.write(target, bytes, crash)
         val commit = git.commitAll("write: ${vp.value}", author) ?: git.headId()!!
         return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)
+    }
+
+    private fun doBatch(entries: List<BatchEntry>, author: Author, message: String): BatchResult {
+        val written = ArrayList<String>()
+        val unchanged = ArrayList<String>()
+        val skipped = ArrayList<String>()
+        for (e in entries) {
+            val vp = VaultPath.of(e.path)
+            val incoming: ByteArray = when (e) {
+                is BatchEntry.Text -> {
+                    if (secretScanner.scan(e.content).isNotEmpty()) { skipped.add(vp.value); continue }
+                    e.content.toByteArray(UTF_8)
+                }
+                is BatchEntry.Bytes -> e.bytes
+            }
+            val target = vp.resolveAgainst(root)
+            if (Files.isRegularFile(target)) {
+                // Present: identical ⇒ unchanged; different ⇒ skipped (a batch import never clobbers).
+                if (Files.readAllBytes(target).contentEquals(incoming)) unchanged.add(vp.value) else skipped.add(vp.value)
+                continue
+            }
+            AtomicFile.write(target, incoming, crash)
+            written.add(vp.value)
+        }
+        // One commit for the whole batch (the win); no commit when nothing was written.
+        val commit = if (written.isNotEmpty()) (git.commitAll(message, author) ?: git.headId()) else git.headId()
+        return BatchResult(written.sorted(), unchanged.sorted(), skipped.sorted(), commit)
     }
 
     private fun doDelete(vp: VaultPath, expected: Revision?, author: Author): WriteOutcome {
@@ -449,3 +488,21 @@ class SvodEngine private constructor(
         }
     }
 }
+
+/** One file in a [SvodEngine.writeBatch]: text (secret-scanned + indexed) or raw bytes (attachment). */
+sealed class BatchEntry {
+    abstract val path: String
+    data class Text(override val path: String, val content: String) : BatchEntry()
+    data class Bytes(override val path: String, val bytes: ByteArray) : BatchEntry() {
+        override fun equals(other: Any?) = this === other || (other is Bytes && path == other.path && bytes.contentEquals(other.bytes))
+        override fun hashCode() = 31 * path.hashCode() + bytes.contentHashCode()
+    }
+}
+
+/** Outcome of [SvodEngine.writeBatch]: per-path classification + the single batch commit (or HEAD). */
+data class BatchResult(
+    val written: List<String>,
+    val unchanged: List<String>,
+    val skipped: List<String>,
+    val commit: String?,
+)
