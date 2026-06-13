@@ -97,7 +97,9 @@ graalvmNative {
             // Defer static init of libraries that touch native libs / the filesystem to run time,
             // so the closed-world analysis doesn't try to run them at build time. onnx-local (DJL)
             // is not exercised by a native binary (BM25 / Ollama only).
-            buildArgs.add("--initialize-at-run-time=org.eclipse.jgit,org.apache.lucene,io.netty,ai.djl,ai.onnxruntime")
+            // DJL/ONNX are loaded reflectively by Embedders and are NOT reachable in a native image
+            // (onnx-local is JVM-only), so they're intentionally absent here.
+            buildArgs.add("--initialize-at-run-time=org.eclipse.jgit,org.apache.lucene,io.netty")
             // Marking io.netty for run-time init transitively drags kotlin.DeprecationLevel (a plain
             // enum, used by @Deprecated annotations on Kotlin stdlib code netty's config references)
             // into the run-time-init set, but the closed-world analysis initialises it at build time

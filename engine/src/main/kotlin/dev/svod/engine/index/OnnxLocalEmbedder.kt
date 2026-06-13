@@ -46,6 +46,9 @@ class OnnxLocalEmbedder private constructor(
         const val QUERY_PREFIX = "query: "
         const val PASSAGE_PREFIX = "passage: "
 
+        // @JvmStatic so the factory can load this reflectively (keeps DJL/ONNX off a native image —
+        // see Embedders.create + ADR-0015): a static `load(OnnxConfig, Path)` on the class itself.
+        @JvmStatic
         fun load(config: OnnxConfig, modelsDir: Path): OnnxLocalEmbedder {
             val dir = ModelManager.resolve(config, modelsDir)
             val criteria = Criteria.builder()
