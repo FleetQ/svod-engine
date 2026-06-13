@@ -83,9 +83,12 @@ class SvodEngine private constructor(
      * overwritten); a text entry tripping the secret scanner is `skipped`. Still one write-actor
      * submission, so single-writer integrity holds and nothing else can interleave the batch.
      */
-    suspend fun writeBatch(entries: List<BatchEntry>, author: Author, message: String = "import: ${entries.size} files"): BatchResult =
-        timed { actor.submit { doBatch(entries, author, message) } }
+    suspend fun writeBatch(entries: List<BatchEntry>, author: Author, message: String = "import: ${entries.size} files", overwrite: Boolean = false): BatchResult =
+        timed { actor.submit { doBatch(entries, author, message, overwrite) } }
             .also { r -> if (r.written.isNotEmpty()) r.commit?.let { commitListener?.invoke(it) } }
+
+    /** Git blob id (content hash) of [bytes] — the same value used as a file's revision. Pure, no I/O. */
+    fun blobId(bytes: ByteArray): String = git.blobId(bytes)
 
     suspend fun read(path: String): FileContent? = actor.submit {
         val vp = VaultPath.of(path)
@@ -240,7 +243,7 @@ class SvodEngine private constructor(
         return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)
     }
 
-    private fun doBatch(entries: List<BatchEntry>, author: Author, message: String): BatchResult {
+    private fun doBatch(entries: List<BatchEntry>, author: Author, message: String, overwrite: Boolean): BatchResult {
         val written = ArrayList<String>()
         val unchanged = ArrayList<String>()
         val skipped = ArrayList<String>()
@@ -255,9 +258,10 @@ class SvodEngine private constructor(
             }
             val target = vp.resolveAgainst(root)
             if (Files.isRegularFile(target)) {
-                // Present: identical ⇒ unchanged; different ⇒ skipped (a batch import never clobbers).
-                if (Files.readAllBytes(target).contentEquals(incoming)) unchanged.add(vp.value) else skipped.add(vp.value)
-                continue
+                // Present & identical ⇒ unchanged. Different ⇒ skipped, UNLESS overwrite (source sync,
+                // where the caller has already decided the incoming content wins) ⇒ written.
+                if (Files.readAllBytes(target).contentEquals(incoming)) { unchanged.add(vp.value); continue }
+                if (!overwrite) { skipped.add(vp.value); continue }
             }
             AtomicFile.write(target, incoming, crash)
             written.add(vp.value)

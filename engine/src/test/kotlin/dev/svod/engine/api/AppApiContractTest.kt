@@ -171,6 +171,48 @@ class AppApiContractTest {
     }
 
     @Test
+    fun `external sources endpoints register, sync and remove, conforming to the contract`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            val ap = "/api/v1"
+            // an external project dir outside the vault
+            val ext = Files.createTempDirectory("ext-proj-")
+            Files.writeString(ext.resolve("note.md"), "# Note\nfrom another project\n")
+            val extJson = ext.toString().replace("\\", "\\\\")
+
+            // list: empty, conforms
+            val empty = fx.get("$ap/sources")
+            assertEquals(200, empty.statusCode())
+            validate("$ap/sources", Request.Method.GET, 200, empty.body())
+
+            // register
+            val reg = fx.post("$ap/sources", """{"path":"$extJson","into":"projects/demo"}""")
+            assertEquals(200, reg.statusCode())
+            validate("$ap/sources", Request.Method.POST, 200, reg.body())
+            val id = Regex("\"id\":\"([^\"]+)\"").find(reg.body())!!.groupValues[1]
+
+            // a relative path is rejected (422, conforms)
+            val badReg = fx.post("$ap/sources", """{"path":"relative/path"}""")
+            assertEquals(422, badReg.statusCode())
+            validate("$ap/sources", Request.Method.POST, 422, badReg.body())
+
+            // sync the one source → note.md created under the prefix
+            val synced = fx.post("$ap/sources/$id/sync", "")
+            assertEquals(200, synced.statusCode())
+            validate("$ap/sources/{id}/sync", Request.Method.POST, 200, synced.body())
+            assertTrue(synced.body().contains("projects/demo/note.md"), synced.body())
+
+            // sync-all conforms too
+            val syncAll = fx.post("$ap/sources/sync", "")
+            assertEquals(200, syncAll.statusCode())
+            validate("$ap/sources/sync", Request.Method.POST, 200, syncAll.body())
+
+            // remove → 204
+            val removed = fx.delete("$ap/sources/$id")
+            assertEquals(204, removed.statusCode())
+        }
+    }
+
+    @Test
     fun `every path declared in the contract is implemented`() {
         val openApi = OpenAPIV3Parser().read(specPath.toString())
         val declared = openApi.paths.keys.toSet()
@@ -182,6 +224,7 @@ class AppApiContractTest {
             "/api/v1/import", "/api/v1/events",
             "/api/v1/sync/config", "/api/v1/sync/now", "/api/v1/backup/now",
             "/api/v1/settings/backup", "/api/v1/maintenance/reindex",
+            "/api/v1/sources", "/api/v1/sources/{id}", "/api/v1/sources/{id}/sync", "/api/v1/sources/sync",
         )
         assertEquals(declared, implemented, "contract paths and implemented routes must match exactly")
         assertTrue(Files.exists(specPath), "contract file present")

@@ -75,7 +75,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.5.1",
+        val apiVersion: String = "0.6.0",
         val embedderProvider: String = "onnx-local",
         val uiAuthor: Author = Author("svod-ui", "ui@svod.local"),
         /** When set to a directory, the reference web viewer is served same-origin at `/`. */
@@ -395,6 +395,58 @@ class AppApiServer(
                 call.respond(MaintenanceAckDto(started = true, docCount = vc.index.docCount()))
             }
 
+            // ---- External sources: register external paths and re-sync their content into the vault ----
+
+            get("/api/v1/sources") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                val store = dev.svod.engine.sources.ExternalSourceStore(vc.engine.root)
+                call.respond(store.list().map { it.toDto() })
+            }
+
+            post("/api/v1/sources") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val req = call.receive<RegisterSourceRequestDto>()
+                val path = java.nio.file.Paths.get(req.path)
+                if (!path.isAbsolute) {
+                    return@post call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("invalid_path", "source path must be absolute: ${req.path}"))
+                }
+                if (!java.nio.file.Files.exists(path)) {
+                    return@post call.badRequest("source path does not exist: ${req.path}")
+                }
+                val abs = path.normalize().toString()
+                val store = dev.svod.engine.sources.ExternalSourceStore(vc.engine.root)
+                val source = dev.svod.engine.sources.ExternalSource(
+                    id = dev.svod.engine.sources.ExternalSource.idFor(abs),
+                    path = abs,
+                    into = (req.into ?: "").trim('/'),
+                    followSymlinks = req.followSymlinks,
+                )
+                call.respond(store.put(source).toDto())
+            }
+
+            delete("/api/v1/sources/{id}") {
+                val vc = vault() ?: return@delete call.notFound("vault")
+                val id = call.parameters["id"] ?: return@delete call.badRequest("missing source id")
+                val store = dev.svod.engine.sources.ExternalSourceStore(vc.engine.root)
+                if (store.remove(id)) call.respond(HttpStatusCode.NoContent) else call.notFound("source '$id'")
+            }
+
+            post("/api/v1/sources/sync") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val store = dev.svod.engine.sources.ExternalSourceStore(vc.engine.root)
+                val sync = dev.svod.engine.sources.SourceSync(vc.engine, store)
+                call.respond(store.list().map { sync.sync(it).toDto() })
+            }
+
+            post("/api/v1/sources/{id}/sync") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val id = call.parameters["id"] ?: return@post call.badRequest("missing source id")
+                val store = dev.svod.engine.sources.ExternalSourceStore(vc.engine.root)
+                val source = store.get(id) ?: return@post call.notFound("source '$id'")
+                val result = dev.svod.engine.sources.SourceSync(vc.engine, store).sync(source)
+                call.respond(result.toDto())
+            }
+
             webSocket("/api/v1/events") {
                 eventBus.events.collect { e -> send(Frame.Text(encodeEvent(e))) }
             }
@@ -431,6 +483,12 @@ class AppApiServer(
         eventBus.publish(EventTypes.CONFLICT) { put("vault", vc.id); put("path", path); put("source", "api") }
 
     private fun WriteOutcome.Conflict.toConflictDto() = ConflictBodyDto(path, expected, current, currentContent)
+
+    private fun dev.svod.engine.sources.ExternalSource.toDto() =
+        ExternalSourceDto(id, path, into, followSymlinks, lastSyncedAt)
+
+    private fun dev.svod.engine.sources.SourceSyncResult.toDto() =
+        SourceSyncResultDto(id, created, updated, unchanged, conflicts, orphaned, skipped, error)
 
     // Per-vault graph + tags cached by that vault's HEAD. A mutex serializes the build-and-store
     // so concurrent requests don't each rebuild the graph (redundant work that stalls the writer).

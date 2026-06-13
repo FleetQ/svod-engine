@@ -64,7 +64,8 @@ index. The result:
 | **Multiple vaults** | Run N vaults in one engine (e.g. `personal` + `work`), each its own git repo, lock, index, and sync remote. Routes select a vault via `?vault=`; agents are scoped to their granted vault. Cross-vault `[[vault:note]]` links resolve and surface as backlinks. |
 | **Multi-host sync** | Replicate the vault across machines over git transport. Frontmatter-aware structured merge (YAML keys union, body via git 3-way). A designated merge authority keeps history deterministic; real conflicts are *surfaced*, never auto-resolved. |
 | **Hardening** | Pre-commit secret scanning (a leaked key never enters history), live metrics (write latency, queue depth, index lag, conflicts, sync status), secret refs (`env:` / `file:` / macOS `keychain:`) instead of plaintext tokens. |
-| **Obsidian import, zero lock-in** | One-shot migration of an existing Obsidian vault — markdown + **attachments** (images/PDF) preserved, frontmatter + wikilinks intact, `.obsidian/` skipped. Idempotent (re-run reconciles, never clobbers). Leaving is just `git clone`. |
+| **Obsidian import, zero lock-in** | One-shot migration of an existing Obsidian vault — markdown + **attachments** (images/PDF) preserved, frontmatter + wikilinks intact, `.obsidian/` skipped. Idempotent (re-run reconciles, never clobbers). Symlinks are skipped by default or, with `followSymlinks`, materialized (file + whole directory links copied in). Leaving is just `git clone`. |
+| **External sources (re-syncable)** | Register a file/dir living *outside* the vault and re-sync its content in on demand — the git-friendly answer to Obsidian's symlinked notes. *external-wins-unless-locally-edited*: external edits flow in, a vault copy you edited is surfaced as a conflict (never clobbered), a file gone from the source is reported (not deleted). See [ADR-0016](docs/adr/0016-external-sources-and-symlink-import.md). |
 | **UTF-8 / Cyrillic everywhere** | Filenames and content in any script. `core.quotepath=false`, tested with Cyrillic paths + YAML. |
 
 ---
@@ -323,10 +324,10 @@ dependency. The engine stays vendor-agnostic (see
 
 **v1.0.1 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
 watcher → lifecycle → reference viewer → multi-host sync → hardening → multi-vault + Obsidian
-import → backup/DR + ops surface. Full suite green (119 tests); CI gates every change; packaged as
-self-contained app-images **and** GraalVM `native-image` single binaries for macOS / Linux / Windows
-(see **Download & install**). App API **contract 0.5.1** (versioned independently of the engine). See
-[`docs/adr/`](docs/adr/) (ADR-0001 through 0015) for the decision record.
+import → backup/DR + ops surface → external sources. Full suite green (124 tests); CI gates every
+change; packaged as self-contained app-images **and** GraalVM `native-image` single binaries for
+macOS / Linux / Windows (see **Download & install**). App API **contract 0.6.0** (versioned
+independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0016) for the decision record.
 
 Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption).
 The GraalVM `native-image` binary now ships for all three OSes (built on GraalVM CE/JDK 23; serves

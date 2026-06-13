@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.5.1
+  version: 0.6.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -456,6 +456,100 @@ paths:
               schema: { $ref: "#/components/schemas/MaintenanceAck" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/sources:
+    get:
+      tags: [ops]
+      summary: List registered external sources for this vault
+      operationId: listSources
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: Registered external sources
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/ExternalSource" } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [ops]
+      summary: Register an external source (a file/dir outside the vault that can be re-synced in)
+      operationId: registerSource
+      description: >
+        The id is derived deterministically from the absolute path, so re-registering the same path
+        is idempotent (it updates the existing registration). Registering does not sync; call sync.
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterSourceRequest" }
+      responses:
+        "200":
+          description: The registered source
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExternalSource" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422":
+          description: Path is not absolute
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/sources/{id}:
+    delete:
+      tags: [ops]
+      summary: Remove an external source registration (its synced files stay in the vault)
+      operationId: removeSource
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "204": { description: Removed }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/sources/{id}/sync:
+    post:
+      tags: [ops]
+      summary: Re-sync one external source into the vault
+      operationId: syncSource
+      description: >
+        external-wins-unless-locally-edited: new files are created, externally-changed files update
+        the vault copy, a vault copy edited since the last sync is reported as a `conflict` (never
+        clobbered), and a file gone from the source is reported as `orphaned` (left in the vault).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: Sync result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SourceSyncResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/sources/sync:
+    post:
+      tags: [ops]
+      summary: Re-sync all registered external sources for this vault
+      operationId: syncAllSources
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: Per-source sync results
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/SourceSyncResult" } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/events:
     get:
       tags: [events]
@@ -783,6 +877,47 @@ components:
         imported: { type: array, items: { type: string } }
         unchanged: { type: array, items: { type: string } }
         skipped: { type: array, items: { type: string } }
+
+    RegisterSourceRequest:
+      type: object
+      required: [path]
+      description: Register an external file/dir (absolute local path) as a re-syncable source.
+      properties:
+        path: { type: string, description: Absolute filesystem path to a file or directory outside the vault. }
+        into: { type: string, nullable: true, description: Vault subpath prefix to materialize the source under. }
+        followSymlinks:
+          type: boolean
+          default: false
+          description: Follow symlinks found inside a directory source (the source root is always resolved).
+
+    ExternalSource:
+      type: object
+      required: [id, path, into, followSymlinks]
+      description: A registered external source. `id` is derived deterministically from `path`.
+      properties:
+        id: { type: string }
+        path: { type: string }
+        into: { type: string }
+        followSymlinks: { type: boolean }
+        lastSyncedAt: { type: string, nullable: true, description: "ISO-8601 instant of the last successful sync, or null." }
+
+    SourceSyncResult:
+      type: object
+      required: [id]
+      description: >
+        Per-source sync outcome. created/updated/unchanged are vault paths written or matched;
+        conflicts = vault copy locally edited since last sync (left as-is); orphaned = gone from the
+        source (left in the vault); skipped = secret-scanner-blocked. error is set if the source path
+        was unreadable (the sync is then a no-op, not a failure of the whole request).
+      properties:
+        id: { type: string }
+        created: { type: array, items: { type: string } }
+        updated: { type: array, items: { type: string } }
+        unchanged: { type: array, items: { type: string } }
+        conflicts: { type: array, items: { type: string } }
+        orphaned: { type: array, items: { type: string } }
+        skipped: { type: array, items: { type: string } }
+        error: { type: string, nullable: true }
 
     ResolveConflictRequest:
       type: object
