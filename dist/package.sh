@@ -31,6 +31,20 @@ mkdir -p "$OUT"
 "$JAVA/jlink" --add-modules "$MODULES" --strip-debug --no-header-files --no-man-pages \
   --compress=2 --output "$OUT/runtime"
 
+# Opt-in macOS code signing. If SVOD_SIGN_IDENTITY is set, jpackage signs the app
+# image with that Developer ID; if unset, the build is unsigned (local-dev default).
+# Optionally pin a keychain via SVOD_SIGN_KEYCHAIN.
+SIGN_ARGS=()
+if [ -n "${SVOD_SIGN_IDENTITY:-}" ]; then
+  echo "==> signing enabled (identity: $SVOD_SIGN_IDENTITY)"
+  SIGN_ARGS+=(--mac-sign --mac-signing-identity "$SVOD_SIGN_IDENTITY")
+  if [ -n "${SVOD_SIGN_KEYCHAIN:-}" ]; then
+    SIGN_ARGS+=(--mac-signing-keychain "$SVOD_SIGN_KEYCHAIN")
+  fi
+else
+  echo "==> signing disabled (set SVOD_SIGN_IDENTITY to sign)"
+fi
+
 echo "==> jpackage app-image"
 rm -rf "$OUT/$NAME.app"
 "$JAVA/jpackage" \
@@ -42,6 +56,7 @@ rm -rf "$OUT/$NAME.app"
   --main-class "$MAIN_CLASS" \
   --runtime-image "$OUT/runtime" \
   --java-options "-Dfile.encoding=UTF-8" \
+  ${SIGN_ARGS[@]+"${SIGN_ARGS[@]}"} \
   --dest "$OUT"
 
 echo "==> built $OUT/$NAME.app"
