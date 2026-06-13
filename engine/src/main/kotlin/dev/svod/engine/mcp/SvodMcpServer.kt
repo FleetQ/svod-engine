@@ -54,14 +54,16 @@ import kotlinx.serialization.json.putJsonObject
  * every tool call carries the right identity — which becomes the git commit author.
  */
 class SvodMcpServer(
-    /** Resolves the SvodTools for an agent — bound to that agent's vault (multi-vault scoping). */
-    private val toolsFor: (AgentIdentity) -> SvodTools,
+    /** Resolves the SvodTools for a vault id (multi-vault). Null ⇒ unknown vault. */
+    private val toolsByVault: (String) -> SvodTools?,
+    /** The vault a call targets when it names none (and the agent grants none explicitly). */
+    private val defaultVaultId: String,
     private val registry: AgentRegistry,
     private val host: String = "127.0.0.1",
 ) {
-    /** Single-vault convenience: every agent shares one tool set. */
+    /** Single-vault convenience: one tool set for every vault id. */
     constructor(tools: SvodTools, registry: AgentRegistry, host: String = "127.0.0.1")
-        : this({ tools }, registry, host)
+        : this({ _ -> tools }, "default", registry, host)
 
     class Running(val embedded: EmbeddedServer<*, *>, val port: Int) {
         fun stop() = embedded.stop(500, 1000)
@@ -160,56 +162,69 @@ class SvodMcpServer(
         return transport
     }
 
-    /** A fresh MCP server whose every tool handler is bound to [agent] and its vault. */
+    /** A fresh MCP server for [agent]; each call selects its target vault (default = the agent's). */
     private fun buildServer(agent: AgentIdentity): Server {
-        val tools = toolsFor(agent)
         val server = Server(
             Implementation(name = "svod", version = "0.1.0"),
             ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = false))),
         )
 
+        // Every per-vault tool's schema gets an optional `vault` (default = the agent's vault). A
+        // call may target any vault the agent is granted; an ungranted/unknown vault is rejected.
         fun schema(props: Map<String, String>, required: List<String>) = ToolSchema(
             properties = buildJsonObject {
                 props.forEach { (name, type) -> putJsonObject(name) { put("type", type) } }
+                putJsonObject("vault") { put("type", "string") }
             },
             required = required,
         )
 
+        // Resolve the SvodTools for this call's target vault, enforcing the agent's grant. Returns
+        // a denial/not-found CallToolResult instead when the vault isn't granted or doesn't exist.
+        fun routed(req: io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest): Pair<SvodTools?, io.modelcontextprotocol.kotlin.sdk.types.CallToolResult?> {
+            val target = req.str("vault") ?: agent.primaryVault(defaultVaultId)
+            // Empty grants ⇒ no restriction (single-vault / back-compat); otherwise enforce the grant.
+            if (agent.vaults.isNotEmpty() && target !in agent.vaults)
+                return null to ToolResult.denied("vault '$target' is not granted to agent '${agent.agentId}'").toCallToolResult()
+            val t = toolsByVault(target) ?: return null to ToolResult.notFound("vault: $target").toCallToolResult()
+            return t to null
+        }
+
         server.addTool("read", "Read a note's current content + revision.", schema(mapOf("path" to "string"), listOf("path"))) { req ->
-            tools.read(agent, req.str("path")!!).toCallToolResult()
+            val (t, d) = routed(req); d ?: t!!.read(agent, req.str("path")!!).toCallToolResult()
         }
         server.addTool("write", "Create or update a note (optimistic via expectedRevision).", schema(mapOf("path" to "string", "content" to "string", "expectedRevision" to "string"), listOf("path", "content"))) { req ->
-            tools.write(agent, req.str("path")!!, req.str("content") ?: "", req.str("expectedRevision")).toCallToolResult()
+            val (t, d) = routed(req); d ?: t!!.write(agent, req.str("path")!!, req.str("content") ?: "", req.str("expectedRevision")).toCallToolResult()
         }
         server.addTool("delete", "Soft-delete a note to .trash/.", schema(mapOf("path" to "string", "expectedRevision" to "string"), listOf("path"))) { req ->
-            tools.delete(agent, req.str("path")!!, req.str("expectedRevision")).toCallToolResult()
+            val (t, d) = routed(req); d ?: t!!.delete(agent, req.str("path")!!, req.str("expectedRevision")).toCallToolResult()
         }
         server.addTool("move", "Move/rename a note.", schema(mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to"))) { req ->
-            tools.move(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
+            val (t, d) = routed(req); d ?: t!!.move(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
         server.addTool("promote", "Promote a draft from messy/ into the curated vault.", schema(mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to"))) { req ->
-            tools.promote(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
+            val (t, d) = routed(req); d ?: t!!.promote(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
         server.addTool("search", "Hybrid search (keyword/semantic/hybrid) with filters.", schema(mapOf("query" to "string", "mode" to "string", "limit" to "integer"), listOf("query"))) { req ->
-            tools.search(agent, req.toSearchQuery()).toCallToolResult()
+            val (t, d) = routed(req); d ?: t!!.search(agent, req.toSearchQuery()).toCallToolResult()
         }
         server.addTool("list", "List note paths (optionally filtered by prefix).", schema(mapOf("pathPrefix" to "string"), emptyList())) { req ->
-            tools.list(agent, req.str("pathPrefix")).toCallToolResult()
+            val (t, d) = routed(req); d ?: t!!.list(agent, req.str("pathPrefix")).toCallToolResult()
         }
         server.addTool("history", "Commit history for a note.", schema(mapOf("path" to "string", "max" to "integer"), listOf("path"))) { req ->
-            tools.history(agent, req.str("path")!!, req.int("max", 50)).toCallToolResult()
+            val (t, d) = routed(req); d ?: t!!.history(agent, req.str("path")!!, req.int("max", 50)).toCallToolResult()
         }
         server.addTool("diff", "Unified diff of a note between two revisions.", schema(mapOf("path" to "string", "from" to "string", "to" to "string"), listOf("path", "from", "to"))) { req ->
-            tools.diff(agent, req.str("path")!!, req.str("from")!!, req.str("to")!!).toCallToolResult()
+            val (t, d) = routed(req); d ?: t!!.diff(agent, req.str("path")!!, req.str("from")!!, req.str("to")!!).toCallToolResult()
         }
         server.addTool("get_revision", "Read a note's content at a specific revision.", schema(mapOf("path" to "string", "revision" to "string"), listOf("path", "revision"))) { req ->
-            tools.getRevision(agent, req.str("path")!!, req.str("revision")!!).toCallToolResult()
+            val (t, d) = routed(req); d ?: t!!.getRevision(agent, req.str("path")!!, req.str("revision")!!).toCallToolResult()
         }
         server.addTool("link", "Outgoing wikilinks for a note (resolved + unresolved).", schema(mapOf("path" to "string"), listOf("path"))) { req ->
-            tools.link(agent, req.str("path")!!).toCallToolResult()
+            val (t, d) = routed(req); d ?: t!!.link(agent, req.str("path")!!).toCallToolResult()
         }
         server.addTool("graph_query", "1-hop link neighborhood (outlinks + backlinks).", schema(mapOf("path" to "string"), listOf("path"))) { req ->
-            tools.graphQuery(agent, req.str("path")!!).toCallToolResult()
+            val (t, d) = routed(req); d ?: t!!.graphQuery(agent, req.str("path")!!).toCallToolResult()
         }
         return server
     }

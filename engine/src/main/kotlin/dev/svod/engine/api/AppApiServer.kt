@@ -55,10 +55,8 @@ class AppApiServer(
     private val eventBus: EventBus,
     private val config: Config = Config(),
     private val readiness: () -> Boolean = { true },
-    /** Off-site backup; null ⇒ backup unconfigured (POST /backup/now is a graceful no-op ack). */
+    /** Per-vault off-site backup; null ⇒ backup unconfigured (POST /backup/now is a graceful no-op). */
     private val backup: dev.svod.engine.sync.BackupService? = null,
-    /** Persists a runtime-set backup remote so it survives a restart; null ⇒ in-process only. */
-    private val backupStore: dev.svod.engine.lifecycle.BackupConfigStore? = null,
     /** Per-vault sync + backup configuration for GET /sync/config; default ⇒ standalone, no peers. */
     private val syncConfig: (VaultView) -> SyncConfigDto = { vc ->
         SyncConfigDto(
@@ -362,28 +360,28 @@ class AppApiServer(
             }
 
             post("/api/v1/backup/now") {
-                val b = backup
-                if (b == null) {
-                    return@post call.respond(BackupAckDto(action = "backup.now", status = "disabled", pushed = false))
-                }
-                val result = b.backupNow()
+                val vc = vault() ?: return@post call.notFound("vault")
+                val b = backup ?: return@post call.respond(BackupAckDto(action = "backup.now", status = "disabled", pushed = false))
+                // Back up THIS vault to its own remote (each environment to its own server).
+                val r = b.backupNow(vc.id)
                 call.respond(BackupAckDto(
                     action = "backup.now",
-                    status = if (!result.enabled) "disabled" else if (result.pushed) "ok" else "noop",
-                    remote = result.remote?.let { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it) },
-                    head = result.head,
-                    pushed = result.pushed,
+                    status = r.status,
+                    remote = r.remote?.let { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it) },
+                    head = r.head,
+                    pushed = r.pushed,
                 ))
             }
 
             put("/api/v1/settings/backup") {
+                val vc = vault() ?: return@put call.notFound("vault")
                 val req = call.receive<BackupConfigRequestDto>()
                 if (req.remote.isBlank()) return@put call.badRequest("backup remote must be non-blank")
                 if (dev.svod.engine.lifecycle.SvodConfig.remoteHasInlineCredentials(req.remote)) {
                     return@put call.badRequest("backup remote must not embed credentials inline; use a credential helper or a Secrets ref")
                 }
-                backup?.configure(dev.svod.engine.lifecycle.SvodConfig.BackupSettings(req.remote, req.enabled))
-                backupStore?.save(dev.svod.engine.lifecycle.BackupConfig(req.remote, req.enabled)) // persist across restart
+                // Set + persist THIS vault's backup remote (survives restart via its BackupConfigStore).
+                backup?.configure(vc.id, dev.svod.engine.lifecycle.SvodConfig.BackupSettings(req.remote, req.enabled))
                 // Echo back the redacted, accepted config (never the resolved credential).
                 call.respond(BackupConfigDto(dev.svod.engine.lifecycle.SvodConfig.redactRemote(req.remote), req.enabled))
             }

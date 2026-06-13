@@ -67,6 +67,8 @@ data class SvodConfig(
         val hostId: String = "local",
         val mergeAuthority: Boolean = false,
         val syncIntervalSeconds: Int = 0,
+        /** This vault's own off-site backup remote (each environment can back up to its own server). */
+        val backup: BackupSettings? = null,
     )
 
     @Serializable
@@ -121,6 +123,10 @@ data class SvodConfig(
     /** This host's id for [vaultId]'s sync proposals. */
     fun hostIdFor(vaultId: String): String =
         resolvedVaults().firstOrNull { it.id == vaultId }?.hostId ?: hostId
+
+    /** Backup destination for [vaultId]: its own remote, else the global [backup] (back-compat). */
+    fun backupFor(vaultId: String): BackupSettings? =
+        resolvedVaults().firstOrNull { it.id == vaultId }?.backup ?: backup
 
     /** All configuration problems, empty when valid. */
     fun validate(): List<String> {

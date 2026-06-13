@@ -19,6 +19,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -56,14 +57,19 @@ class McpVaultScopingTest {
         val registry = AgentRegistry(listOf(
             AgentRegistry.AgentSpec("work-token", "friday", AgentRole.WRITE, name = "Friday", vaults = listOf("work")),
             AgentRegistry.AgentSpec("personal-token", "sage", AgentRole.WRITE, name = "Sage", vaults = listOf("personal")),
+            AgentRegistry.AgentSpec("both-token", "polly", AgentRole.WRITE, name = "Polly", vaults = listOf("work", "personal")),
         ))
-        val server = SvodMcpServer({ agent -> toolsByVault.getValue(agent.primaryVault("work")) }, registry).start(0)
+        val server = SvodMcpServer({ vid -> toolsByVault[vid] }, "work", registry).start(0)
         try {
-            // the work agent writes a note
+            // the work agent writes a note (no vault arg ⇒ its primary vault, work)
             val friday = connect(server.port, "work-token")
             try {
                 val w = friday.callTool("write", mapOf("path" to "shared.md", "content" to "from work"))
                 assertTrue(w.text().contains("\"status\":\"ok\""), w.text())
+                // ...but targeting a vault it is NOT granted is denied
+                val denied = friday.callTool("write", mapOf("path" to "x.md", "content" to "no", "vault" to "personal"))
+                assertEquals(true, denied.isError, "ungranted vault must be denied")
+                assertTrue(denied.text().contains("denied") && denied.text().contains("not granted"), denied.text())
             } finally { friday.close() }
 
             // it landed in the WORK vault, not personal
@@ -77,6 +83,15 @@ class McpVaultScopingTest {
             } finally { sage.close() }
             assertTrue(Files.readString(personalDir.resolve("shared.md")).contains("from personal"))
             assertTrue(Files.readString(workDir.resolve("shared.md")).contains("from work"), "the two vaults stay independent")
+
+            // a MULTI-grant agent reaches BOTH vaults via the vault arg (per-request selection)
+            val polly = connect(server.port, "both-token")
+            try {
+                assertTrue(polly.callTool("write", mapOf("path" to "p.md", "content" to "polly work", "vault" to "work")).text().contains("\"status\":\"ok\""))
+                assertTrue(polly.callTool("write", mapOf("path" to "p.md", "content" to "polly personal", "vault" to "personal")).text().contains("\"status\":\"ok\""))
+            } finally { polly.close() }
+            assertTrue(Files.readString(workDir.resolve("p.md")).contains("polly work"))
+            assertTrue(Files.readString(personalDir.resolve("p.md")).contains("polly personal"), "multi-grant agent reached both granted vaults")
         } finally {
             server.stop()
             workIndex.close(); personalIndex.close(); workEngine.close(); personalEngine.close()

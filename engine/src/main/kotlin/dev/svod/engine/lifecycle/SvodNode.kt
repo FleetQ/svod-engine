@@ -62,8 +62,6 @@ class SvodNode private constructor(
     override fun close() = shutdown()
 
     companion object {
-        private val log = org.slf4j.LoggerFactory.getLogger(SvodNode::class.java)
-
         fun start(config: SvodConfig, scope: CoroutineScope? = null): SvodNode {
             val errors = config.validate()
             require(errors.isEmpty()) { "invalid config:\n - " + errors.joinToString("\n - ") }
@@ -72,9 +70,10 @@ class SvodNode private constructor(
             val eventBus = EventBus()
             val vaults = VaultManager.open(config, workScope, eventBus)
             try {
-                // Per-agent vault scoping: each vault has its own tool set (own engine/index/audit),
-                // and an agent's MCP session is bound to its granted (primary) vault. An agent
-                // scoped to "work" gets only work's tools — it cannot reach another vault.
+                // Per-agent vault scoping: each vault has its own tool set (own engine/index/audit).
+                // A call selects its target vault (default = the agent's first grant); the MCP layer
+                // enforces the agent's grant, so a multi-grant agent can reach every granted vault and
+                // an ungranted vault is denied.
                 val registry = AgentRegistry(config.toAgentSpecs())
                 val rateLimiter = RateLimiter.default()
                 val defaultId = vaults.defaultId()
@@ -82,26 +81,17 @@ class SvodNode private constructor(
                     val audit = AuditLog(vc.engine.root.resolve(".svod").resolve("audit").resolve("audit.log"))
                     vc.id to SvodTools(vc.engine, vc.index, audit, rateLimiter, eventBus)
                 }
-                val toolsFor: (dev.svod.engine.mcp.AgentIdentity) -> SvodTools =
-                    { agent -> toolsByVault[agent.primaryVault(defaultId)] ?: toolsByVault.getValue(defaultId) }
-                // A multi-grant agent currently binds to its FIRST vault only (per-request vault
-                // selection in MCP is a future increment, ADR-0011 §6). Surface this loudly so it is
-                // never a silent surprise rather than leaving extra grants quietly unreachable.
-                for (a in config.agents) if (a.vaults.size > 1) {
-                    log.warn(
-                        "agent '{}' is granted {} vaults {}; its MCP session binds to the first ('{}') — additional grants are not yet reachable (ADR-0011)",
-                        a.agentId, a.vaults.size, a.vaults, a.vaults.first(),
-                    )
-                }
 
                 val ready = AtomicBoolean(false)
-                // A backup remote set at runtime (PUT /settings/backup) is persisted per-engine and
-                // takes precedence over the startup config, so it survives a restart.
-                val backupStore = BackupConfigStore(vaults.default().engine.root)
-                val effectiveBackup = backupStore.load()?.let { SvodConfig.BackupSettings(it.remote, it.enabled) } ?: config.backup
+                // Per-vault backup: each vault gets its own remote + persistence (a runtime PUT is
+                // saved to that vault's .svod/backup.json and survives a restart, taking precedence
+                // over the startup config; falls back to a per-vault or global config remote).
                 val backup = dev.svod.engine.sync.BackupService(
-                    vaults = vaults.contexts().map { dev.svod.engine.sync.BackupService.VaultRef(it.id, it.engine.root) },
-                    config = effectiveBackup,
+                    vaults.contexts().map { vc ->
+                        val store = BackupConfigStore(vc.engine.root)
+                        val effective = store.load()?.let { SvodConfig.BackupSettings(it.remote, it.enabled) } ?: config.backupFor(vc.id)
+                        dev.svod.engine.sync.BackupService.Binding(vc.id, vc.engine.root, effective, store)
+                    },
                 )
                 val api = AppApiServer(
                     vaults = vaults,
@@ -113,7 +103,6 @@ class SvodNode private constructor(
                     ),
                     readiness = { ready.get() },
                     backup = backup,
-                    backupStore = backupStore,
                     syncConfig = { vc ->
                         val peers = config.syncRemotesFor(vc.id).map { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it) }
                         dev.svod.engine.api.SyncConfigDto(
@@ -122,12 +111,12 @@ class SvodNode private constructor(
                             syncConfigured = peers.isNotEmpty(),
                             syncIntervalSeconds = config.syncIntervalSecondsFor(vc.id),
                             peers = peers,
-                            backup = backup.config?.let { dev.svod.engine.api.BackupConfigDto(dev.svod.engine.lifecycle.SvodConfig.redactRemote(it.remote), it.enabled) },
+                            backup = backup.configOf(vc.id)?.let { dev.svod.engine.api.BackupConfigDto(dev.svod.engine.lifecycle.SvodConfig.redactRemote(it.remote), it.enabled) },
                         )
                     },
                 ).start(config.appApiPort)
 
-                val mcpServer = dev.svod.engine.mcp.SvodMcpServer(toolsFor, registry, host = config.host)
+                val mcpServer = dev.svod.engine.mcp.SvodMcpServer({ vid -> toolsByVault[vid] }, defaultId, registry, host = config.host)
                 val mcpTls = config.mcpTls?.let { t ->
                     val ks = dev.svod.engine.security.Keystores.load(
                         java.nio.file.Paths.get(t.keystorePath),

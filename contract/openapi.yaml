@@ -868,7 +868,7 @@ components:
       required: [action, status, pushed]
       properties:
         action: { type: string }
-        status: { type: string, enum: [ok, noop, disabled] }
+        status: { type: string, enum: [ok, noop, disabled, error] }
         remote: { type: string, nullable: true, description: The backup remote (redacted). }
         head: { type: string, nullable: true }
         pushed: { type: boolean }
