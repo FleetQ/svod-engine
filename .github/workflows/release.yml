@@ -27,7 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # GraalVM provides native-image AND a JDK 21 (with jpackage) — one toolchain for both builds.
+      # --- Toolchain 1: GraalVM/JDK 21 — builds the shipping jpackage app-image (incl. onnx-local). ---
+      # Pinned to the proven GraalVM CE 21 so the app-image (the reliable v1.0.0 artifact) never regresses.
       - uses: graalvm/setup-graalvm@v1
         with:
           java-version: "21"
@@ -57,12 +58,30 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path out/SvodEngine -DestinationPath SvodEngine-${{ matrix.label }}.zip
 
+      # --- Toolchain 2: GraalVM/JDK 23 — builds the native-image single binary. ---
+      # GraalVM CE for JDK 21 is permanently stuck at 21.0.2 (no community 21.0.3+), whose link stage
+      # is a dead-end: macOS Xcode 15 ld rejects its objects, Linux libjava.a lacks
+      # ScopedMemoryAccess.closeScope0, and FFM is incomplete. GraalVM CE for JDK 23 fixes all three
+      # (complete FFM + modern linkers). This second setup-graalvm puts JDK 23 on PATH; the app-image
+      # above already ran on JDK 21 and is unaffected. The native step builds with -Psvod.jdk=23.
+      - uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: "23"
+          distribution: graalvm-community
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Native-image links via the host C toolchain; on Windows that means MSVC. setup-graalvm does not
+      # provision it, so without this the link stage fails with "Failed to find 'vcvarsall.bat'".
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       # --- Best-effort artifact: native-image single binary (BM25 / Ollama; not onnx-local) ---
       - name: Build native-image
         id: native
         continue-on-error: true
         run: |
-          ./gradlew -Psvod.jdk=21 nativeCompile --no-daemon
+          ./gradlew -Psvod.jdk=23 nativeCompile --no-daemon
           BIN="build/native/nativeCompile/svod-engine${{ matrix.exe }}"
           test -f "$BIN" && cp "$BIN" "svod-engine-${{ matrix.label }}${{ matrix.exe }}"
 

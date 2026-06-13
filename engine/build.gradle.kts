@@ -29,12 +29,6 @@ dependencies {
     implementation("org.eclipse.jgit:org.eclipse.jgit:6.7.0.202309050840-r")
     implementation("org.yaml:snakeyaml:2.2")
 
-    // GraalVM SVM annotations (@TargetClass/@Substitute) for the native-image substitution in
-    // src/main/java/dev/svod/nativeimage. compileOnly: the annotations are provided by the
-    // native-image builder at AOT time and are never needed on the JVM runtime classpath.
-    // Version 23.1.2 matches the GraalVM CE 21.0.2 (jvmci-23.1) builder used in release CI.
-    compileOnly("org.graalvm.nativeimage:svm:23.1.2")
-
     implementation("org.apache.lucene:lucene-core:$luceneVersion")
     implementation("org.apache.lucene:lucene-analysis-common:$luceneVersion")
     implementation("org.apache.lucene:lucene-queryparser:$luceneVersion")
