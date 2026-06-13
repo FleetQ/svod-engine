@@ -98,6 +98,29 @@ graalvmNative {
             // so the closed-world analysis doesn't try to run them at build time. onnx-local (DJL)
             // is not exercised by a native binary (BM25 / Ollama only).
             buildArgs.add("--initialize-at-run-time=org.eclipse.jgit,org.apache.lucene,io.netty,ai.djl,ai.onnxruntime")
+            // ktor-server-netty 3.4.3 ships a bundled native-image.properties that injects
+            // `-H:+SharedArenaSupport` — a JDK 22+ FFM option that GraalVM 21 rejects outright
+            // ("Could not find option 'SharedArenaSupport'"), aborting the build in seconds.
+            // Strip just that properties file; re-add the kqueue/http2 run-time inits it also
+            // carried so native transport behaviour is preserved. (ADR 0015.)
+            buildArgs.add("--exclude-config")
+            buildArgs.add(".*ktor-server-netty.*\\.jar")
+            buildArgs.add("META-INF/native-image/io\\.ktor/ktor-server-netty/native-image\\.properties")
+            buildArgs.add(
+                "--initialize-at-run-time=" + listOf(
+                    "io.netty.channel.kqueue.KQueue",
+                    "io.netty.channel.kqueue.KQueueEventLoop",
+                    "io.netty.channel.kqueue.KQueueEventArray",
+                    "io.netty.channel.kqueue.KQueueServerSocketChannel",
+                    "io.netty.channel.kqueue.KQueueSocketChannel",
+                    "io.netty.channel.kqueue.KQueueServerDomainSocketChannel",
+                    "io.netty.channel.kqueue.KQueueDomainSocketChannel",
+                    "io.netty.channel.kqueue.KQueueDatagramChannel",
+                    "io.netty.channel.kqueue.Native",
+                    "io.netty.handler.ssl.BouncyCastleAlpnSslUtils",
+                    "io.netty.handler.codec.http2.CleartextHttp2ServerUpgradeHandler",
+                ).joinToString(",")
+            )
             resources.autodetect()
         }
     }
