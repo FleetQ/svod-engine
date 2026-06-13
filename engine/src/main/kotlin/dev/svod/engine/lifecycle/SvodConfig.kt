@@ -45,7 +45,19 @@ data class SvodConfig(
     val backup: BackupSettings? = null,
     /** Optional path to the reference web viewer (examples/web-viewer); served at `/` when set. */
     val webViewerPath: String? = null,
+    /** Automatic re-sync of registered external sources (off by default; manual sync always works). */
+    val sourceSync: SourceSyncSettings = SourceSyncSettings(),
 ) {
+    /**
+     * Drives the background [dev.svod.engine.sources.SourceScheduler]. [onStartup] runs one full
+     * source sync (all vaults) at boot; [intervalMinutes] (>0) then re-syncs on that cadence. Both
+     * off ⇒ no scheduler (sources sync only when an endpoint is called).
+     */
+    @Serializable
+    data class SourceSyncSettings(
+        val onStartup: Boolean = false,
+        val intervalMinutes: Int? = null,
+    )
     /**
      * Off-site backup destination. [remote] is a git remote URL (or a `Secrets` ref to one);
      * credentials must NOT be inline in the URL — supply them via the remote's credential helper

@@ -29,6 +29,7 @@ class SvodNode private constructor(
     private val mcp: dev.svod.engine.mcp.SvodMcpServer.Running,
     private val api: AppApiServer.Running,
     val backup: dev.svod.engine.sync.BackupService,
+    private val sourceScheduler: dev.svod.engine.sources.SourceScheduler,
     private val ready: AtomicBoolean,
     private val ownsScope: CoroutineScope,
 ) : AutoCloseable {
@@ -53,6 +54,7 @@ class SvodNode private constructor(
         stopped = true
         ready.set(false)
         // 1. stop accepting new work
+        runCatching { sourceScheduler.stop() }
         runCatching { api.stop() }
         runCatching { mcp.stop() }
         // 2. close every vault: watcher + peers, then index, then the engine (drains the queue).
@@ -136,9 +138,21 @@ class SvodNode private constructor(
                 }
                 val mcp = mcpServer.start(config.mcpPort, mcpTls)
 
+                // Optional automatic re-sync of registered external sources (on-startup + interval).
+                val sourceScheduler = dev.svod.engine.sources.SourceScheduler(
+                    workScope, config.sourceSync.onStartup, config.sourceSync.intervalMinutes,
+                ) {
+                    for (vc in vaults.contexts()) {
+                        val store = dev.svod.engine.sources.ExternalSourceStore(vc.engine.root)
+                        val sync = dev.svod.engine.sources.SourceSync(vc.engine, store)
+                        for (s in store.list()) sync.sync(s)
+                    }
+                }
+                sourceScheduler.start()
+
                 ready.set(true)
                 eventBus.publish(dev.svod.engine.events.EventTypes.ENGINE_STATUS) { put("status", "ready") }
-                return SvodNode(config, vaults, eventBus, mcp, api, backup, ready, workScope)
+                return SvodNode(config, vaults, eventBus, mcp, api, backup, sourceScheduler, ready, workScope)
             } catch (t: Throwable) {
                 vaults.close()
                 throw t

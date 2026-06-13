@@ -67,6 +67,33 @@ class SourceSyncTest {
     }
 
     @Test
+    fun `prune deletes a vanished file, but never a locally-edited one`() = runBlocking {
+        val ext = Files.createTempDirectory("ext-")
+        Files.writeString(ext.resolve("keep.md"), "# Keep\n")
+        Files.writeString(ext.resolve("gone.md"), "# Gone\n")
+        Files.writeString(ext.resolve("edited.md"), "# Edited\n")
+
+        engineOn().use { engine ->
+            val store = ExternalSourceStore(engine.root)
+            val sync = SourceSync(engine, store)
+            val src = store.put(newSource(ext).copy(prune = true))
+            sync.sync(src)
+
+            // locally edit one vault copy, then remove BOTH gone.md and edited.md from the source
+            val rev = engine.read("edited.md")!!.revision
+            engine.write("edited.md", "# Edited\nlocal change\n", rev, Author("me", "me@x"))
+            Files.delete(ext.resolve("gone.md"))
+            Files.delete(ext.resolve("edited.md"))
+
+            val r = sync.sync(store.get(src.id)!!)
+            assertEquals(listOf("gone.md"), r.deleted, "untouched vanished file pruned")
+            assertEquals(listOf("edited.md"), r.orphaned, "locally-edited vanished file kept (not deleted)")
+            assertTrue(engine.read("gone.md") == null, "gone.md removed from the vault")
+            assertEquals("# Edited\nlocal change\n", engine.read("edited.md")!!.text, "local edit preserved")
+        }
+    }
+
+    @Test
     fun `a single-file source materializes under the into prefix`() = runBlocking {
         val dir = Files.createTempDirectory("ext-")
         val file = dir.resolve("spec.md")

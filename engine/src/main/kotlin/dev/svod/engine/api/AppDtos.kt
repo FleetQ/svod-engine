@@ -132,7 +132,12 @@ data class ImportRequestDto(val source: String, val into: String? = null, val va
 data class ImportResultDto(val imported: List<String>, val unchanged: List<String>, val skipped: List<String>)
 
 @Serializable
-data class RegisterSourceRequestDto(val path: String, val into: String? = null, val followSymlinks: Boolean = false)
+data class RegisterSourceRequestDto(
+    val path: String,
+    val into: String? = null,
+    val followSymlinks: Boolean = false,
+    val prune: Boolean = false,
+)
 
 @Serializable
 data class ExternalSourceDto(
@@ -140,6 +145,7 @@ data class ExternalSourceDto(
     val path: String,
     val into: String,
     val followSymlinks: Boolean,
+    val prune: Boolean,
     val lastSyncedAt: String? = null,
 )
 
@@ -151,6 +157,7 @@ data class SourceSyncResultDto(
     val unchanged: List<String> = emptyList(),
     val conflicts: List<String> = emptyList(),
     val orphaned: List<String> = emptyList(),
+    val deleted: List<String> = emptyList(),
     val skipped: List<String> = emptyList(),
     val error: String? = null,
 )

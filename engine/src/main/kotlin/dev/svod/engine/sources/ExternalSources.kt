@@ -27,6 +27,9 @@ data class ExternalSource(
     val path: String,
     val into: String = "",
     val followSymlinks: Boolean = false,
+    /** Propagate deletions: a file gone from the source is soft-deleted from the vault (still guarded
+     *  against clobbering a locally-edited copy). Off by default — deletion is destructive. */
+    val prune: Boolean = false,
     val lastSyncedAt: String? = null,
 ) {
     companion object {
@@ -51,6 +54,7 @@ data class SourceSyncResult(
     val unchanged: List<String> = emptyList(),
     val conflicts: List<String> = emptyList(),
     val orphaned: List<String> = emptyList(),
+    val deleted: List<String> = emptyList(),
     val skipped: List<String> = emptyList(),
     val error: String? = null,
 )

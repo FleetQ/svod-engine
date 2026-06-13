@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.6.0
+  version: 0.7.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -889,16 +889,23 @@ components:
           type: boolean
           default: false
           description: Follow symlinks found inside a directory source (the source root is always resolved).
+        prune:
+          type: boolean
+          default: false
+          description: >
+            Propagate deletions — a file gone from the source is soft-deleted from the vault (still
+            guarded: a locally-edited copy is left as orphaned, never deleted). Off by default.
 
     ExternalSource:
       type: object
-      required: [id, path, into, followSymlinks]
+      required: [id, path, into, followSymlinks, prune]
       description: A registered external source. `id` is derived deterministically from `path`.
       properties:
         id: { type: string }
         path: { type: string }
         into: { type: string }
         followSymlinks: { type: boolean }
+        prune: { type: boolean }
         lastSyncedAt: { type: string, nullable: true, description: "ISO-8601 instant of the last successful sync, or null." }
 
     SourceSyncResult:
@@ -907,8 +914,9 @@ components:
       description: >
         Per-source sync outcome. created/updated/unchanged are vault paths written or matched;
         conflicts = vault copy locally edited since last sync (left as-is); orphaned = gone from the
-        source (left in the vault); skipped = secret-scanner-blocked. error is set if the source path
-        was unreadable (the sync is then a no-op, not a failure of the whole request).
+        source (left in the vault); deleted = gone from the source AND pruned (soft-deleted);
+        skipped = secret-scanner-blocked. error is set if the source path was unreadable (the sync is
+        then a no-op, not a failure of the whole request).
       properties:
         id: { type: string }
         created: { type: array, items: { type: string } }
@@ -916,6 +924,7 @@ components:
         unchanged: { type: array, items: { type: string } }
         conflicts: { type: array, items: { type: string } }
         orphaned: { type: array, items: { type: string } }
+        deleted: { type: array, items: { type: string } }
         skipped: { type: array, items: { type: string } }
         error: { type: string, nullable: true }
 

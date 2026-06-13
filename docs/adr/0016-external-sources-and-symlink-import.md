@@ -59,15 +59,25 @@ Writes go through one overwriting batch commit per sync (`writeBatch(..., overwr
 overwrite only fires for paths already classified create/update, so the conflict guard is upstream of
 it. Secret-scanner-blocked `.md` entries are reported in `skipped`.
 
-### Deferred (documented, not hidden)
+### Deletion propagation (`prune`) — implemented
 
-- **Deletion propagation.** A file removed from the source is `orphaned`, not deleted from the vault —
-  deletion is destructive; an explicit prune is a later addition.
-- **Automatic scheduling.** v1 syncs on an explicit trigger (UI button / cron / a future
-  sync-on-startup option). A background scheduler is out of scope for v1.
+A source can opt into `prune` (off by default — deletion is destructive). When set, a file gone from
+the source is **soft-deleted** from the vault (`deleted` in the result), but only if the vault copy is
+still untouched since the last sync; a locally-edited copy is left as `orphaned` (never deleted),
+mirroring the update-vs-conflict guard. Deletes are soft (git trash), so always recoverable.
+
+### Automatic scheduling — implemented
+
+`SourceScheduler` (config `sourceSync: {onStartup, intervalMinutes}`) re-syncs every source of every
+vault: once at startup if `onStartup`, then on `intervalMinutes` cadence (>0). Both off ⇒ no
+scheduler (sources sync only on an explicit endpoint call). A failed round is logged and the loop
+continues; the scheduler is cancelled first in the node's graceful shutdown.
+
+### Still deferred
+
 - **Race window.** Classification reads and the batch write are separate write-actor submissions; a
-  local edit landing between them could be overwritten. Acceptable for v1 (sources are synced when
-  idle); a fully optimistic per-file path would trade one-commit-per-sync for safety here.
+  local edit landing between them could be overwritten. Acceptable (sources are synced when idle); a
+  fully optimistic per-file path would trade one-commit-per-sync for safety here.
 
 ## Consequences
 

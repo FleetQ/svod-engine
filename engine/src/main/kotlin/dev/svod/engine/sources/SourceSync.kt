@@ -67,7 +67,7 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
                 else -> { conflicts += vaultPath; manifest[vaultPath]?.let { newManifest[vaultPath] = it } }
             }
         }
-        val orphaned = manifest.keys.filter { it !in files.keys }
+        val gone = manifest.keys.filter { it !in files.keys }
 
         var written = emptySet<String>()
         var secretSkipped = emptyList<String>()
@@ -77,6 +77,23 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
             secretSkipped = r.skipped
             // A secret-blocked entry was not written — don't claim it, and drop it from the manifest.
             for (s in r.skipped) newManifest.remove(s)
+        }
+
+        // A file gone from the source: pruned (soft-deleted) if the source opts in AND the vault copy
+        // is untouched since the last sync; otherwise left in place (orphaned). A locally-edited copy
+        // is never deleted, mirroring the update-vs-conflict guard above.
+        val deleted = ArrayList<String>()
+        val orphaned = ArrayList<String>()
+        for (path in gone) {
+            val cur = engine.read(path)
+            if (source.prune && cur != null && manifest[path] == cur.revision) {
+                val outcome = engine.delete(path, cur.revision, author)
+                if (outcome is dev.svod.engine.core.WriteOutcome.Success) { deleted += path; newManifest.remove(path) }
+                else { orphaned += path; manifest[path]?.let { newManifest[path] = it } }
+            } else {
+                orphaned += path
+                if (cur != null) manifest[path]?.let { newManifest[path] = it }  // keep tracking a still-present orphan
+            }
         }
 
         store.saveManifest(source.id, newManifest)
@@ -89,6 +106,7 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
             unchanged = unchanged.sorted(),
             conflicts = conflicts.sorted(),
             orphaned = orphaned.sorted(),
+            deleted = deleted.sorted(),
             skipped = secretSkipped.sorted(),
         )
     }

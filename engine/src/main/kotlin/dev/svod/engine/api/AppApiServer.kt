@@ -75,7 +75,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.6.0",
+        val apiVersion: String = "0.7.0",
         val embedderProvider: String = "onnx-local",
         val uiAuthor: Author = Author("svod-ui", "ui@svod.local"),
         /** When set to a directory, the reference web viewer is served same-origin at `/`. */
@@ -420,6 +420,7 @@ class AppApiServer(
                     path = abs,
                     into = (req.into ?: "").trim('/'),
                     followSymlinks = req.followSymlinks,
+                    prune = req.prune,
                 )
                 call.respond(store.put(source).toDto())
             }
@@ -485,10 +486,10 @@ class AppApiServer(
     private fun WriteOutcome.Conflict.toConflictDto() = ConflictBodyDto(path, expected, current, currentContent)
 
     private fun dev.svod.engine.sources.ExternalSource.toDto() =
-        ExternalSourceDto(id, path, into, followSymlinks, lastSyncedAt)
+        ExternalSourceDto(id, path, into, followSymlinks, prune, lastSyncedAt)
 
     private fun dev.svod.engine.sources.SourceSyncResult.toDto() =
-        SourceSyncResultDto(id, created, updated, unchanged, conflicts, orphaned, skipped, error)
+        SourceSyncResultDto(id, created, updated, unchanged, conflicts, orphaned, deleted, skipped, error)
 
     // Per-vault graph + tags cached by that vault's HEAD. A mutex serializes the build-and-store
     // so concurrent requests don't each rebuild the graph (redundant work that stalls the writer).
