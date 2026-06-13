@@ -62,6 +62,8 @@ class SvodNode private constructor(
     override fun close() = shutdown()
 
     companion object {
+        private val log = org.slf4j.LoggerFactory.getLogger(SvodNode::class.java)
+
         fun start(config: SvodConfig, scope: CoroutineScope? = null): SvodNode {
             val errors = config.validate()
             require(errors.isEmpty()) { "invalid config:\n - " + errors.joinToString("\n - ") }
@@ -86,16 +88,20 @@ class SvodNode private constructor(
                 // selection in MCP is a future increment, ADR-0011 §6). Surface this loudly so it is
                 // never a silent surprise rather than leaving extra grants quietly unreachable.
                 for (a in config.agents) if (a.vaults.size > 1) {
-                    System.err.println(
-                        "warning: agent '${a.agentId}' is granted ${a.vaults.size} vaults ${a.vaults}; " +
-                            "its MCP session binds to the first ('${a.vaults.first()}') — additional grants are not yet reachable (ADR-0011)"
+                    log.warn(
+                        "agent '{}' is granted {} vaults {}; its MCP session binds to the first ('{}') — additional grants are not yet reachable (ADR-0011)",
+                        a.agentId, a.vaults.size, a.vaults, a.vaults.first(),
                     )
                 }
 
                 val ready = AtomicBoolean(false)
+                // A backup remote set at runtime (PUT /settings/backup) is persisted per-engine and
+                // takes precedence over the startup config, so it survives a restart.
+                val backupStore = BackupConfigStore(vaults.default().engine.root)
+                val effectiveBackup = backupStore.load()?.let { SvodConfig.BackupSettings(it.remote, it.enabled) } ?: config.backup
                 val backup = dev.svod.engine.sync.BackupService(
                     vaults = vaults.contexts().map { dev.svod.engine.sync.BackupService.VaultRef(it.id, it.engine.root) },
-                    config = config.backup,
+                    config = effectiveBackup,
                 )
                 val api = AppApiServer(
                     vaults = vaults,
@@ -107,6 +113,7 @@ class SvodNode private constructor(
                     ),
                     readiness = { ready.get() },
                     backup = backup,
+                    backupStore = backupStore,
                     syncConfig = { vc ->
                         val peers = config.syncRemotesFor(vc.id).map { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it) }
                         dev.svod.engine.api.SyncConfigDto(
@@ -115,7 +122,7 @@ class SvodNode private constructor(
                             syncConfigured = peers.isNotEmpty(),
                             syncIntervalSeconds = config.syncIntervalSecondsFor(vc.id),
                             peers = peers,
-                            backup = config.backup?.let { dev.svod.engine.api.BackupConfigDto(dev.svod.engine.lifecycle.SvodConfig.redactRemote(it.remote), it.enabled) },
+                            backup = backup.config?.let { dev.svod.engine.api.BackupConfigDto(dev.svod.engine.lifecycle.SvodConfig.redactRemote(it.remote), it.enabled) },
                         )
                     },
                 ).start(config.appApiPort)

@@ -54,8 +54,10 @@ dependencies {
     // Validate live App API responses against contract/openapi.yaml (contract test)
     testImplementation("com.atlassian.oai:swagger-request-validator-core:2.43.0")
 
-    // jgit logs via slf4j; provide a simple backend so warnings are not swallowed
-    implementation("org.slf4j:slf4j-simple:2.0.13")
+    // Structured logging: logback backend (config + rolling files + levels), and a Sentry
+    // appender that auto-reports ERROR logs to Sentry when SENTRY_DSN is set (no-op otherwise).
+    implementation("ch.qos.logback:logback-classic:1.5.6")
+    implementation("io.sentry:sentry-logback:7.10.0")
 
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
@@ -81,4 +83,7 @@ tasks.test {
     systemProperty("file.encoding", "UTF-8")
     // Opt-in flag for the test that hits a live Ollama; off by default for hermetic runs.
     systemProperty("svod.ollama.it", System.getProperty("svod.ollama.it", "false"))
+    // Opt-in flags for the large-vault perf/soak test (forwarded to the forked test JVM).
+    for (p in listOf("svod.perf", "svod.notes", "svod.writers"))
+        System.getProperty(p)?.let { systemProperty(p, it) }
 }

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Test logging: console only (no rolling file, no Sentry), libraries quieted. logback prefers
+     this over logback.xml on the test classpath, so tests never write to ~/.svod/logs. -->
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %-5level %logger{28} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <logger name="org.eclipse.jgit" level="ERROR"/>
+    <logger name="io.ktor" level="WARN"/>
+    <logger name="io.netty" level="WARN"/>
+    <logger name="org.apache.lucene" level="WARN"/>
+    <logger name="dev.svod" level="INFO"/>
+
+    <root level="WARN">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+</configuration>

@@ -147,6 +147,27 @@ class MultiVaultTest {
     }
 
     @Test
+    fun `backup remote set via the API persists across a restart`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val work = Files.createTempDirectory("svod-work-")
+        val cfg = twoVaultConfig(personal, work)
+
+        val node = SvodNode.start(cfg)
+        try {
+            // ssh with key auth (no inline password) is accepted; an http(s) userinfo would be rejected
+            val r = put(node.appApiPort, "/api/v1/settings/backup", """{"remote":"ssh://git@example.com/svod-backup.git","enabled":true}""")
+            assertEquals(200, r.statusCode())
+        } finally { node.shutdown() }
+
+        // a fresh node on the same vaults loads the persisted backup remote (redacted in the view)
+        val node2 = SvodNode.start(cfg)
+        try {
+            val syncCfg = get(node2.appApiPort, "/api/v1/sync/config").body()
+            assertTrue(syncCfg.contains("svod-backup.git"), "persisted backup remote must load on restart: $syncCfg")
+        } finally { node2.shutdown() }
+    }
+
+    @Test
     fun `config validation rejects bad multi-vault setups`() {
         val dupIds = SvodConfig(vaults = listOf(
             SvodConfig.VaultSettings("a", "/tmp/a"), SvodConfig.VaultSettings("a", "/tmp/b"),

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Svod engine logging. Console (captured by launchd) + a rolling file, and a Sentry appender that
+  reports ERROR logs when SENTRY_DSN is set in the environment (a no-op otherwise — local/dev runs
+  need no Sentry). Log directory: $SVOD_LOG_DIR, default ~/.svod/logs.
+-->
+<configuration>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] %logger{32} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${SVOD_LOG_DIR:-${user.home}/.svod/logs}/svod.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${SVOD_LOG_DIR:-${user.home}/.svod/logs}/svod.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize>
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{ISO8601} %-5level [%thread] %logger{40} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ERROR logs are reported to Sentry when SENTRY_DSN is set; disabled (no-op) otherwise. -->
+    <appender name="SENTRY" class="io.sentry.logback.SentryAppender">
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>ERROR</level>
+        </filter>
+    </appender>
+
+    <!-- Quiet down noisy libraries; keep the engine's own logs at INFO. -->
+    <logger name="org.eclipse.jgit" level="WARN"/>
+    <logger name="io.ktor" level="INFO"/>
+    <logger name="io.netty" level="WARN"/>
+    <logger name="org.apache.lucene" level="WARN"/>
+    <logger name="dev.svod" level="INFO"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+        <appender-ref ref="SENTRY"/>
+    </root>
+</configuration>

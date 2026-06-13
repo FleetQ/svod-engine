@@ -56,6 +56,8 @@ class VaultContext private constructor(
     }
 
     companion object {
+        private val log = org.slf4j.LoggerFactory.getLogger(VaultContext::class.java)
+
         fun open(vs: SvodConfig.VaultSettings, config: SvodConfig, scope: CoroutineScope, eventBus: EventBus): VaultContext {
             val vault = Paths.get(vs.path)
             // Single-instance per vault: SvodEngine.open acquires the exclusive vault lock.
@@ -82,7 +84,7 @@ class VaultContext private constructor(
                     scope.launch {
                         while (isActive) {
                             delay(vs.syncIntervalSeconds * 1000L)
-                            runCatching { syncEngine.sync() }.onFailure { System.err.println("sync failed [${vs.id}]: $it") }
+                            runCatching { syncEngine.sync() }.onFailure { log.warn("sync failed for vault {}", vs.id, it) }
                         }
                     }
                 } else null

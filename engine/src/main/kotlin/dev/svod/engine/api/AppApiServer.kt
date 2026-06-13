@@ -57,6 +57,8 @@ class AppApiServer(
     private val readiness: () -> Boolean = { true },
     /** Off-site backup; null ⇒ backup unconfigured (POST /backup/now is a graceful no-op ack). */
     private val backup: dev.svod.engine.sync.BackupService? = null,
+    /** Persists a runtime-set backup remote so it survives a restart; null ⇒ in-process only. */
+    private val backupStore: dev.svod.engine.lifecycle.BackupConfigStore? = null,
     /** Per-vault sync + backup configuration for GET /sync/config; default ⇒ standalone, no peers. */
     private val syncConfig: (VaultView) -> SyncConfigDto = { vc ->
         SyncConfigDto(
@@ -381,6 +383,7 @@ class AppApiServer(
                     return@put call.badRequest("backup remote must not embed credentials inline; use a credential helper or a Secrets ref")
                 }
                 backup?.configure(dev.svod.engine.lifecycle.SvodConfig.BackupSettings(req.remote, req.enabled))
+                backupStore?.save(dev.svod.engine.lifecycle.BackupConfig(req.remote, req.enabled)) // persist across restart
                 // Echo back the redacted, accepted config (never the resolved credential).
                 call.respond(BackupConfigDto(dev.svod.engine.lifecycle.SvodConfig.redactRemote(req.remote), req.enabled))
             }
