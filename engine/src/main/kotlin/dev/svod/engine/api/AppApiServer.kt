@@ -336,7 +336,15 @@ class AppApiServer(
                 if (syncConfig(vc).syncPeers.isEmpty()) {
                     return@post call.respond(SyncAckDto(ok = false, head = vc.engine.head(), conflicts = 0))
                 }
-                vaults.syncNow(vc.id)
+                // A transport failure (peer unreachable / auth) is an expected outcome → 409, never 500.
+                try {
+                    vaults.syncNow(vc.id)
+                } catch (e: Exception) {
+                    return@post call.respond(HttpStatusCode.Conflict, ErrorDto(
+                        "sync_failed",
+                        "sync with peers failed — check the remotes are reachable and their credentials resolve",
+                    ))
+                }
                 val status = vc.syncStatus()
                 call.respond(SyncAckDto(ok = true, head = status?.lastHead ?: vc.engine.head(), conflicts = status?.conflicts ?: 0))
             }

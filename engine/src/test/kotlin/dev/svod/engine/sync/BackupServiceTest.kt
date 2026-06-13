@@ -112,6 +112,23 @@ class BackupServiceTest {
     }
 
     @Test
+    fun `an unreachable remote yields status error, not a thrown exception`() = runBlocking {
+        val dir = Files.createTempDirectory("svod-unreach-")
+        val engine = SvodEngine.open(dir, scope)
+        try {
+            engine.write("a.md", "# A", null, T)
+            // a remote that cannot be reached: a transport failure must be caught, not propagated
+            // (the App API maps it to a 409, never a 500).
+            val backup = BackupService(listOf(binding("v", dir, "/no/such/path/backup.git")))
+            val r = backup.backupNow("v")
+            assertEquals("error", r.status)
+            assertFalse(r.pushed)
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
     fun `backupAll backs up every configured vault`() = runBlocking {
         val bare = bareRemote()
         val dirA = Files.createTempDirectory("svod-A-")

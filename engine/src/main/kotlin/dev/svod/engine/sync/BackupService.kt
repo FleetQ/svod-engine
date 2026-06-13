@@ -65,7 +65,13 @@ class BackupService(bindings: List<Binding>) {
                 VaultBackup(vaultId, false, null, cfg.remote, "noop")
             } else {
                 // Force-update the mirror backup ref; a non-fast-forward (history rewrite/gc) overwrites.
-                val ok = git.push(remote, "+refs/heads/$branch:refs/svod/backup/$vaultId")
+                // A transport failure (unreachable / auth) is an expected outcome → status "error",
+                // never a thrown exception bubbling to a 500.
+                val ok = try {
+                    git.push(remote, "+refs/heads/$branch:refs/svod/backup/$vaultId")
+                } catch (_: Exception) {
+                    false
+                }
                 VaultBackup(vaultId, ok, head, cfg.remote, if (ok) "ok" else "error")
             }
         }
