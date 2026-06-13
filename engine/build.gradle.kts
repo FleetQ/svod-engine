@@ -98,6 +98,12 @@ graalvmNative {
             // so the closed-world analysis doesn't try to run them at build time. onnx-local (DJL)
             // is not exercised by a native binary (BM25 / Ollama only).
             buildArgs.add("--initialize-at-run-time=org.eclipse.jgit,org.apache.lucene,io.netty,ai.djl,ai.onnxruntime")
+            // Marking io.netty for run-time init transitively drags kotlin.DeprecationLevel (a plain
+            // enum, used by @Deprecated annotations on Kotlin stdlib code netty's config references)
+            // into the run-time-init set, but the closed-world analysis initialises it at build time
+            // anyway → "Classes that should be initialized at run time got initialized during image
+            // building". The enum is safe at build time; pin it there to resolve the conflict.
+            buildArgs.add("--initialize-at-build-time=kotlin.DeprecationLevel")
             // ktor-server-netty 3.4.3 ships a bundled native-image.properties that injects
             // `-H:+SharedArenaSupport` — a JDK 22+ FFM option that GraalVM 21 rejects outright
             // ("Could not find option 'SharedArenaSupport'"), aborting the build in seconds.
