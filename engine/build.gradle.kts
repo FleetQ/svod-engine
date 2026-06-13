@@ -108,23 +108,19 @@ graalvmNative {
             buildArgs.add("--initialize-at-build-time=kotlin.DeprecationLevel")
             // ktor-server-netty 3.4.3 ships a bundled native-image.properties that injects
             // `-H:+SharedArenaSupport` — a JDK 22+ FFM option that GraalVM 21 rejects outright
-            // ("Could not find option 'SharedArenaSupport'"), aborting the build in seconds.
-            // Strip just that properties file; re-add the kqueue/http2 run-time inits it also
-            // carried so native transport behaviour is preserved. (ADR 0015.)
+            // ("Could not find option 'SharedArenaSupport'"), aborting the build in seconds. Strip it.
             buildArgs.add("--exclude-config")
             buildArgs.add(".*ktor-server-netty.*\\.jar")
             buildArgs.add("META-INF/native-image/io\\.ktor/ktor-server-netty/native-image\\.properties")
+            // Defer Netty's native (kqueue/epoll) transport to run-time init so the closed-world
+            // analysis doesn't initialize its JNI loaders at build time (Netty runs on NIO here).
             buildArgs.add(
                 "--initialize-at-run-time=" + listOf(
-                    "io.netty.channel.kqueue.KQueue",
-                    "io.netty.channel.kqueue.KQueueEventLoop",
-                    "io.netty.channel.kqueue.KQueueEventArray",
-                    "io.netty.channel.kqueue.KQueueServerSocketChannel",
-                    "io.netty.channel.kqueue.KQueueSocketChannel",
-                    "io.netty.channel.kqueue.KQueueServerDomainSocketChannel",
-                    "io.netty.channel.kqueue.KQueueDomainSocketChannel",
-                    "io.netty.channel.kqueue.KQueueDatagramChannel",
-                    "io.netty.channel.kqueue.Native",
+                    "io.netty.channel.kqueue.KQueue", "io.netty.channel.kqueue.KQueueEventLoop",
+                    "io.netty.channel.kqueue.KQueueEventArray", "io.netty.channel.kqueue.KQueueServerSocketChannel",
+                    "io.netty.channel.kqueue.KQueueSocketChannel", "io.netty.channel.kqueue.KQueueServerDomainSocketChannel",
+                    "io.netty.channel.kqueue.KQueueDomainSocketChannel", "io.netty.channel.kqueue.KQueueDatagramChannel",
+                    "io.netty.channel.kqueue.Native", "io.netty.channel.epoll.Epoll", "io.netty.channel.epoll.Native",
                     "io.netty.handler.ssl.BouncyCastleAlpnSslUtils",
                     "io.netty.handler.codec.http2.CleartextHttp2ServerUpgradeHandler",
                 ).joinToString(",")
@@ -132,6 +128,16 @@ graalvmNative {
             resources.autodetect()
         }
     }
+}
+
+// Keep DJL + ONNX Runtime off the NATIVE image classpath only: onnx-local is JVM-only, and ONNX's
+// JNI native-library loader (`findEntry0`) is unsupported by native-image. They remain on the JVM
+// runtime classpath, so the app-image still serves in-process semantic search.
+configurations.named("nativeImageClasspath") {
+    exclude(group = "ai.djl")
+    exclude(group = "ai.djl.huggingface")
+    exclude(group = "ai.djl.onnxruntime")
+    exclude(group = "com.microsoft.onnxruntime")
 }
 
 tasks.test {
