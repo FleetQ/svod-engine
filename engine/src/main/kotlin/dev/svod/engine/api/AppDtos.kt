@@ -155,3 +155,44 @@ data class MetricsDto(
     val conflicts: Int,
     val sync: SyncStatusDto? = null,
 )
+
+// ---- Ops surface: backup / sync-config / maintenance (Step: backup & disaster recovery) ----
+
+/** Backup destination as the UI sees it; [remote] is always credential-free (redacted/secret-ref). */
+@Serializable
+data class BackupConfigDto(val remote: String, val enabled: Boolean)
+
+/** Request to set the backup destination. [remote] must be credential-free or a `Secrets` ref. */
+@Serializable
+data class BackupConfigRequestDto(val remote: String, val enabled: Boolean)
+
+/**
+ * Read-only view of this host's sync + backup configuration. Any credentials embedded in peer or
+ * backup remote URLs are REDACTED before they leave the process (invariant: secrets never on the
+ * wire). [peers] are the configured remotes with userinfo stripped.
+ */
+@Serializable
+data class SyncConfigDto(
+    val role: String,
+    val hostId: String,
+    val syncConfigured: Boolean,
+    val syncIntervalSeconds: Int,
+    val peers: List<String>,
+    val backup: BackupConfigDto? = null,
+)
+
+/** Ack for POST /api/v1/maintenance/reindex (index self-heal from git HEAD). */
+@Serializable
+data class MaintenanceAckDto(val action: String, val status: String, val docCount: Int, val head: String? = null)
+
+/** Ack for POST /api/v1/backup/now. [head] is the canonical head pushed; [pushed] false ⇒ no-op (disabled). */
+@Serializable
+data class BackupAckDto(val action: String, val status: String, val remote: String? = null, val head: String? = null, val pushed: Boolean = false)
+
+/** Ack for POST /api/v1/sync/now when multi-host sync is configured. */
+@Serializable
+data class SyncAckDto(val action: String, val status: String, val role: String, val head: String? = null, val conflicts: Int = 0)
+
+/** 501 body for routes whose backing feature isn't configured/built yet. */
+@Serializable
+data class NotImplementedDto(val error: String, val message: String, val reason: String, val plannedStep: String? = null)

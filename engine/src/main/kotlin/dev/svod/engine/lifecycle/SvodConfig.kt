@@ -41,9 +41,22 @@ data class SvodConfig(
     val mcpTls: TlsSettings? = null,
     /** Auto-sync interval in seconds; 0 disables the background loop (manual sync only). */
     val syncIntervalSeconds: Int = 0,
+    /** Optional off-site backup of every vault's canonical branch (disaster recovery). */
+    val backup: BackupSettings? = null,
     /** Optional path to the reference web viewer (examples/web-viewer); served at `/` when set. */
     val webViewerPath: String? = null,
 ) {
+    /**
+     * Off-site backup destination. [remote] is a git remote URL (or a `Secrets` ref to one);
+     * credentials must NOT be inline in the URL — supply them via the remote's credential helper
+     * or a `Secrets` reference, so they never sit in plaintext config. Each vault's canonical
+     * branch is pushed to `refs/svod/backup/<vaultId>` on this remote.
+     */
+    @Serializable
+    data class BackupSettings(
+        val remote: String,
+        val enabled: Boolean = true,
+    )
     /** One vault: its own git repo, lock, index, and sync configuration. */
     @Serializable
     data class VaultSettings(
@@ -97,6 +110,18 @@ data class SvodConfig(
 
     fun defaultVaultId(): String = defaultVault ?: resolvedVaults().firstOrNull()?.id ?: "default"
 
+    /** The configured sync remotes for [vaultId] (empty when sync is not configured for it). */
+    fun syncRemotesFor(vaultId: String): List<String> =
+        resolvedVaults().firstOrNull { it.id == vaultId }?.syncRemotes ?: emptyList()
+
+    /** The auto-sync interval (seconds) configured for [vaultId]; 0 ⇒ manual only. */
+    fun syncIntervalSecondsFor(vaultId: String): Int =
+        resolvedVaults().firstOrNull { it.id == vaultId }?.syncIntervalSeconds ?: 0
+
+    /** This host's id for [vaultId]'s sync proposals. */
+    fun hostIdFor(vaultId: String): String =
+        resolvedVaults().firstOrNull { it.id == vaultId }?.hostId ?: hostId
+
     /** All configuration problems, empty when valid. */
     fun validate(): List<String> {
         val errors = mutableListOf<String>()
@@ -124,6 +149,12 @@ data class SvodConfig(
             if (ROLES.none { it.equals(a.role, ignoreCase = true) }) errors += "agent '${a.agentId}' role must be one of $ROLES, was '${a.role}'"
         }
         if (syncRemotes.isNotEmpty() && hostId.isBlank()) errors += "hostId must be set when syncRemotes is configured"
+        backup?.let { b ->
+            if (b.remote.isBlank()) errors += "backup.remote must be non-blank"
+            else if (remoteHasInlineCredentials(b.remote)) {
+                errors += "backup.remote must not embed credentials inline; use a credential helper or a Secrets ref"
+            }
+        }
         return errors
     }
 
@@ -158,6 +189,29 @@ data class SvodConfig(
 
     companion object {
         val LOOPBACK = setOf("127.0.0.1", "::1", "localhost")
+
+        // `user:password@host` userinfo in a URL-style remote (https://, ssh://, git://). The scp
+        // form `git@host:path` carries a username but no password and is the normal ssh form, so it
+        // is allowed; an embedded password (`:` before the `@` of the authority) is not.
+        private val URL_SCHEME_REMOTE = Regex("""^[a-zA-Z][a-zA-Z0-9+.-]*://([^/@]*)@""")
+
+        /**
+         * True when [remote] is a literal URL that embeds a password in its userinfo. `Secrets`
+         * refs (`env:`/`file:`/`keychain:`) are exempt — the credential lives outside the value.
+         */
+        fun remoteHasInlineCredentials(remote: String): Boolean {
+            if (remote.startsWith("env:") || remote.startsWith("file:") || remote.startsWith("keychain:")) return false
+            val userinfo = URL_SCHEME_REMOTE.find(remote)?.groupValues?.get(1) ?: return false
+            return ':' in userinfo // password present (user:pass@)
+        }
+
+        // Strips a `user:password@` (or `user@`) authority from a URL-style remote, leaving
+        // `scheme://host/path`. A `Secrets` ref or scp-form `git@host:path` is returned unchanged.
+        private val URL_USERINFO = Regex("""^([a-zA-Z][a-zA-Z0-9+.-]*://)[^/@]*@""")
+
+        /** Redact any credentials embedded in a remote URL so it is safe to surface to a client. */
+        fun redactRemote(remote: String): String = URL_USERINFO.replace(remote) { it.groupValues[1] }
+
         val PROVIDERS = listOf("onnx-local", "ollama", "none")
         val ROLES = listOf("READ_ONLY", "WRITE")
 

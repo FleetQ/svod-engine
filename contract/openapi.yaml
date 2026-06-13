@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.3.0
+  version: 0.4.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -19,6 +19,7 @@ tags:
   - name: search
   - name: graph
   - name: meta
+  - name: ops
   - name: events
 
 paths:
@@ -362,6 +363,88 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ImportResult" }
         "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/sync/config:
+    get:
+      tags: [ops]
+      summary: This host's sync + backup configuration (credentials redacted)
+      operationId: syncConfig
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: Sync + backup configuration; peer/backup remote credentials are redacted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SyncConfig" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/sync/now:
+    post:
+      tags: [ops]
+      summary: Trigger one reconcile with peers (multi-host sync)
+      operationId: syncNow
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: Reconcile triggered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SyncAck" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "501":
+          description: Multi-host sync is not configured for this vault
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotImplemented" }
+
+  /api/v1/backup/now:
+    post:
+      tags: [ops]
+      summary: Push every vault's canonical branch to the off-site backup remote
+      operationId: backupNow
+      responses:
+        "200":
+          description: >
+            Backup ack. status=ok when pushed, noop when nothing to push, disabled when backup is
+            unconfigured/disabled. The remote is redacted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupAck" }
+
+  /api/v1/settings/backup:
+    put:
+      tags: [ops]
+      summary: Set the off-site backup destination (credential-free remote or Secrets ref)
+      operationId: setBackup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BackupConfigRequest" }
+      responses:
+        "200":
+          description: Accepted; the stored (redacted) backup config is echoed back.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BackupConfig" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
+  /api/v1/maintenance/reindex:
+    post:
+      tags: [ops]
+      summary: Rebuild the search index from git HEAD (self-heal after drift)
+      operationId: reindex
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: Reindex complete
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MaintenanceAck" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/events:
     get:
@@ -737,6 +820,77 @@ components:
         role: { type: string }
         lastHead: { type: string, nullable: true }
         conflicts: { type: integer }
+
+    BackupConfig:
+      type: object
+      required: [remote, enabled]
+      description: Backup destination as the UI sees it; `remote` is always credential-free (redacted/Secrets ref).
+      properties:
+        remote: { type: string }
+        enabled: { type: boolean }
+
+    BackupConfigRequest:
+      type: object
+      required: [remote, enabled]
+      description: >
+        Set the backup destination. `remote` must be a credential-free git URL or a `Secrets` ref
+        (env:/file:/keychain:) — a URL embedding a password (user:pass@) is rejected (400).
+      properties:
+        remote: { type: string }
+        enabled: { type: boolean }
+
+    SyncConfig:
+      type: object
+      required: [role, hostId, syncConfigured, syncIntervalSeconds, peers]
+      description: This host's sync + backup configuration. Credentials in peer/backup remotes are redacted.
+      properties:
+        role: { type: string, description: "authority | replica | standalone" }
+        hostId: { type: string }
+        syncConfigured: { type: boolean }
+        syncIntervalSeconds: { type: integer }
+        peers:
+          type: array
+          items: { type: string }
+          description: Configured sync remotes, credentials redacted.
+        backup: { $ref: "#/components/schemas/BackupConfig" }
+
+    MaintenanceAck:
+      type: object
+      required: [action, status, docCount]
+      properties:
+        action: { type: string }
+        status: { type: string }
+        docCount: { type: integer }
+        head: { type: string, nullable: true, description: Git HEAD the index was reconciled to. }
+
+    BackupAck:
+      type: object
+      required: [action, status, pushed]
+      properties:
+        action: { type: string }
+        status: { type: string, enum: [ok, noop, disabled] }
+        remote: { type: string, nullable: true, description: The backup remote (redacted). }
+        head: { type: string, nullable: true }
+        pushed: { type: boolean }
+
+    SyncAck:
+      type: object
+      required: [action, status, role, conflicts]
+      properties:
+        action: { type: string }
+        status: { type: string }
+        role: { type: string }
+        head: { type: string, nullable: true }
+        conflicts: { type: integer }
+
+    NotImplemented:
+      type: object
+      required: [error, message, reason]
+      properties:
+        error: { type: string }
+        message: { type: string }
+        reason: { type: string }
+        plannedStep: { type: string, nullable: true }
 
     Event:
       type: object

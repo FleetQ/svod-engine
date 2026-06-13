@@ -28,6 +28,7 @@ class SvodNode private constructor(
     val eventBus: EventBus,
     private val mcp: dev.svod.engine.mcp.SvodMcpServer.Running,
     private val api: AppApiServer.Running,
+    val backup: dev.svod.engine.sync.BackupService,
     private val ready: AtomicBoolean,
     private val ownsScope: CoroutineScope,
 ) : AutoCloseable {
@@ -92,6 +93,10 @@ class SvodNode private constructor(
                 }
 
                 val ready = AtomicBoolean(false)
+                val backup = dev.svod.engine.sync.BackupService(
+                    vaults = vaults.contexts().map { dev.svod.engine.sync.BackupService.VaultRef(it.id, it.engine.root) },
+                    config = config.backup,
+                )
                 val api = AppApiServer(
                     vaults = vaults,
                     eventBus = eventBus,
@@ -101,6 +106,18 @@ class SvodNode private constructor(
                         webViewerPath = config.webViewerPath,
                     ),
                     readiness = { ready.get() },
+                    backup = backup,
+                    syncConfig = { vc ->
+                        val peers = config.syncRemotesFor(vc.id).map { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it) }
+                        dev.svod.engine.api.SyncConfigDto(
+                            role = vc.syncStatus()?.role ?: "standalone",
+                            hostId = config.hostIdFor(vc.id),
+                            syncConfigured = peers.isNotEmpty(),
+                            syncIntervalSeconds = config.syncIntervalSecondsFor(vc.id),
+                            peers = peers,
+                            backup = config.backup?.let { dev.svod.engine.api.BackupConfigDto(dev.svod.engine.lifecycle.SvodConfig.redactRemote(it.remote), it.enabled) },
+                        )
+                    },
                 ).start(config.appApiPort)
 
                 val mcpServer = dev.svod.engine.mcp.SvodMcpServer(toolsFor, registry, host = config.host)
@@ -117,7 +134,7 @@ class SvodNode private constructor(
 
                 ready.set(true)
                 eventBus.publish(dev.svod.engine.events.EventTypes.ENGINE_STATUS) { put("status", "ready") }
-                return SvodNode(config, vaults, eventBus, mcp, api, ready, workScope)
+                return SvodNode(config, vaults, eventBus, mcp, api, backup, ready, workScope)
             } catch (t: Throwable) {
                 vaults.close()
                 throw t

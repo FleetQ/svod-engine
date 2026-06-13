@@ -21,6 +21,7 @@ class VaultManager(
     override fun defaultId(): String = defaultId
     override fun resolve(id: String?): VaultView? = byId[id ?: defaultId]
     override fun all(): List<VaultView> = byId.values.toList()
+    override suspend fun syncNow(vaultId: String) { byId[vaultId]?.sync() }
 
     override fun close() {
         // reverse open order, best-effort: one vault's failure must not strand the others

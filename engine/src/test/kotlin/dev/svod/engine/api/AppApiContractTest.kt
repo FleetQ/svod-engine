@@ -131,6 +131,46 @@ class AppApiContractTest {
     }
 
     @Test
+    fun `ops endpoints (sync config, backup, reindex) conform to the contract`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            val ap = "/api/v1"
+            fx.engine.write("vault/a.md", "# A\nbody", null, Author("ui", "ui@svod.local"))
+            fx.index.waitIdle()
+
+            // sync/config: a standalone fixture (no peers, no backup) still conforms.
+            val cfg = fx.get("$ap/sync/config")
+            assertEquals(200, cfg.statusCode())
+            validate("$ap/sync/config", Request.Method.GET, 200, cfg.body())
+
+            // sync/now: not configured ⇒ 501 NotImplemented (conforms).
+            val syncNow = fx.post("$ap/sync/now", "")
+            assertEquals(501, syncNow.statusCode())
+            validate("$ap/sync/now", Request.Method.POST, 501, syncNow.body())
+
+            // backup/now: no backup wired ⇒ disabled ack (conforms).
+            val backup = fx.post("$ap/backup/now", "")
+            assertEquals(200, backup.statusCode())
+            validate("$ap/backup/now", Request.Method.POST, 200, backup.body())
+            assertTrue(backup.body().contains("\"status\":\"disabled\""), backup.body())
+
+            // settings/backup: a credential-free remote is accepted and echoed (redacted).
+            val setOk = fx.put("$ap/settings/backup", """{"remote":"https://git.example.com/backup.git","enabled":true}""")
+            assertEquals(200, setOk.statusCode())
+            validate("$ap/settings/backup", Request.Method.PUT, 200, setOk.body())
+
+            // settings/backup: an inline-credential remote is rejected (400, conforms).
+            val setBad = fx.put("$ap/settings/backup", """{"remote":"https://user:secret@git.example.com/backup.git","enabled":true}""")
+            assertEquals(400, setBad.statusCode())
+            validate("$ap/settings/backup", Request.Method.PUT, 400, setBad.body())
+
+            // maintenance/reindex: full HEAD reconcile ack (conforms).
+            val reindex = fx.post("$ap/maintenance/reindex", "")
+            assertEquals(200, reindex.statusCode())
+            validate("$ap/maintenance/reindex", Request.Method.POST, 200, reindex.body())
+        }
+    }
+
+    @Test
     fun `every path declared in the contract is implemented`() {
         val openApi = OpenAPIV3Parser().read(specPath.toString())
         val declared = openApi.paths.keys.toSet()
@@ -140,6 +180,8 @@ class AppApiContractTest {
             "/api/v1/search", "/api/v1/graph", "/api/v1/tags", "/api/v1/settings", "/api/v1/index/status",
             "/api/v1/vaults", "/api/v1/metrics", "/api/v1/conflicts", "/api/v1/conflicts/resolve",
             "/api/v1/import", "/api/v1/events",
+            "/api/v1/sync/config", "/api/v1/sync/now", "/api/v1/backup/now",
+            "/api/v1/settings/backup", "/api/v1/maintenance/reindex",
         )
         assertEquals(declared, implemented, "contract paths and implemented routes must match exactly")
         assertTrue(Files.exists(specPath), "contract file present")

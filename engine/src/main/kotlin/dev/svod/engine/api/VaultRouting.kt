@@ -24,6 +24,8 @@ interface VaultRouter {
     /** Resolve a vault id; null id ⇒ the default vault; an unknown id ⇒ null (→ 404). */
     fun resolve(id: String?): VaultView?
     fun all(): List<VaultView>
+    /** Trigger one reconcile with peers for [vaultId] (no-op where sync isn't configured). */
+    suspend fun syncNow(vaultId: String) {}
 }
 
 /** A trivial single-vault router (back-compat: the App API used to own exactly one engine). */
