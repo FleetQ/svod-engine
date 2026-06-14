@@ -10,49 +10,299 @@ import org.apache.lucene.search.TermQuery
 import org.eclipse.jgit.diff.DiffEntry
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /**
  * Owns the index and keeps it an exact function of git HEAD.
  *
- * All index mutations run on a single dedicated thread, entirely OFF the engine's write
- * path: the engine calls [onCommit] after each commit, which only enqueues a sync and
- * returns immediately — writes never wait on embedding or Lucene I/O. Reads (search) are
- * thread-safe and need no coordination.
+ * All Lucene mutations run on a single dedicated thread ([exec]), entirely OFF the engine's write
+ * path: the engine calls [onCommit] after each commit, which only enqueues a sync and returns
+ * immediately — writes never wait on embedding or Lucene I/O. Reads (search) are thread-safe and
+ * need no coordination.
+ *
+ * Startup is non-blocking (unless [blockStartup]): [start] returns as soon as the boot job is
+ * scheduled. The boot job is **keyword-first** — a fast BM25 pass makes lexical search available
+ * within seconds — then a **throttled, resumable background pass** fills in embeddings. The
+ * embedding pass is capped at [maxThreads] low-priority workers, batches its calls by [batchSize],
+ * commits periodically (each commit is a resume checkpoint), and never saturates the machine.
+ * Because progress is committed to Lucene and the backlog is recomputed from the index
+ * ([LuceneIndex.pathsMissingVectors]), an interrupted run resumes instead of restarting.
  *
  * Reconciliation triggers:
- *  - construction with an incompatible model/dim/schema ⇒ full reindex (migration)
- *  - [onCommit] / [sync] ⇒ incremental diff from the last indexed commit
- *  - [reconcile] ⇒ full HEAD compare (self-heal after drift or an index wipe)
+ *  - boot with an incompatible model/dim/schema ⇒ full reindex (migration)
+ *  - [onCommit] / [sync] ⇒ incremental diff from the last indexed commit (embeds inline)
+ *  - [reconcileNow] ⇒ full HEAD compare (self-heal after drift or an index wipe)
+ *  - [reembed] / [setEmbedder] ⇒ background re-embed (provider/model swap)
  */
 class IndexService(
     private val root: Path,
     private val indexDir: Path,
-    private val embedder: Embedder,
+    embedder: Embedder,
     private val schemaVersion: Int = IndexMeta.SCHEMA_VERSION,
+    /** Block [start] until the FULL index (incl. embeddings) is ready. Default true (tests/simple). */
+    private val blockStartup: Boolean = true,
+    /** Cap of concurrent low-priority embedding workers (background pass). */
+    private val maxThreads: Int = 2,
+    /** Max texts per embedder call (background pass). */
+    private val batchSize: Int = 32,
 ) : AutoCloseable {
+
+    /** The active embedder. Swappable at runtime via [setEmbedder] (provider change). */
+    @Volatile
+    private var embedder: Embedder = embedder
 
     private val index = LuceneIndex(indexDir)
     private val reader = GitReader(root)
     private val metaFile = indexDir.resolve("meta.json")
     private val exec = Executors.newSingleThreadExecutor { r -> Thread(r, "svod-indexer").apply { isDaemon = true } }
 
+    // ---- background embedding state (surfaced via index/status + index.progress) ----
+
+    enum class EmbeddingState { IDLE, RUNNING, PAUSED, ERROR }
+
+    data class EmbeddingStatus(
+        val state: EmbeddingState,
+        val done: Int,
+        val total: Int,
+        val model: String,
+        val error: String?,
+    )
+
+    private val keywordReadyFlag = AtomicBoolean(false)
+    private val embeddingState = AtomicReference(EmbeddingState.IDLE)
+    private val embeddingDone = AtomicInteger(0)
+    private val embeddingTotal = AtomicInteger(0)
+    @Volatile private var embeddingError: String? = null
+
+    // While a provider/model swap rebuilds vectors, keep semantic OFF so we never serve stale
+    // (wrong-model) or partial vectors — keyword search stays fully available throughout.
+    @Volatile private var suppressSemantic = false
+
+    private val closing = AtomicBoolean(false)
+    @Volatile private var bootThread: Thread? = null
+
+    // Pause/resume for the background embedding pass.
+    private val pauseLock = ReentrantLock()
+    private val pauseCond = pauseLock.newCondition()
+    @Volatile private var paused = false
+
+    private var lastProgressEmit = 0L
+
     /** Invoked on the indexer thread after the index advances to a new HEAD (drives index.updated). */
     @Volatile
     var onSynced: ((headCommit: String?) -> Unit)? = null
 
-    /** Open the index and bring it consistent with HEAD (migrating if the model changed). */
+    /** Throttled embedding progress (done,total,state) — drives the index.progress WS event. */
+    @Volatile
+    var onProgress: ((done: Int, total: Int, state: String) -> Unit)? = null
+
+    /** True once the BM25/keyword index is consistent with HEAD (semantic may still be filling). */
+    fun keywordReady(): Boolean = keywordReadyFlag.get()
+
+    fun embeddingStatus(): EmbeddingStatus =
+        EmbeddingStatus(embeddingState.get(), embeddingDone.get(), embeddingTotal.get(), embedder.model, embeddingError)
+
+    /** Open the index and bring it consistent with HEAD. Non-blocking unless [blockStartup]. */
     fun start(): IndexService {
-        submitBlocking {
-            val meta = IndexMeta.load(metaFile)
-            if (meta == null || !meta.compatibleWith(schemaVersion, embedder.model, embedder.dim)) {
-                fullReindex()
-            } else {
-                sync()
-            }
+        if (blockStartup) {
+            runBoot()
+        } else {
+            bootThread = Thread({ runCatching { runBoot() }.onFailure { System.err.println("index boot failed: $it") } },
+                "svod-index-boot").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }.also { it.start() }
         }
         return this
+    }
+
+    /** Keyword-first catch-up, then (if an embedder is active) the throttled embedding backlog. */
+    private fun runBoot() {
+        val emb = embedder
+        val meta = exec.submit<IndexMeta?> { IndexMeta.load(metaFile) }.get()
+        // Genuine model/dim/schema change ⇒ the vector field is incompatible: wipe and rebuild.
+        if (meta != null && !meta.compatibleWith(schemaVersion, emb.model, emb.dim)) {
+            exec.submit { index.deleteAll() }.get()
+        }
+        keywordCatchUp()
+        if (emb.isActive && !closing.get()) embedBacklog()
+    }
+
+    /**
+     * BM25 pass: index the text of every file that differs from what's indexed, reusing any vectors
+     * already stored for unchanged chunks but embedding NOTHING new. Commits in batches so lexical
+     * search becomes available progressively. Runs entirely on [exec] (single Lucene writer).
+     */
+    private fun keywordCatchUp() {
+        exec.submit {
+            val head = reader.headCommit()
+            if (head == null) {
+                saveMeta(null); keywordReadyFlag.set(true); onSynced?.invoke(null); return@submit
+            }
+            val desired = reader.listMarkdown(head)
+            val indexed = index.pathBlobMap()
+            for (gone in indexed.keys - desired.keys) index.deletePath(gone)
+            var n = 0
+            for ((path, blob) in desired) {
+                if (closing.get()) break
+                if (indexed[path] == blob) continue
+                applyDocs(path, prepare(path, head, embed = false))
+                if (++n % KEYWORD_COMMIT_EVERY == 0) index.commit()
+            }
+            index.commit()
+            saveMeta(head)
+            keywordReadyFlag.set(true)
+            onSynced?.invoke(head)
+        }.get()
+    }
+
+    /** Embed every file still missing vectors (resumable backlog). Throttled + checkpointed. */
+    private fun embedBacklog() = embedPass(exec.submit<List<String>> { index.pathsMissingVectors() }.get(), force = false)
+
+    /**
+     * Re-embed [paths] (force ⇒ re-embed even chunks that already have a vector). Embedding compute
+     * runs on a bounded, low-priority pool ([maxThreads]); all git reads and Lucene writes stay on
+     * [exec]. Commits every [batchSize] files (resume checkpoints). Honors pause and shutdown.
+     */
+    private fun embedPass(paths: List<String>, force: Boolean) {
+        embeddingError = null
+        embeddingTotal.set(paths.size)
+        embeddingDone.set(0)
+        if (paths.isEmpty()) { transition(EmbeddingState.IDLE); return }
+        transition(EmbeddingState.RUNNING)
+        val head = exec.submit<String?> { reader.headCommit() }.get()
+        if (head == null) { transition(EmbeddingState.IDLE); return }
+
+        val pool: ExecutorService = Executors.newFixedThreadPool(maxThreads.coerceAtLeast(1)) { r ->
+            Thread(r, "svod-embed").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
+        }
+        val committedSince = AtomicInteger(0)
+        try {
+            val futures = paths.map { path ->
+                pool.submit {
+                    if (closing.get()) return@submit
+                    awaitIfPaused()
+                    if (closing.get()) return@submit
+                    // Git read + Lucene write on exec (single writer); the slow embedding runs HERE
+                    // on this low-priority pool thread, so it never blocks the indexer or the writer.
+                    val plan = exec.submit<EmbedPlan?> { planEmbed(path, head, force) }.get()
+                    if (plan == null) {
+                        exec.submit { index.deletePath(path) }.get()
+                    } else {
+                        val freshVecs = embedInBatches(plan.toEmbed.map { embedText(it) })
+                        val fresh = plan.toEmbed.mapIndexed { i, c -> c.contentHash to freshVecs[i] }.toMap()
+                        exec.submit { finishEmbed(path, plan, fresh) }.get()
+                    }
+                    embeddingDone.incrementAndGet()
+                    if (committedSince.incrementAndGet() >= batchSize) {
+                        committedSince.set(0)
+                        exec.submit { index.commit() }.get()
+                    }
+                    emitProgressThrottled()
+                }
+            }
+            for (f in futures) { if (closing.get()) break; f.get() }
+            exec.submit { index.commit() }.get()
+            if (!closing.get()) {
+                saveMeta(head)
+                onSynced?.invoke(head)
+            }
+            transition(EmbeddingState.IDLE)
+        } catch (t: Throwable) {
+            embeddingError = (t.cause ?: t).message ?: t.toString()
+            runCatching { exec.submit { index.commit() }.get() }
+            transition(EmbeddingState.ERROR)
+            System.err.println("embedding pass failed: $t")
+        } finally {
+            pool.shutdownNow()
+            suppressSemantic = false
+        }
+    }
+
+    private fun awaitIfPaused() {
+        pauseLock.withLock {
+            while (paused && !closing.get()) {
+                transition(EmbeddingState.PAUSED)
+                pauseCond.await(1, TimeUnit.SECONDS)
+            }
+            if (!closing.get() && embeddingState.get() == EmbeddingState.PAUSED) transition(EmbeddingState.RUNNING)
+        }
+    }
+
+    /** Pause the background embedding pass (idempotent). Keyword search is unaffected. */
+    fun pause() {
+        paused = true
+        if (embeddingState.get() == EmbeddingState.RUNNING) transition(EmbeddingState.PAUSED)
+    }
+
+    /** Resume a paused embedding pass (idempotent). */
+    fun resume() {
+        pauseLock.withLock { paused = false; pauseCond.signalAll() }
+    }
+
+    /** Force a full background re-embed with the current embedder (e.g. POST /index/reembed). */
+    fun reembed() {
+        if (!embedder.isActive) return
+        launchBackground { embedPass(reader.headCommit()?.let { reader.listMarkdown(it).keys.toList() } ?: emptyList(), force = true) }
+    }
+
+    /**
+     * Swap the active embedder and rebuild vectors in the background (provider/model change).
+     * A dimension change wipes the vector index (Lucene cannot mix dimensions); keyword search
+     * keeps working and semantic is suppressed until the new vectors are fully built.
+     */
+    fun setEmbedder(newEmbedder: Embedder) {
+        val prevDim = indexedDim() ?: 0
+        embedder = newEmbedder
+        suppressSemantic = newEmbedder.isActive
+        launchBackground {
+            if (!newEmbedder.isActive) {
+                // Switched to BM25-only: drop vectors so semantic returns nothing, keep the text.
+                exec.submit { dropAllVectors() }.get()
+                saveMetaCurrent()
+                transition(EmbeddingState.IDLE)
+                suppressSemantic = false
+                return@launchBackground
+            }
+            if (newEmbedder.dim != prevDim) {
+                // Dimension change: the vec field is fixed-width, so a wipe + keyword-first rebuild.
+                exec.submit { index.deleteAll() }.get()
+                keywordReadyFlag.set(false)
+                keywordCatchUp()
+                embedBacklog()
+            } else {
+                // Same dimension, different model: keep text + keyword, re-embed all chunks.
+                embedPass(reader.headCommit()?.let { reader.listMarkdown(it).keys.toList() } ?: emptyList(), force = true)
+            }
+        }
+    }
+
+    private fun launchBackground(job: () -> Unit) {
+        Thread({ runCatching { job() }.onFailure { embeddingError = it.message; transition(EmbeddingState.ERROR) } },
+            "svod-index-rebuild").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }.start()
+    }
+
+    /** Re-index text for every file (no vectors) under HEAD; used when switching to BM25-only. */
+    private fun dropAllVectors() {
+        val head = reader.headCommit() ?: return
+        for (path in reader.listMarkdown(head).keys) applyDocs(path, prepare(path, head, embed = false))
+        index.commit()
+    }
+
+    private fun transition(state: EmbeddingState) {
+        embeddingState.set(state)
+        onProgress?.invoke(embeddingDone.get(), embeddingTotal.get(), state.name.lowercase())
+    }
+
+    private fun emitProgressThrottled() {
+        val now = System.currentTimeMillis()
+        if (now - lastProgressEmit < PROGRESS_THROTTLE_MS) return
+        lastProgressEmit = now
+        onProgress?.invoke(embeddingDone.get(), embeddingTotal.get(), embeddingState.get().name.lowercase())
     }
 
     /** Non-blocking: enqueue an incremental sync. Called by the engine after a commit. */
@@ -81,8 +331,8 @@ class IndexService(
         val filter = index.buildFilter(q.filters)
         val cand = maxOf(q.limit * 5, 50)
 
-        // Semantic is opt-in over BM25: with no active embedder, every mode is lexical.
-        val active = embedder.isActive
+        // Semantic is opt-in over BM25: inactive embedder (or a rebuild in flight) ⇒ lexical only.
+        val active = embedder.isActive && !suppressSemantic
         val wantKeyword = q.mode != SearchMode.SEMANTIC || !active
         val wantSemantic = q.mode != SearchMode.KEYWORD && active
         val keyword = if (wantKeyword) keywordLeg(q.text, filter, cand) else emptyList()
@@ -164,11 +414,6 @@ class IndexService(
 
     // ---- reconciliation (all on the indexer thread) ----
 
-    private fun fullReindex() {
-        index.deleteAll()
-        reconcile()
-    }
-
     private fun reconcile() {
         val head = reader.headCommit()
         if (head == null) {
@@ -178,7 +423,7 @@ class IndexService(
         val desired = reader.listMarkdown(head)
         val indexed = index.pathBlobMap()
         for (gone in indexed.keys - desired.keys) index.deletePath(gone)
-        for ((path, blob) in desired) if (indexed[path] != blob) indexFile(path, head)
+        for ((path, blob) in desired) if (indexed[path] != blob) applyDocs(path, prepare(path, head, embed = true))
         index.commit()
         saveMeta(head)
         onSynced?.invoke(head)
@@ -201,9 +446,12 @@ class IndexService(
                 DiffEntry.ChangeType.DELETE -> index.deletePath(c.path)
                 DiffEntry.ChangeType.RENAME -> {
                     index.deletePath(c.path)
-                    indexFile(c.newPath, head)
+                    applyDocs(c.newPath, prepare(c.newPath, head, embed = true))
                 }
-                else -> indexFile(if (c.type == DiffEntry.ChangeType.COPY) c.newPath else c.path, head)
+                else -> {
+                    val p = if (c.type == DiffEntry.ChangeType.COPY) c.newPath else c.path
+                    applyDocs(p, prepare(p, head, embed = true))
+                }
             }
         }
         index.commit()
@@ -211,33 +459,84 @@ class IndexService(
         onSynced?.invoke(head)
     }
 
-    /**
-     * Index one file at [commit], reusing embeddings for chunks whose content is unchanged
-     * (so only changed chunks are sent to the embedder).
-     */
-    private fun indexFile(path: String, commit: String) {
-        val bytes = reader.readBlob(commit, path) ?: run { index.deletePath(path); return }
-        val blob = reader.blobId(commit, path) ?: return
-        val doc = MarkdownChunker.parse(String(bytes, Charsets.UTF_8))
-        if (doc.chunks.isEmpty()) { index.deletePath(path); return }
+    /** Prepared documents for one file: blob id, tags/created, and resolved Lucene chunk docs. */
+    private class FileDocs(val blob: String, val tags: List<String>, val created: Long?, val docs: List<LuceneIndex.ChunkDoc>)
 
-        val chunkDocs = if (!embedder.isActive) {
-            // BM25-only: no vectors at all.
+    /**
+     * Build the Lucene docs for [path] at [commit]. [embed]=false ⇒ text + reused vectors only (the
+     * keyword-first pass embeds nothing new). [embed]=true ⇒ embed chunks not already vectored
+     * ([force] re-embeds all). Returns null when the file is gone/empty (caller deletes the path).
+     * Git reads + embedding are pure (no Lucene writes) so this is safe to run off [exec].
+     */
+    private fun prepare(path: String, commit: String, embed: Boolean, force: Boolean = false): FileDocs? {
+        val bytes = reader.readBlob(commit, path) ?: return null
+        val blob = reader.blobId(commit, path) ?: return null
+        val doc = MarkdownChunker.parse(String(bytes, Charsets.UTF_8))
+        if (doc.chunks.isEmpty()) return null
+        val emb = embedder
+
+        val chunkDocs = if (!emb.isActive) {
             doc.chunks.map { LuceneIndex.ChunkDoc(it, null) }
         } else {
-            val reusable = index.existingVectors(path)
-            val toEmbed = doc.chunks.filter { it.contentHash !in reusable }
-            val freshVectors: Map<String, FloatArray> = if (toEmbed.isEmpty()) {
-                emptyMap()
+            val reusable = if (force) emptyMap() else index.existingVectors(path)
+            if (!embed) {
+                doc.chunks.map { LuceneIndex.ChunkDoc(it, reusable[it.contentHash]) }
             } else {
-                val vecs = embedder.embedPassages(toEmbed.map { embedText(it) })
-                toEmbed.mapIndexed { i, c -> c.contentHash to vecs[i] }.toMap()
-            }
-            doc.chunks.map { c ->
-                LuceneIndex.ChunkDoc(c, reusable[c.contentHash] ?: freshVectors.getValue(c.contentHash))
+                val toEmbed = doc.chunks.filter { it.contentHash !in reusable }
+                val fresh: Map<String, FloatArray> = if (toEmbed.isEmpty()) emptyMap()
+                else embedInBatches(toEmbed.map { embedText(it) })
+                    .let { vecs -> toEmbed.mapIndexed { i, c -> c.contentHash to vecs[i] }.toMap() }
+                doc.chunks.map { c -> LuceneIndex.ChunkDoc(c, reusable[c.contentHash] ?: fresh.getValue(c.contentHash)) }
             }
         }
-        index.upsertFile(path, blob, doc.tags, doc.created, chunkDocs)
+        return FileDocs(blob, doc.tags, doc.created, chunkDocs)
+    }
+
+    /** Apply prepared docs to Lucene (MUST run on [exec]). Null prep ⇒ delete the path. */
+    private fun applyDocs(path: String, prep: FileDocs?) {
+        if (prep == null) { index.deletePath(path); return }
+        index.upsertFile(path, prep.blob, prep.tags, prep.created, prep.docs)
+    }
+
+    /** A file's chunks split into reusable (already-vectored) and to-embed, for the background pass. */
+    private class EmbedPlan(
+        val blob: String,
+        val tags: List<String>,
+        val created: Long?,
+        val chunks: List<Chunk>,
+        val reusable: Map<String, FloatArray>,
+        val toEmbed: List<Chunk>,
+    )
+
+    /** Read git + decide what needs embedding (MUST run on [exec]; pure reads, no embedding). */
+    private fun planEmbed(path: String, commit: String, force: Boolean): EmbedPlan? {
+        val bytes = reader.readBlob(commit, path) ?: return null
+        val blob = reader.blobId(commit, path) ?: return null
+        val doc = MarkdownChunker.parse(String(bytes, Charsets.UTF_8))
+        if (doc.chunks.isEmpty()) return null
+        val reusable = if (force) emptyMap() else index.existingVectors(path)
+        val toEmbed = doc.chunks.filter { it.contentHash !in reusable }
+        return EmbedPlan(blob, doc.tags, doc.created, doc.chunks, reusable, toEmbed)
+    }
+
+    /** Combine reused + freshly-embedded vectors and upsert (MUST run on [exec]). */
+    private fun finishEmbed(path: String, plan: EmbedPlan, fresh: Map<String, FloatArray>) {
+        val docs = plan.chunks.map { c ->
+            LuceneIndex.ChunkDoc(c, plan.reusable[c.contentHash] ?: fresh[c.contentHash])
+        }
+        index.upsertFile(path, plan.blob, plan.tags, plan.created, docs)
+    }
+
+    /** Embed [texts] in windows of [batchSize] so a provider is never handed an unbounded batch. */
+    private fun embedInBatches(texts: List<String>): List<FloatArray> {
+        if (texts.size <= batchSize) return embedder.embedPassages(texts)
+        val out = ArrayList<FloatArray>(texts.size)
+        var i = 0
+        while (i < texts.size) {
+            out += embedder.embedPassages(texts.subList(i, minOf(i + batchSize, texts.size)))
+            i += batchSize
+        }
+        return out
     }
 
     private fun embedText(c: Chunk): String = if (c.heading.isEmpty()) c.text else "${c.heading}\n${c.text}"
@@ -247,12 +546,22 @@ class IndexService(
         IndexMeta.save(metaFile, IndexMeta(schemaVersion, embedder.model, embedder.dim, head))
     }
 
+    private fun saveMetaCurrent() = saveMeta(IndexMeta.load(metaFile)?.headCommit)
+
     private fun <T> submitBlocking(task: () -> T): T = exec.submit(task).get()
 
     override fun close() {
+        closing.set(true)
+        resume() // unblock any paused embedding workers so they can observe `closing` and exit
+        runCatching { bootThread?.join(2000) }
         exec.shutdown()
         if (!exec.awaitTermination(30, TimeUnit.SECONDS)) exec.shutdownNow()
         index.close()
         reader.close()
+    }
+
+    private companion object {
+        const val KEYWORD_COMMIT_EVERY = 200
+        const val PROGRESS_THROTTLE_MS = 400L
     }
 }

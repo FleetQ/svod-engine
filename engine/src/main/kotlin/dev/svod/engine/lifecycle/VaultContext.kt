@@ -63,10 +63,23 @@ class VaultContext private constructor(
             // Single-instance per vault: SvodEngine.open acquires the exclusive vault lock.
             val engine = SvodEngine.open(vault, scope, dev.svod.engine.security.SecretScanner(config.secretScanning))
             try {
-                val embedder = Embedders.create(config.toEmbedderConfig(), vault)
-                val index = IndexService(vault, vault.resolve(".svod").resolve("index"), embedder).start()
-                engine.onCommit { index.onCommit(it) }
+                val ec = config.toEmbedderConfig()
+                val embedder = Embedders.create(ec, vault)
+                val index = IndexService(
+                    vault, vault.resolve(".svod").resolve("index"), embedder,
+                    blockStartup = config.indexing.blockStartup,
+                    maxThreads = ec.maxThreads,
+                    batchSize = ec.batchSize,
+                )
+                // Wire progress BEFORE start() so the very first background-embedding ticks are seen.
                 index.onSynced = { head -> eventBus.publish(EventTypes.INDEX_UPDATED) { put("vault", vs.id); put("head", head) } }
+                index.onProgress = { done, total, state ->
+                    eventBus.publish(EventTypes.INDEX_PROGRESS) {
+                        put("vault", vs.id); put("done", done); put("total", total); put("state", state)
+                    }
+                }
+                index.start()
+                engine.onCommit { index.onCommit(it) }
 
                 val conflicts = ConflictStore()
                 val syncGit: SyncGit?

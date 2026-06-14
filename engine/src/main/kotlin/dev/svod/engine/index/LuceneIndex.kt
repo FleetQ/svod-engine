@@ -66,6 +66,24 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
         out
     }
 
+    /**
+     * Paths that have at least one indexed chunk WITHOUT a stored vector — the embedding backlog.
+     * Used by the background indexer to find (and resume) work after a keyword-first pass: every
+     * such path still needs embedding. Empty when the index is fully embedded (or BM25-only).
+     */
+    fun pathsMissingVectors(): List<String> = withSearcher { s ->
+        val n = s.indexReader.numDocs()
+        if (n == 0) return@withSearcher emptyList()
+        val td = s.search(MatchAllDocsQuery(), n)
+        val sf = s.storedFields()
+        val missing = LinkedHashSet<String>()
+        for (sd in td.scoreDocs) {
+            val d = sf.document(sd.doc)
+            if (d.getBinaryValue("vecBytes") == null) missing.add(d.get("path"))
+        }
+        missing.toList()
+    }
+
     /** contentHash → embedding for the chunks currently indexed under [path] (reuse source). */
     fun existingVectors(path: String): Map<String, FloatArray> = withSearcher { s ->
         if (s.indexReader.numDocs() == 0) return@withSearcher emptyMap()

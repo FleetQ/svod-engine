@@ -12,6 +12,7 @@ import kotlinx.serialization.json.buildJsonObject
 object EventTypes {
     const val FILE_CHANGED = "file.changed"
     const val INDEX_UPDATED = "index.updated"
+    const val INDEX_PROGRESS = "index.progress"
     const val COMMIT_CREATED = "commit.created"
     const val CONFLICT = "conflict"
     const val ENGINE_STATUS = "engine.status"

@@ -47,7 +47,18 @@ data class SvodConfig(
     val webViewerPath: String? = null,
     /** Automatic re-sync of registered external sources (off by default; manual sync always works). */
     val sourceSync: SourceSyncSettings = SourceSyncSettings(),
+    /** Indexing behavior (startup blocking gate). */
+    val indexing: IndexingSettings = IndexingSettings(),
 ) {
+    /**
+     * [blockStartup]=false (default) binds the App API immediately and builds the semantic index in
+     * the background (keyword search works at once); =true keeps the legacy behavior of waiting for
+     * the full index before serving — useful only for batch/one-shot runs.
+     */
+    @Serializable
+    data class IndexingSettings(
+        val blockStartup: Boolean = false,
+    )
     /**
      * Drives the background [dev.svod.engine.sources.SourceScheduler]. [onStartup] runs one full
      * source sync (all vaults) at boot; [intervalMinutes] (>0) then re-syncs on that cadence. Both
@@ -90,6 +101,10 @@ data class SvodConfig(
         val onnxLocalPath: String? = null,
         val ollamaModel: String = "zylonai/multilingual-e5-large",
         val ollamaEndpoint: String = "http://127.0.0.1:11434",
+        /** Cap of concurrent low-priority background embedding workers. */
+        val maxThreads: Int = 2,
+        /** Max texts per embedder call (background pass). */
+        val batchSize: Int = 32,
     )
 
     @Serializable
@@ -166,6 +181,8 @@ data class SvodConfig(
         if (PROVIDERS.none { it.equals(embedder.provider, ignoreCase = true) }) {
             errors += "embedder.provider must be one of $PROVIDERS, was '${embedder.provider}'"
         }
+        if (embedder.maxThreads < 1) errors += "embedder.maxThreads must be >= 1, was ${embedder.maxThreads}"
+        if (embedder.batchSize < 1) errors += "embedder.batchSize must be >= 1, was ${embedder.batchSize}"
         val tokens = agents.map { it.token }
         if (tokens.any { it.isBlank() }) errors += "agent tokens must be non-blank"
         if (tokens.size != tokens.toSet().size) errors += "agent tokens must be unique"
@@ -197,6 +214,8 @@ data class SvodConfig(
             onnx = OnnxConfig(embedder.onnxModelId, embedder.onnxLocalPath?.let { Paths.get(it) }),
             ollamaModel = embedder.ollamaModel,
             ollamaEndpoint = embedder.ollamaEndpoint,
+            maxThreads = embedder.maxThreads,
+            batchSize = embedder.batchSize,
         )
     }
 

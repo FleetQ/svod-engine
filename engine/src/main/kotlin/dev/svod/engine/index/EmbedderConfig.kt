@@ -31,4 +31,8 @@ data class EmbedderConfig(
     val onnx: OnnxConfig = OnnxConfig(),
     val ollamaModel: String = OllamaEmbedder.DEFAULT_MODEL,
     val ollamaEndpoint: String = OllamaEmbedder.DEFAULT_ENDPOINT,
+    /** Cap of concurrent low-priority background embedding workers (keeps indexing off the CPU). */
+    val maxThreads: Int = 2,
+    /** Max texts handed to the embedder in one call (background pass). */
+    val batchSize: Int = 32,
 )
