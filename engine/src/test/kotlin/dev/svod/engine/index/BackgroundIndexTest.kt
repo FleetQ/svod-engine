@@ -75,4 +75,22 @@ class BackgroundIndexTest {
             }
         }
     }
+
+    @Test
+    fun `a dimension change re-embeds the whole vault`() {
+        IndexFixture.create().use { fx ->
+            fx.seedCorpus()
+            IndexService(fx.root, fx.indexDir, FakeEmbedder("fake-v1", dim = 64), blockStartup = true).start().use { idx ->
+                assertEquals(64, idx.indexedDim())
+            }
+            // Reopen with a different dimension: the vector field can't be mixed, so boot detects the
+            // mismatch, wipes, and rebuilds keyword-first + background.
+            val bigger = FakeEmbedder("fake-v1", dim = 128)
+            IndexService(fx.root, fx.indexDir, bigger, blockStartup = true).start().use { idx ->
+                assertEquals(3, bigger.passageCalls.get(), "every chunk re-embedded at the new dimension")
+                assertEquals(128, idx.indexedDim())
+                assertEquals("b.md", idx.search(SearchQuery("banana", mode = SearchMode.SEMANTIC)).hits.firstOrNull()?.path)
+            }
+        }
+    }
 }

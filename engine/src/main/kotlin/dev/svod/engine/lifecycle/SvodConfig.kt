@@ -96,11 +96,18 @@ data class SvodConfig(
 
     @Serializable
     data class EmbedderSettings(
+        /** `local-onnx` (a.k.a. `onnx-local`), `local-ollama` (a.k.a. `ollama`), `remote-openai`, `none`. */
         val provider: String = "onnx-local",
         val onnxModelId: String = "multilingual-e5-small",
         val onnxLocalPath: String? = null,
         val ollamaModel: String = "zylonai/multilingual-e5-large",
         val ollamaEndpoint: String = "http://127.0.0.1:11434",
+        /** Generic endpoint for `local-ollama` / `remote-openai` (overrides the provider-specific default). */
+        val endpoint: String? = null,
+        /** Generic model for `local-ollama` / `remote-openai` (overrides the provider-specific default). */
+        val model: String? = null,
+        /** OpenAI-compatible API key as a `Secrets` ref (env:/file:/keychain:) — never a raw key. */
+        val apiKeyRef: String? = null,
         /** Cap of concurrent low-priority background embedding workers. */
         val maxThreads: Int = 2,
         /** Max texts per embedder call (background pass). */
@@ -206,14 +213,19 @@ data class SvodConfig(
     fun toEmbedderConfig(): EmbedderConfig {
         val provider = when (embedder.provider.lowercase()) {
             "none" -> EmbedderProvider.NONE
-            "ollama" -> EmbedderProvider.OLLAMA
-            else -> EmbedderProvider.ONNX_LOCAL
+            "ollama", "local-ollama" -> EmbedderProvider.OLLAMA
+            "openai", "remote-openai" -> EmbedderProvider.OPENAI
+            else -> EmbedderProvider.ONNX_LOCAL // "onnx-local" / "local-onnx"
         }
+        // Generic endpoint/model (new schema) override the provider-specific legacy fields.
         return EmbedderConfig(
             provider = provider,
             onnx = OnnxConfig(embedder.onnxModelId, embedder.onnxLocalPath?.let { Paths.get(it) }),
-            ollamaModel = embedder.ollamaModel,
-            ollamaEndpoint = embedder.ollamaEndpoint,
+            ollamaModel = embedder.model ?: embedder.ollamaModel,
+            ollamaEndpoint = embedder.endpoint ?: embedder.ollamaEndpoint,
+            openaiModel = embedder.model ?: dev.svod.engine.index.OpenAiEmbedder.DEFAULT_MODEL,
+            openaiEndpoint = embedder.endpoint ?: dev.svod.engine.index.OpenAiEmbedder.DEFAULT_ENDPOINT,
+            openaiApiKeyRef = embedder.apiKeyRef,
             maxThreads = embedder.maxThreads,
             batchSize = embedder.batchSize,
         )
@@ -256,7 +268,7 @@ data class SvodConfig(
         /** Redact any credentials embedded in a remote URL so it is safe to surface to a client. */
         fun redactRemote(remote: String): String = URL_USERINFO.replace(remote) { it.groupValues[1] }
 
-        val PROVIDERS = listOf("onnx-local", "ollama", "none")
+        val PROVIDERS = listOf("onnx-local", "local-onnx", "ollama", "local-ollama", "remote-openai", "openai", "none")
         val ROLES = listOf("READ_ONLY", "WRITE")
 
         private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }

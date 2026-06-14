@@ -10,6 +10,9 @@ enum class EmbedderProvider {
     /** Optional external Ollama server. */
     OLLAMA,
 
+    /** OpenAI-compatible HTTP endpoint (`/v1/embeddings`): OpenAI, Together, RunPod TEI/Infinity. */
+    OPENAI,
+
     /** No embeddings — BM25-only. The guaranteed baseline. */
     NONE,
 }
@@ -31,6 +34,10 @@ data class EmbedderConfig(
     val onnx: OnnxConfig = OnnxConfig(),
     val ollamaModel: String = OllamaEmbedder.DEFAULT_MODEL,
     val ollamaEndpoint: String = OllamaEmbedder.DEFAULT_ENDPOINT,
+    /** OpenAI-compatible endpoint settings ([openaiApiKeyRef] is a `Secrets` ref, resolved at create). */
+    val openaiEndpoint: String = OpenAiEmbedder.DEFAULT_ENDPOINT,
+    val openaiModel: String = OpenAiEmbedder.DEFAULT_MODEL,
+    val openaiApiKeyRef: String? = null,
     /** Cap of concurrent low-priority background embedding workers (keeps indexing off the CPU). */
     val maxThreads: Int = 2,
     /** Max texts handed to the embedder in one call (background pass). */

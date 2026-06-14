@@ -22,6 +22,12 @@ object Embedders {
     fun create(config: EmbedderConfig, vaultRoot: Path): Embedder = when (config.provider) {
         EmbedderProvider.NONE -> NoneEmbedder
         EmbedderProvider.OLLAMA -> OllamaEmbedder(config.ollamaModel, config.ollamaEndpoint)
+        EmbedderProvider.OPENAI -> OpenAiEmbedder(
+            config.openaiModel,
+            config.openaiEndpoint,
+            // API keys are Secrets references only (env:/file:/keychain:) — never raw over the API.
+            config.openaiApiKeyRef?.takeIf { it.isNotBlank() }?.let { dev.svod.engine.security.Secrets.resolve(it) },
+        )
         EmbedderProvider.ONNX_LOCAL -> loadOnnxLocal(config.onnx, vaultRoot.resolve(".svod").resolve("models"))
     }
 
