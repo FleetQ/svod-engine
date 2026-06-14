@@ -43,7 +43,7 @@ jobs:
           jpackage --type app-image --name SvodEngine \
             --input build/install/svod-engine/lib \
             --main-jar "$MAIN_JAR" --main-class dev.svod.engine.MainKt \
-            --app-version 1.1.0 --java-options "-Dfile.encoding=UTF-8" \
+            --app-version 1.2.0 --java-options "-Dfile.encoding=UTF-8" \
             --dest out
 
       - name: Archive app-image (unix)
