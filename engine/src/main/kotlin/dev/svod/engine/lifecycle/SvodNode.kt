@@ -64,7 +64,7 @@ class SvodNode private constructor(
     override fun close() = shutdown()
 
     companion object {
-        fun start(config: SvodConfig, scope: CoroutineScope? = null): SvodNode {
+        fun start(config: SvodConfig, scope: CoroutineScope? = null, configPath: java.nio.file.Path? = null): SvodNode {
             val errors = config.validate()
             require(errors.isEmpty()) { "invalid config:\n - " + errors.joinToString("\n - ") }
 
@@ -95,15 +95,20 @@ class SvodNode private constructor(
                         dev.svod.engine.sync.BackupService.Binding(vc.id, vc.engine.root, effective, store)
                     },
                 )
+                val ecView = config.toEmbedderConfig()
+                val embedderControl = EmbedderController(vaults, configPath, config)
                 val api = AppApiServer(
                     vaults = vaults,
                     eventBus = eventBus,
                     config = AppApiServer.Config(
                         host = config.host,
-                        embedderProvider = config.embedder.provider,
+                        embedderProvider = ecView.providerName,
+                        embedderModel = ecView.modelName,
+                        embedderEndpoint = ecView.endpointOrNull,
                         webViewerPath = config.webViewerPath,
                     ),
                     readiness = { ready.get() },
+                    embedderControl = embedderControl,
                     backup = backup,
                     syncConfig = { vc ->
                         val b = backup.configOf(vc.id)

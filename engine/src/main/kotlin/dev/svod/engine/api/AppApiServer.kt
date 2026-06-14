@@ -61,6 +61,8 @@ class AppApiServer(
     private val syncConfig: (VaultView) -> SyncConfigDto = { SyncConfigDto(role = "solo") },
     /** Per-vault sync status for the GET /vaults `sync` field; null ⇒ no sync/backup dot. */
     private val vaultStatus: (VaultView) -> SyncStatusDto? = { null },
+    /** Runtime embedder control; null ⇒ PUT /embedder & POST /embedder/test return 501. */
+    private val embedderControl: EmbedderControl? = null,
 ) {
     /** Back-compat single-vault constructor (one engine/index, optional conflicts + sync status). */
     constructor(
@@ -75,8 +77,11 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.7.0",
+        val apiVersion: String = "0.8.0",
         val embedderProvider: String = "onnx-local",
+        /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
+        val embedderModel: String = "none",
+        val embedderEndpoint: String? = null,
         val uiAuthor: Author = Author("svod-ui", "ui@svod.local"),
         /** When set to a directory, the reference web viewer is served same-origin at `/`. */
         val webViewerPath: String? = null,
@@ -255,18 +260,56 @@ class AppApiServer(
 
             get("/api/v1/settings") {
                 val vc = vault() ?: return@get call.notFound("vault")
+                val emb = embedderInfo(vc)
                 call.respond(SettingsDto(
                     vaultPath = vc.engine.root.toString(),
                     apiVersion = config.apiVersion,
-                    embedderProvider = config.embedderProvider,
-                    embedderModel = vc.index.indexedModel() ?: "none",
-                    embedderDim = vc.index.indexedDim() ?: 0,
+                    embedderProvider = emb.provider,
+                    embedderModel = vc.index.indexedModel() ?: emb.model,
+                    embedderDim = emb.dimension,
                     host = config.host,
+                    embedder = emb,
                 ))
             }
             get("/api/v1/index/status") {
                 val vc = vault() ?: return@get call.notFound("vault")
-                call.respond(IndexStatusDto(vc.index.docCount(), vc.index.headCommitIndexed(), vc.index.indexedModel() ?: "none", vc.index.indexedDim() ?: 0))
+                call.respond(indexStatus(vc))
+            }
+            put("/api/v1/embedder") {
+                val vc = vault() ?: return@put call.notFound("vault")
+                val control = embedderControl ?: return@put call.notImplemented("embedder control")
+                val req = call.receive<EmbedderRequestDto>()
+                try {
+                    val d = control.apply(vc.id, req.toSpec())
+                    call.respond(EmbedderInfoDto(d.provider, d.model, d.endpoint, d.dimension))
+                } catch (e: EmbedderControl.InvalidSpec) {
+                    call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("invalid_embedder", e.message ?: "invalid embedder spec"))
+                } catch (e: Exception) {
+                    // building a remote embedder probes the endpoint; an unreachable endpoint is a 409.
+                    call.respond(HttpStatusCode.Conflict, ErrorDto("embedder_unavailable", (e.cause ?: e).message ?: "could not initialize embedder"))
+                }
+            }
+            post("/api/v1/embedder/test") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val control = embedderControl ?: return@post call.notImplemented("embedder control")
+                val req = call.receive<EmbedderRequestDto>()
+                val r = control.test(vc.id, req.toSpec())
+                call.respond(EmbedderTestResultDto(r.ok, r.dimension, r.latencyMs, r.error))
+            }
+            post("/api/v1/index/reembed") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                vc.index.reembed()
+                call.respond(indexStatus(vc))
+            }
+            post("/api/v1/index/pause") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                vc.index.pause()
+                call.respond(indexStatus(vc))
+            }
+            post("/api/v1/index/resume") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                vc.index.resume()
+                call.respond(indexStatus(vc))
             }
             get("/api/v1/conflicts") {
                 val vc = vault() ?: return@get call.notFound("vault")
@@ -463,6 +506,27 @@ class AppApiServer(
 
     // ---- helpers ----
 
+    /** The active embedder view for [vc] (control-provided when wired, else the read-only config). */
+    private fun embedderInfo(vc: VaultView): EmbedderInfoDto {
+        embedderControl?.descriptor(vc.id)?.let { return EmbedderInfoDto(it.provider, it.model, it.endpoint, it.dimension) }
+        return EmbedderInfoDto(config.embedderProvider, vc.index.indexedModel() ?: config.embedderModel, config.embedderEndpoint, vc.index.indexedDim() ?: 0)
+    }
+
+    private fun indexStatus(vc: VaultView): IndexStatusDto {
+        val s = vc.index.embeddingStatus()
+        val provider = embedderInfo(vc).provider
+        return IndexStatusDto(
+            docCount = vc.index.docCount(),
+            headIndexed = vc.index.headCommitIndexed(),
+            model = vc.index.indexedModel() ?: "none",
+            dim = vc.index.indexedDim() ?: 0,
+            keywordReady = vc.index.keywordReady(),
+            embedding = EmbeddingStatusDto(s.state.name.lowercase(), s.done, s.total, provider, s.model, s.error),
+        )
+    }
+
+    private fun EmbedderRequestDto.toSpec() = EmbedderControl.EmbedderSpec(provider, model, endpoint, apiKeyRef, maxThreads)
+
     private fun encodeEvent(e: SvodEvent): String =
         jsonFormat.encodeToString(buildJsonObject { put("type", e.type); put("ts", e.ts); put("data", e.data) })
 
@@ -594,3 +658,6 @@ private suspend fun io.ktor.server.application.ApplicationCall.notFound(what: St
 
 private suspend fun io.ktor.server.application.ApplicationCall.badRequest(message: String) =
     respond(HttpStatusCode.BadRequest, ErrorDto("bad_request", message))
+
+private suspend fun io.ktor.server.application.ApplicationCall.notImplemented(what: String) =
+    respond(HttpStatusCode.NotImplemented, ErrorDto("not_implemented", "$what is not available in this build"))

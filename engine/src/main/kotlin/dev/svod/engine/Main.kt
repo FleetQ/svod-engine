@@ -24,11 +24,12 @@ import java.util.concurrent.CountDownLatch
 fun main(args: Array<String>) {
     if (args.firstOrNull() == "import") return runImport(args.drop(1))
 
-    val config = args.firstOrNull()
-        ?.let { SvodConfig.loadOrThrowValidated(Paths.get(it)) }
+    val configPath = args.firstOrNull()?.let { Paths.get(it) }
+    val config = configPath
+        ?.let { SvodConfig.loadOrThrowValidated(it) }
         ?: SvodConfig.default(Paths.get(System.getProperty("user.home"), "svod-vault"))
 
-    val node = SvodNode.start(config)
+    val node = SvodNode.start(config, configPath = configPath)
     Runtime.getRuntime().addShutdownHook(Thread({ node.shutdown() }, "svod-shutdown"))
 
     println("svod-engine ready on java ${System.getProperty("java.version")}")

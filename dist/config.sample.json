@@ -5,8 +5,14 @@
   "mcpPort": 7518,
   "embedder": {
     "provider": "onnx-local",
-    "onnxModelId": "multilingual-e5-small"
+    "onnxModelId": "multilingual-e5-small",
+    "_provider_options": "onnx-local | local-ollama | remote-openai | none",
+    "_local-ollama": { "provider": "local-ollama", "endpoint": "http://127.0.0.1:11434", "model": "nomic-embed-text" },
+    "_remote-openai": { "provider": "remote-openai", "endpoint": "https://api.openai.com", "model": "text-embedding-3-small", "apiKeyRef": "keychain:svod-embed-openai" },
+    "maxThreads": 2,
+    "batchSize": 32
   },
+  "indexing": { "blockStartup": false },
   "agents": [
     { "token": "env:SVOD_FRIDAY_TOKEN", "agentId": "friday", "role": "WRITE", "name": "Friday" },
     { "token": "env:SVOD_READER_TOKEN", "agentId": "reader", "role": "READ_ONLY" }

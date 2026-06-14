@@ -41,6 +41,42 @@ class SvodNodeTest {
             HttpResponse.BodyHandlers.ofString(),
         )
 
+    private fun post(port: Int, path: String, body: String): HttpResponse<String> =
+        http.send(
+            HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port$path"))
+                .header("Content-Type", "application/json").POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+            HttpResponse.BodyHandlers.ofString(),
+        )
+
+    @Test
+    fun `embedder control - settings, probe, switch, and raw-key rejection`() {
+        val vault = Files.createTempDirectory("svod-emb-")
+        val node = SvodNode.start(cfg(vault))
+        val port = node.appApiPort
+        try {
+            // GET /settings exposes the structured embedder block.
+            val s = get(port, "/api/v1/settings")
+            assertEquals(200, s.statusCode())
+            assertTrue(s.body().contains("\"embedder\"") && s.body().contains("\"provider\":\"none\""), s.body())
+
+            // probe a spec without persisting (none → ok, dimension 0)
+            val probe = post(port, "/api/v1/embedder/test", """{"provider":"none"}""")
+            assertEquals(200, probe.statusCode())
+            assertTrue(probe.body().contains("\"ok\":true"), probe.body())
+
+            // switch the embedder (idempotent none → none) returns the new EmbedderInfo
+            val put = put(port, "/api/v1/embedder", """{"provider":"none"}""")
+            assertEquals(200, put.statusCode())
+            assertTrue(put.body().contains("\"provider\":\"none\""), put.body())
+
+            // a RAW api key (not a Secrets ref) is rejected — keys never travel as plaintext
+            val bad = put(port, "/api/v1/embedder", """{"provider":"remote-openai","apiKeyRef":"sk-rawsecret"}""")
+            assertEquals(422, bad.statusCode())
+        } finally {
+            node.shutdown()
+        }
+    }
+
     @Test
     fun `node starts, serves, shuts down gracefully without losing data`() {
         val vault = Files.createTempDirectory("svod-node-")

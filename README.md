@@ -324,10 +324,11 @@ dependency. The engine stays vendor-agnostic (see
 
 **v1.1.0 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
 watcher → lifecycle → reference viewer → multi-host sync → hardening → multi-vault + Obsidian
-import → backup/DR + ops surface → external sources (prune + auto-sync). Full suite green (127 tests);
+import → backup/DR + ops surface → external sources (prune + auto-sync) → non-blocking keyword-first
+indexing + pluggable embedders (local-onnx / local-ollama / remote-openai). Full suite green;
 CI gates every change; packaged as self-contained app-images **and** GraalVM `native-image` single
-binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.7.0**
-(versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0016) for the decision record.
+binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.8.0**
+(versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0017) for the decision record.
 
 Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption).
 The GraalVM `native-image` binary now ships for all three OSes (built on GraalVM CE/JDK 23; serves

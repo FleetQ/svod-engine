@@ -42,4 +42,27 @@ data class EmbedderConfig(
     val maxThreads: Int = 2,
     /** Max texts handed to the embedder in one call (background pass). */
     val batchSize: Int = 32,
-)
+) {
+    /** Canonical provider name for the App API (local-onnx / local-ollama / remote-openai / none). */
+    val providerName: String get() = when (provider) {
+        EmbedderProvider.ONNX_LOCAL -> "local-onnx"
+        EmbedderProvider.OLLAMA -> "local-ollama"
+        EmbedderProvider.OPENAI -> "remote-openai"
+        EmbedderProvider.NONE -> "none"
+    }
+
+    /** The effective model name for the active provider. */
+    val modelName: String get() = when (provider) {
+        EmbedderProvider.ONNX_LOCAL -> onnx.modelId
+        EmbedderProvider.OLLAMA -> ollamaModel
+        EmbedderProvider.OPENAI -> openaiModel
+        EmbedderProvider.NONE -> "none"
+    }
+
+    /** The endpoint for HTTP providers; null for in-process providers (onnx/none). */
+    val endpointOrNull: String? get() = when (provider) {
+        EmbedderProvider.OLLAMA -> ollamaEndpoint
+        EmbedderProvider.OPENAI -> openaiEndpoint
+        else -> null
+    }
+}

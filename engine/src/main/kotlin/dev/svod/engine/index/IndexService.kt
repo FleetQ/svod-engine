@@ -257,7 +257,9 @@ class IndexService(
      */
     fun setEmbedder(newEmbedder: Embedder) {
         val prevDim = indexedDim() ?: 0
+        val previous = embedder
         embedder = newEmbedder
+        if (previous !== newEmbedder) (previous as? AutoCloseable)?.let { runCatching { it.close() } }
         suppressSemantic = newEmbedder.isActive
         launchBackground {
             if (!newEmbedder.isActive) {

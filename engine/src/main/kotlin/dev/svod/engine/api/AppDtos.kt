@@ -103,10 +103,55 @@ data class SettingsDto(
     val embedderModel: String,
     val embedderDim: Int,
     val host: String,
+    /** Structured embedder view (additive; preferred over the flat embedder* fields). */
+    val embedder: EmbedderInfoDto,
+)
+
+/** The active embedder for a vault. [endpoint] is null for in-process providers (onnx/none). */
+@Serializable
+data class EmbedderInfoDto(val provider: String, val model: String, val endpoint: String? = null, val dimension: Int)
+
+/** Background-embedding progress (drives the index.progress WS event + GET /index/status). */
+@Serializable
+data class EmbeddingStatusDto(
+    val state: String, // idle | running | paused | error
+    val done: Int,
+    val total: Int,
+    val provider: String,
+    val model: String,
+    val error: String? = null,
 )
 
 @Serializable
-data class IndexStatusDto(val docCount: Int, val headIndexed: String? = null, val model: String, val dim: Int)
+data class IndexStatusDto(
+    val docCount: Int,
+    val headIndexed: String? = null,
+    val model: String,
+    val dim: Int,
+    /** True once BM25/keyword search is consistent with HEAD (semantic may still be filling). */
+    val keywordReady: Boolean = true,
+    val embedding: EmbeddingStatusDto,
+)
+
+/** Request to switch the active embedder (PUT /embedder, POST /embedder/test). */
+@Serializable
+data class EmbedderRequestDto(
+    val provider: String,
+    val model: String? = null,
+    val endpoint: String? = null,
+    /** API key as a Secrets ref only (env:/file:/keychain:) — a raw key is rejected. */
+    val apiKeyRef: String? = null,
+    val maxThreads: Int? = null,
+)
+
+/** Result of probing an embedder spec (POST /embedder/test). */
+@Serializable
+data class EmbedderTestResultDto(
+    val ok: Boolean,
+    val dimension: Int? = null,
+    val latencyMs: Long? = null,
+    val error: String? = null,
+)
 
 @Serializable
 data class ConflictEntryDto(

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.7.0
+  version: 0.8.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -557,9 +557,114 @@ paths:
       operationId: events
       description: >
         Upgrade to a WebSocket. The server pushes JSON-encoded Event objects. Event types:
-        file.changed, index.updated, commit.created, conflict, engine.status, agent.activity.
+        file.changed, index.updated, index.progress, commit.created, conflict, engine.status,
+        agent.activity. index.progress carries { vault, done, total, state } during background
+        embedding (throttled emit).
       responses:
         "101": { description: Switching Protocols (WebSocket) }
+
+  /api/v1/embedder:
+    put:
+      tags: [ops]
+      summary: Switch the active embedding provider/model (persisted; triggers a background re-embed)
+      operationId: setEmbedder
+      description: >
+        The embedder is a global engine setting (one provider for all vaults). Switching to a
+        different dimension wipes + rebuilds the vector index keyword-first; keyword search keeps
+        working and semantic is suppressed until the rebuild completes. API keys are accepted ONLY as
+        Secrets references (env:/file:/keychain:) — a raw key is rejected (422). Returns 501 on builds
+        without embedder control.
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmbedderRequest" }
+      responses:
+        "200":
+          description: The new active embedder
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmbedderInfo" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Could not initialize the embedder (e.g. a remote endpoint is unreachable).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: Invalid spec (unknown provider, or a raw API key instead of a Secrets ref).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /api/v1/embedder/test:
+    post:
+      tags: [ops]
+      summary: Probe an embedder spec (embed a test string) without persisting it
+      operationId: testEmbedder
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmbedderRequest" }
+      responses:
+        "200":
+          description: Probe result (ok=false with an error message when the probe fails).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmbedderTestResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /api/v1/index/reembed:
+    post:
+      tags: [ops]
+      summary: Re-embed the whole vault in the background (keyword search stays available)
+      operationId: reembed
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: Current index status (the re-embed runs in the background)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IndexStatus" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/index/pause:
+    post:
+      tags: [ops]
+      summary: Pause the background embedding pass (keyword search is unaffected)
+      operationId: pauseIndex
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: Current index status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IndexStatus" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/index/resume:
+    post:
+      tags: [ops]
+      summary: Resume a paused background embedding pass
+      operationId: resumeIndex
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: Current index status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/IndexStatus" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
 components:
   parameters:
@@ -595,6 +700,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ConflictBody" }
+    NotImplemented:
+      description: Not implemented in this build (feature-detect via the API version).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
     Health:
@@ -796,23 +906,71 @@ components:
 
     Settings:
       type: object
-      required: [vaultPath, apiVersion, embedderProvider, host]
+      required: [vaultPath, apiVersion, embedderProvider, host, embedder]
       properties:
         vaultPath: { type: string }
         apiVersion: { type: string }
-        embedderProvider: { type: string }
+        embedderProvider: { type: string, description: "Deprecated flat field; prefer embedder.provider." }
         embedderModel: { type: string }
         embedderDim: { type: integer }
         host: { type: string }
+        embedder: { $ref: "#/components/schemas/EmbedderInfo" }
+
+    EmbedderInfo:
+      type: object
+      required: [provider, model, dimension]
+      description: The active embedder. endpoint is null for in-process providers (local-onnx/none).
+      properties:
+        provider: { type: string, description: "local-onnx | local-ollama | remote-openai | none" }
+        model: { type: string }
+        endpoint: { type: string, nullable: true }
+        dimension: { type: integer, description: "Vector dimension (0 when BM25-only / not yet indexed)." }
+
+    EmbeddingStatus:
+      type: object
+      required: [state, done, total, provider, model]
+      description: Background-embedding progress (also pushed as the index.progress event).
+      properties:
+        state: { type: string, enum: [idle, running, paused, error] }
+        done: { type: integer }
+        total: { type: integer }
+        provider: { type: string }
+        model: { type: string }
+        error: { type: string, nullable: true }
+
+    EmbedderRequest:
+      type: object
+      required: [provider]
+      description: >
+        Switch (PUT /embedder) or probe (POST /embedder/test) the embedder. apiKeyRef is a Secrets
+        reference (env:/file:/keychain:) — a raw key is rejected. model/endpoint override the
+        provider defaults; maxThreads caps background embedding workers.
+      properties:
+        provider: { type: string, description: "local-onnx | local-ollama | remote-openai | none" }
+        model: { type: string, nullable: true }
+        endpoint: { type: string, nullable: true }
+        apiKeyRef: { type: string, nullable: true }
+        maxThreads: { type: integer, nullable: true }
+
+    EmbedderTestResult:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        dimension: { type: integer, nullable: true }
+        latencyMs: { type: integer, format: int64, nullable: true }
+        error: { type: string, nullable: true }
 
     IndexStatus:
       type: object
-      required: [docCount, model, dim]
+      required: [docCount, model, dim, keywordReady, embedding]
       properties:
         docCount: { type: integer }
         headIndexed: { type: string, nullable: true }
         model: { type: string }
         dim: { type: integer }
+        keywordReady: { type: boolean, description: "True once BM25 search is consistent with HEAD." }
+        embedding: { $ref: "#/components/schemas/EmbeddingStatus" }
 
     Conflicts:
       type: object
@@ -1036,6 +1194,6 @@ components:
       properties:
         type:
           type: string
-          enum: [file.changed, index.updated, commit.created, conflict, engine.status, agent.activity]
+          enum: [file.changed, index.updated, index.progress, commit.created, conflict, engine.status, agent.activity]
         ts: { type: integer, format: int64 }
         data: { type: object, additionalProperties: true }

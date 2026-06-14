@@ -213,6 +213,30 @@ class AppApiContractTest {
     }
 
     @Test
+    fun `embedder + index control endpoints conform to the contract`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            val ap = "/api/v1"
+            // index control: pause / resume / reembed all return the IndexStatus shape.
+            for (op in listOf("pause", "resume", "reembed")) {
+                val r = fx.post("$ap/index/$op", "")
+                assertEquals(200, r.statusCode(), op)
+                validate("$ap/index/$op", Request.Method.POST, 200, r.body())
+            }
+            // index/status now carries keywordReady + embedding (extended schema).
+            val status = fx.get("$ap/index/status")
+            assertTrue(status.body().contains("keywordReady") && status.body().contains("embedding"), status.body())
+
+            // No embedder control wired in this fixture ⇒ 501, conforming to the Error schema.
+            val put = fx.put("$ap/embedder", """{"provider":"none"}""")
+            assertEquals(501, put.statusCode())
+            validate("$ap/embedder", Request.Method.PUT, 501, put.body())
+            val test = fx.post("$ap/embedder/test", """{"provider":"none"}""")
+            assertEquals(501, test.statusCode())
+            validate("$ap/embedder/test", Request.Method.POST, 501, test.body())
+        }
+    }
+
+    @Test
     fun `every path declared in the contract is implemented`() {
         val openApi = OpenAPIV3Parser().read(specPath.toString())
         val declared = openApi.paths.keys.toSet()
@@ -225,6 +249,8 @@ class AppApiContractTest {
             "/api/v1/sync/config", "/api/v1/sync/now", "/api/v1/backup/now",
             "/api/v1/settings/backup", "/api/v1/maintenance/reindex",
             "/api/v1/sources", "/api/v1/sources/{id}", "/api/v1/sources/{id}/sync", "/api/v1/sources/sync",
+            "/api/v1/embedder", "/api/v1/embedder/test",
+            "/api/v1/index/reembed", "/api/v1/index/pause", "/api/v1/index/resume",
         )
         assertEquals(declared, implemented, "contract paths and implemented routes must match exactly")
         assertTrue(Files.exists(specPath), "contract file present")
