@@ -24,9 +24,12 @@ class FakeEmbedder(
 ) : Embedder {
     val passageCalls = AtomicInteger(0)
     val queryCalls = AtomicInteger(0)
+    /** Number of texts in each embedPassages call (to assert cross-file batching). */
+    val batchSizes = java.util.concurrent.CopyOnWriteArrayList<Int>()
 
     override fun embedPassages(texts: List<String>): List<FloatArray> {
         passageCalls.addAndGet(texts.size)
+        batchSizes.add(texts.size)
         if (delayMs > 0) Thread.sleep(delayMs)
         return texts.map { vec(it) }
     }

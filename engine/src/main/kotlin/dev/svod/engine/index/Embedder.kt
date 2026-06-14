@@ -13,10 +13,23 @@ package dev.svod.engine.index
  */
 interface Embedder {
     val model: String
+
+    /**
+     * Vector dimension. For remote providers this may require a network probe — so it must NOT be
+     * read on the boot path (use [knownDim]); read it only where a blocking probe is acceptable
+     * (the /embedder/test endpoint, integration-availability checks).
+     */
     val dim: Int
 
     /** Whether this embedder produces vectors. False ⇒ BM25-only; embed* must not be called. */
     val isActive: Boolean get() = dim > 0
+
+    /**
+     * Dimension if already known WITHOUT a network call (else 0). Boot/metadata code uses this so a
+     * cold remote endpoint never blocks or crashes startup. Local providers know it eagerly; remote
+     * providers learn it from the first successful embed.
+     */
+    fun knownDim(): Int = dim
 
     /** Embed document chunks. Order of the result matches the input. */
     fun embedPassages(texts: List<String>): List<FloatArray>

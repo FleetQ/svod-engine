@@ -76,6 +76,48 @@ class BackgroundIndexTest {
         }
     }
 
+    /** Constructs with no network (like the fixed remote embedders) but fails every embed call. */
+    private class FailingEmbedder(override val model: String = "remote-cold") : Embedder {
+        override val dim: Int get() = throw RuntimeException("endpoint cold")
+        override val isActive = true
+        override fun knownDim() = 0
+        override fun embedPassages(texts: List<String>): List<FloatArray> = throw RuntimeException("endpoint cold")
+        override fun embedQuery(text: String): FloatArray = throw RuntimeException("endpoint cold")
+    }
+
+    @Test
+    fun `a failing embedder never breaks boot - keyword works, embedding goes to error`() {
+        IndexFixture.create().use { fx ->
+            fx.seedCorpus()
+            val idx = IndexService(fx.root, fx.indexDir, FailingEmbedder(), blockStartup = false, maxThreads = 2, batchSize = 64)
+            try {
+                idx.start() // must NOT throw, even though the embedder fails
+                await { idx.keywordReady() }
+                // BM25 is fully available despite the embedder being down.
+                assertEquals("b.md", idx.search(SearchQuery("banana", mode = SearchMode.KEYWORD)).hits.firstOrNull()?.path)
+                // the embedding pass ends in error (with the message), not a crash
+                await { idx.embeddingStatus().state == IndexService.EmbeddingState.ERROR }
+                assertTrue(idx.embeddingStatus().error?.contains("cold") == true, idx.embeddingStatus().error)
+                // semantic is suppressed/empty, never throws to the caller
+                assertTrue(idx.search(SearchQuery("banana", mode = SearchMode.SEMANTIC)).hits.isEmpty())
+            } finally { idx.close() }
+        }
+    }
+
+    @Test
+    fun `embedding batches across files into one call`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { for (i in 1..10) fx.seed("n$i.md", "# N$i\nbody $i unique words") }
+            val emb = FakeEmbedder("fake-v1")
+            // batchSize 64 ≫ 10 single-chunk files ⇒ all chunks should go in ONE embedPassages call.
+            IndexService(fx.root, fx.indexDir, emb, blockStartup = true, maxThreads = 1, batchSize = 64).start().use {
+                assertEquals(10, emb.passageCalls.get(), "all 10 chunks embedded")
+                assertEquals(1, emb.batchSizes.size, "cross-file batching ⇒ a single batched call, got ${emb.batchSizes}")
+                assertEquals(10, emb.batchSizes.first(), "the one batch carried all 10 docs")
+            }
+        }
+    }
+
     @Test
     fun `a dimension change re-embeds the whole vault`() {
         IndexFixture.create().use { fx ->

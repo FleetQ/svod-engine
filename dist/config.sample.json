@@ -8,9 +8,10 @@
     "onnxModelId": "multilingual-e5-small",
     "_provider_options": "onnx-local | local-ollama | remote-openai | none",
     "_local-ollama": { "provider": "local-ollama", "endpoint": "http://127.0.0.1:11434", "model": "nomic-embed-text" },
-    "_remote-openai": { "provider": "remote-openai", "endpoint": "https://api.openai.com", "model": "text-embedding-3-small", "apiKeyRef": "keychain:svod-embed-openai" },
+    "_remote-openai": { "provider": "remote-openai", "endpoint": "https://api.openai.com", "model": "text-embedding-3-small", "apiKeyRef": "keychain:svod-embed-openai", "requestTimeoutSeconds": 60 },
     "maxThreads": 2,
-    "batchSize": 32
+    "_batchSize": "omit for auto (32 local, 96 remote); set to override",
+    "requestTimeoutSeconds": 60
   },
   "indexing": { "blockStartup": false },
   "agents": [

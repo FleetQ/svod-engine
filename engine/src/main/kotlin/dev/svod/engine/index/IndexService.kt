@@ -125,7 +125,10 @@ class IndexService(
         val emb = embedder
         val meta = exec.submit<IndexMeta?> { IndexMeta.load(metaFile) }.get()
         // Genuine model/dim/schema change ⇒ the vector field is incompatible: wipe and rebuild.
-        if (meta != null && !meta.compatibleWith(schemaVersion, emb.model, emb.dim)) {
+        // knownDim() never does a network probe (a cold remote endpoint must not block/crash boot);
+        // IndexMeta.compatibleWith treats an unknown (0) dimension as a wildcard, so a remote whose
+        // dim isn't probed yet resumes against its existing index instead of wiping it.
+        if (meta != null && !meta.compatibleWith(schemaVersion, emb.model, emb.knownDim())) {
             exec.submit { index.deleteAll() }.get()
         }
         keywordCatchUp()
@@ -164,44 +167,59 @@ class IndexService(
     private fun embedBacklog() = embedPass(exec.submit<List<String>> { index.pathsMissingVectors() }.get(), force = false)
 
     /**
-     * Re-embed [paths] (force ⇒ re-embed even chunks that already have a vector). Embedding compute
-     * runs on a bounded, low-priority pool ([maxThreads]); all git reads and Lucene writes stay on
-     * [exec]. Commits every [batchSize] files (resume checkpoints). Honors pause and shutdown.
+     * Re-embed [paths] (force ⇒ re-embed even chunks that already have a vector). Files are packed
+     * into groups of up to [batchSize] chunks so a remote provider gets ONE /v1/embeddings POST per
+     * group (few large requests beat many tiny ones — fewer serverless cold starts) — yet each file
+     * is still upserted atomically (resume granularity). Embedding compute runs on a bounded,
+     * low-priority pool ([maxThreads]); all git reads + Lucene writes stay on [exec]. Commits after
+     * each group (resume checkpoints). Honors pause and shutdown. Progress is counted in chunks.
      */
     private fun embedPass(paths: List<String>, force: Boolean) {
         embeddingError = null
-        embeddingTotal.set(paths.size)
         embeddingDone.set(0)
+        embeddingTotal.set(0)
         if (paths.isEmpty()) { transition(EmbeddingState.IDLE); return }
-        transition(EmbeddingState.RUNNING)
         val head = exec.submit<String?> { reader.headCommit() }.get()
         if (head == null) { transition(EmbeddingState.IDLE); return }
 
+        // Plan every file on exec (git reads + reuse decision); drop files that vanished.
+        val plans = ArrayList<EmbedPlan>()
+        for (path in paths) {
+            if (closing.get()) return
+            val plan = exec.submit<EmbedPlan?> { planEmbed(path, head, force) }.get()
+            if (plan == null) exec.submit { index.deletePath(path) }.get()
+            else if (plan.toEmbed.isNotEmpty()) plans.add(plan)
+        }
+        embeddingTotal.set(plans.sumOf { it.toEmbed.size })
+        if (plans.isEmpty()) {
+            exec.submit { index.commit() }.get()
+            if (!closing.get()) { saveMeta(head); onSynced?.invoke(head) }
+            transition(EmbeddingState.IDLE)
+            return
+        }
+        transition(EmbeddingState.RUNNING)
+
+        val groups = packIntoGroups(plans, batchSize)
         val pool: ExecutorService = Executors.newFixedThreadPool(maxThreads.coerceAtLeast(1)) { r ->
             Thread(r, "svod-embed").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
         }
-        val committedSince = AtomicInteger(0)
         try {
-            val futures = paths.map { path ->
+            val futures = groups.map { group ->
                 pool.submit {
                     if (closing.get()) return@submit
                     awaitIfPaused()
                     if (closing.get()) return@submit
-                    // Git read + Lucene write on exec (single writer); the slow embedding runs HERE
-                    // on this low-priority pool thread, so it never blocks the indexer or the writer.
-                    val plan = exec.submit<EmbedPlan?> { planEmbed(path, head, force) }.get()
-                    if (plan == null) {
-                        exec.submit { index.deletePath(path) }.get()
-                    } else {
-                        val freshVecs = embedInBatches(plan.toEmbed.map { embedText(it) })
-                        val fresh = plan.toEmbed.mapIndexed { i, c -> c.contentHash to freshVecs[i] }.toMap()
-                        exec.submit { finishEmbed(path, plan, fresh) }.get()
+                    // One batched embed call for the whole group (the slow part, off exec)…
+                    val items = group.flatMap { plan -> plan.toEmbed.map { plan to it } }
+                    val vecs = embedInBatches(items.map { embedText(it.second) })
+                    // …then upsert each file (Lucene writes on exec) with its own fresh vectors.
+                    for (plan in group) {
+                        val fresh = HashMap<String, FloatArray>()
+                        items.forEachIndexed { i, (p, c) -> if (p === plan) fresh[c.contentHash] = vecs[i] }
+                        exec.submit { finishEmbed(plan.path, plan, fresh) }.get()
                     }
-                    embeddingDone.incrementAndGet()
-                    if (committedSince.incrementAndGet() >= batchSize) {
-                        committedSince.set(0)
-                        exec.submit { index.commit() }.get()
-                    }
+                    exec.submit { index.commit() }.get()
+                    embeddingDone.addAndGet(items.size)
                     emitProgressThrottled()
                 }
             }
@@ -221,6 +239,20 @@ class IndexService(
             pool.shutdownNow()
             suppressSemantic = false
         }
+    }
+
+    /** Greedily pack file plans into groups whose total to-embed chunk count stays within [cap]. */
+    private fun packIntoGroups(plans: List<EmbedPlan>, cap: Int): List<List<EmbedPlan>> {
+        val groups = ArrayList<List<EmbedPlan>>()
+        var cur = ArrayList<EmbedPlan>()
+        var curSize = 0
+        for (p in plans) {
+            val n = p.toEmbed.size
+            if (curSize > 0 && curSize + n > cap) { groups.add(cur); cur = ArrayList(); curSize = 0 }
+            cur.add(p); curSize += n
+        }
+        if (cur.isNotEmpty()) groups.add(cur)
+        return groups
     }
 
     private fun awaitIfPaused() {
@@ -260,6 +292,12 @@ class IndexService(
         val previous = embedder
         embedder = newEmbedder
         if (previous !== newEmbedder) (previous as? AutoCloseable)?.let { runCatching { it.close() } }
+        // Fresh swap ⇒ a fresh run: clear any inherited pause/error so the new embedder starts clean.
+        resume()
+        embeddingError = null
+        embeddingDone.set(0)
+        embeddingTotal.set(0)
+        transition(EmbeddingState.RUNNING)
         suppressSemantic = newEmbedder.isActive
         launchBackground {
             if (!newEmbedder.isActive) {
@@ -270,8 +308,12 @@ class IndexService(
                 suppressSemantic = false
                 return@launchBackground
             }
-            if (newEmbedder.dim != prevDim) {
-                // Dimension change: the vec field is fixed-width, so a wipe + keyword-first rebuild.
+            // knownDim() never probes (a cold remote must not block the swap). If the new dim is
+            // unknown (0, remote not yet probed) or differs, we MUST wipe — the vec field is fixed
+            // width and Lucene cannot mix dimensions. Only an in-place re-embed is safe when the new
+            // dimension is known AND equal to what's indexed.
+            val newDim = newEmbedder.knownDim()
+            if (newDim == 0 || newDim != prevDim) {
                 exec.submit { index.deleteAll() }.get()
                 keywordReadyFlag.set(false)
                 keywordCatchUp()
@@ -380,7 +422,14 @@ class IndexService(
 
     private fun semanticLeg(text: String, filter: Query?, k: Int): List<Pair<String, Float>> {
         if (text.isBlank()) return emptyList()
-        return index.semanticSearch(embedder.embedQuery(text), k, filter)
+        // A remote query-embed can fail (endpoint cold/down) — degrade to keyword rather than error
+        // the whole search. The background pass surfaces the failure via embeddingStatus().
+        return try {
+            index.semanticSearch(embedder.embedQuery(text), k, filter)
+        } catch (e: Exception) {
+            System.err.println("semantic query-embed failed, falling back to keyword: ${e.message}")
+            emptyList()
+        }
     }
 
     /** Supports fuzzy (`term~`), prefix (`term*`), phrase (`"..."`) and field-scoped queries. */
@@ -502,6 +551,7 @@ class IndexService(
 
     /** A file's chunks split into reusable (already-vectored) and to-embed, for the background pass. */
     private class EmbedPlan(
+        val path: String,
         val blob: String,
         val tags: List<String>,
         val created: Long?,
@@ -518,7 +568,7 @@ class IndexService(
         if (doc.chunks.isEmpty()) return null
         val reusable = if (force) emptyMap() else index.existingVectors(path)
         val toEmbed = doc.chunks.filter { it.contentHash !in reusable }
-        return EmbedPlan(blob, doc.tags, doc.created, doc.chunks, reusable, toEmbed)
+        return EmbedPlan(path, blob, doc.tags, doc.created, doc.chunks, reusable, toEmbed)
     }
 
     /** Combine reused + freshly-embedded vectors and upsert (MUST run on [exec]). */
@@ -545,7 +595,9 @@ class IndexService(
 
     private fun saveMeta(head: String?) {
         Files.createDirectories(indexDir)
-        IndexMeta.save(metaFile, IndexMeta(schemaVersion, embedder.model, embedder.dim, head))
+        // knownDim() (not dim) so the keyword-first pass never triggers a remote probe; it is 0 until
+        // the first successful embed, then the post-embed saveMeta records the real dimension.
+        IndexMeta.save(metaFile, IndexMeta(schemaVersion, embedder.model, embedder.knownDim(), head))
     }
 
     private fun saveMetaCurrent() = saveMeta(IndexMeta.load(metaFile)?.headCommit)

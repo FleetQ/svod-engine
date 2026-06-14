@@ -19,9 +19,15 @@ data class IndexMeta(
     val embeddingDim: Int,
     val headCommit: String? = null,
 ) {
-    /** True if [other] index config is compatible (no reindex needed) with this one. */
+    /**
+     * True if the index is compatible (no reindex needed) with the active embedder. A [dim] of 0 is
+     * a wildcard — a remote embedder whose dimension hasn't been probed yet resumes against its
+     * existing index (same model) rather than forcing a wipe; the real dim is recorded after the
+     * first successful embed.
+     */
     fun compatibleWith(schemaVersion: Int, model: String, dim: Int): Boolean =
-        this.schemaVersion == schemaVersion && embeddingModel == model && embeddingDim == dim
+        this.schemaVersion == schemaVersion && embeddingModel == model &&
+            (embeddingDim == dim || dim == 0 || embeddingDim == 0)
 
     companion object {
         const val SCHEMA_VERSION = 1

@@ -40,8 +40,10 @@ data class EmbedderConfig(
     val openaiApiKeyRef: String? = null,
     /** Cap of concurrent low-priority background embedding workers (keeps indexing off the CPU). */
     val maxThreads: Int = 2,
-    /** Max texts handed to the embedder in one call (background pass). */
+    /** Max texts handed to the embedder in one call / per remote POST (background pass). */
     val batchSize: Int = 32,
+    /** Per-request timeout for HTTP providers (generous, to ride out serverless cold starts). */
+    val requestTimeoutSeconds: Int = 60,
 ) {
     /** Canonical provider name for the App API (local-onnx / local-ollama / remote-openai / none). */
     val providerName: String get() = when (provider) {

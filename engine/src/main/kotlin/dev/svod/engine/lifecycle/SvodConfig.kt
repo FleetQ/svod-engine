@@ -110,8 +110,10 @@ data class SvodConfig(
         val apiKeyRef: String? = null,
         /** Cap of concurrent low-priority background embedding workers. */
         val maxThreads: Int = 2,
-        /** Max texts per embedder call (background pass). */
-        val batchSize: Int = 32,
+        /** Max texts per embedder call / per remote POST. null ⇒ auto (32 local, 96 remote). */
+        val batchSize: Int? = null,
+        /** Per-request timeout for HTTP providers, seconds (generous for serverless cold starts). */
+        val requestTimeoutSeconds: Int = 60,
     )
 
     @Serializable
@@ -189,7 +191,8 @@ data class SvodConfig(
             errors += "embedder.provider must be one of $PROVIDERS, was '${embedder.provider}'"
         }
         if (embedder.maxThreads < 1) errors += "embedder.maxThreads must be >= 1, was ${embedder.maxThreads}"
-        if (embedder.batchSize < 1) errors += "embedder.batchSize must be >= 1, was ${embedder.batchSize}"
+        embedder.batchSize?.let { if (it < 1) errors += "embedder.batchSize must be >= 1, was $it" }
+        if (embedder.requestTimeoutSeconds < 1) errors += "embedder.requestTimeoutSeconds must be >= 1, was ${embedder.requestTimeoutSeconds}"
         val tokens = agents.map { it.token }
         if (tokens.any { it.isBlank() }) errors += "agent tokens must be non-blank"
         if (tokens.size != tokens.toSet().size) errors += "agent tokens must be unique"
@@ -218,6 +221,8 @@ data class SvodConfig(
             else -> EmbedderProvider.ONNX_LOCAL // "onnx-local" / "local-onnx"
         }
         // Generic endpoint/model (new schema) override the provider-specific legacy fields.
+        // Remote providers default to a larger batch (fewer POSTs ⇒ fewer serverless cold starts).
+        val isRemote = provider == EmbedderProvider.OPENAI
         return EmbedderConfig(
             provider = provider,
             onnx = OnnxConfig(embedder.onnxModelId, embedder.onnxLocalPath?.let { Paths.get(it) }),
@@ -227,7 +232,8 @@ data class SvodConfig(
             openaiEndpoint = embedder.endpoint ?: dev.svod.engine.index.OpenAiEmbedder.DEFAULT_ENDPOINT,
             openaiApiKeyRef = embedder.apiKeyRef,
             maxThreads = embedder.maxThreads,
-            batchSize = embedder.batchSize,
+            batchSize = embedder.batchSize ?: if (isRemote) 96 else 32,
+            requestTimeoutSeconds = embedder.requestTimeoutSeconds,
         )
     }
 
