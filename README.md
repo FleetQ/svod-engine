@@ -322,14 +322,14 @@ dependency. The engine stays vendor-agnostic (see
 
 ## Status
 
-**v1.2.2 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
+**v1.2.3 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
 watcher → lifecycle → reference viewer → multi-host sync → hardening → multi-vault + Obsidian
 import → backup/DR + ops surface → external sources (prune + auto-sync) → non-blocking keyword-first
 indexing + pluggable embedders (local-onnx / local-ollama / remote-openai) → restart robustness
 (stale-lock self-heal, observable resume), Prometheus `/metrics`, opt-in reranking, oversized-chunk
-fault tolerance. Full suite green;
+fault tolerance → embedder model enumeration (`POST /embedder/models`). Full suite green;
 CI gates every change; packaged as self-contained app-images **and** GraalVM `native-image` single
-binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.8.0**
+binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.9.0**
 (versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0017) for the decision record.
 
 Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption).
