@@ -65,11 +65,14 @@ class VaultContext private constructor(
             try {
                 val ec = config.toEmbedderConfig()
                 val embedder = Embedders.create(ec, vault)
+                val rc = config.toRerankerConfig()
                 val index = IndexService(
                     vault, vault.resolve(".svod").resolve("index"), embedder,
                     blockStartup = config.indexing.blockStartup,
                     maxThreads = ec.maxThreads,
                     batchSize = ec.batchSize,
+                    reranker = dev.svod.engine.index.Rerankers.create(rc),
+                    rerankTopK = rc.topK,
                 )
                 // Wire progress BEFORE start() so the very first background-embedding ticks are seen.
                 index.onSynced = { head -> eventBus.publish(EventTypes.INDEX_UPDATED) { put("vault", vs.id); put("head", head) } }

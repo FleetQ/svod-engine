@@ -14,6 +14,11 @@
     "requestTimeoutSeconds": 60
   },
   "indexing": { "blockStartup": false },
+  "reranker": {
+    "provider": "none",
+    "_provider_options": "none | remote (TEI-compatible /rerank: TEI, Infinity, Jina, Cohere)",
+    "_remote": { "provider": "remote", "endpoint": "http://127.0.0.1:8080", "model": "BAAI/bge-reranker-base", "apiKeyRef": "keychain:svod-rerank", "topK": 50, "requestTimeoutSeconds": 30 }
+  },
   "agents": [
     { "token": "env:SVOD_FRIDAY_TOKEN", "agentId": "friday", "role": "WRITE", "name": "Friday" },
     { "token": "env:SVOD_READER_TOKEN", "agentId": "reader", "role": "READ_ONLY" }

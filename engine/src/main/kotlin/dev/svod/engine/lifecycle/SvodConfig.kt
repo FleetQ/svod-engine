@@ -3,6 +3,8 @@ package dev.svod.engine.lifecycle
 import dev.svod.engine.index.EmbedderConfig
 import dev.svod.engine.index.EmbedderProvider
 import dev.svod.engine.index.OnnxConfig
+import dev.svod.engine.index.RerankerConfig
+import dev.svod.engine.index.RerankerProvider
 import dev.svod.engine.mcp.AgentRegistry
 import dev.svod.engine.mcp.AgentRole
 import kotlinx.serialization.Serializable
@@ -28,6 +30,8 @@ data class SvodConfig(
     val appApiPort: Int = 7517,
     val mcpPort: Int = 7518,
     val embedder: EmbedderSettings = EmbedderSettings(),
+    /** Optional second-stage reranker over search results (off by default). */
+    val reranker: RerankerSettings = RerankerSettings(),
     val agents: List<AgentSettings> = emptyList(),
     /** Legacy single-vault sync remotes (folded into the synthesized default vault). */
     val syncRemotes: List<String> = emptyList(),
@@ -116,6 +120,22 @@ data class SvodConfig(
         val requestTimeoutSeconds: Int = 60,
     )
 
+    /**
+     * Second-stage reranking (cross-encoder over the fused candidates). [provider] `remote` posts to
+     * a TEI-compatible `/rerank` endpoint; `none` (default) disables it. [apiKeyRef] is a `Secrets`
+     * ref (env:/file:/keychain:), never a raw key. [topK] bounds how many top candidates are
+     * re-scored per query.
+     */
+    @Serializable
+    data class RerankerSettings(
+        val provider: String = "none",
+        val endpoint: String? = null,
+        val model: String? = null,
+        val apiKeyRef: String? = null,
+        val topK: Int = 50,
+        val requestTimeoutSeconds: Int = 30,
+    )
+
     @Serializable
     data class AgentSettings(
         val token: String,
@@ -193,6 +213,11 @@ data class SvodConfig(
         if (embedder.maxThreads < 1) errors += "embedder.maxThreads must be >= 1, was ${embedder.maxThreads}"
         embedder.batchSize?.let { if (it < 1) errors += "embedder.batchSize must be >= 1, was $it" }
         if (embedder.requestTimeoutSeconds < 1) errors += "embedder.requestTimeoutSeconds must be >= 1, was ${embedder.requestTimeoutSeconds}"
+        if (RERANKER_PROVIDERS.none { it.equals(reranker.provider, ignoreCase = true) }) {
+            errors += "reranker.provider must be one of $RERANKER_PROVIDERS, was '${reranker.provider}'"
+        }
+        if (reranker.topK < 1) errors += "reranker.topK must be >= 1, was ${reranker.topK}"
+        if (reranker.requestTimeoutSeconds < 1) errors += "reranker.requestTimeoutSeconds must be >= 1, was ${reranker.requestTimeoutSeconds}"
         val tokens = agents.map { it.token }
         if (tokens.any { it.isBlank() }) errors += "agent tokens must be non-blank"
         if (tokens.size != tokens.toSet().size) errors += "agent tokens must be unique"
@@ -237,6 +262,22 @@ data class SvodConfig(
         )
     }
 
+    fun toRerankerConfig(): RerankerConfig {
+        val provider = when (reranker.provider.lowercase()) {
+            "remote", "remote-tei", "tei" -> RerankerProvider.REMOTE
+            else -> RerankerProvider.NONE
+        }
+        return RerankerConfig(
+            provider = provider,
+            endpoint = reranker.endpoint ?: dev.svod.engine.index.RemoteReranker.DEFAULT_ENDPOINT,
+            model = reranker.model ?: dev.svod.engine.index.RemoteReranker.DEFAULT_MODEL,
+            // API key is a Secrets reference only — resolved here, never accepted/stored raw.
+            apiKey = reranker.apiKeyRef?.takeIf { it.isNotBlank() }?.let { dev.svod.engine.security.Secrets.resolve(it) },
+            topK = reranker.topK,
+            requestTimeoutSeconds = reranker.requestTimeoutSeconds,
+        )
+    }
+
     fun toAgentSpecs(): List<AgentRegistry.AgentSpec> = agents.map { a ->
         val role = if (a.role.equals("WRITE", ignoreCase = true)) AgentRole.WRITE else AgentRole.READ_ONLY
         AgentRegistry.AgentSpec(
@@ -275,6 +316,7 @@ data class SvodConfig(
         fun redactRemote(remote: String): String = URL_USERINFO.replace(remote) { it.groupValues[1] }
 
         val PROVIDERS = listOf("onnx-local", "local-onnx", "ollama", "local-ollama", "remote-openai", "openai", "none")
+        val RERANKER_PROVIDERS = listOf("none", "remote", "remote-tei", "tei")
         val ROLES = listOf("READ_ONLY", "WRITE")
 
         private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }

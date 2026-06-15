@@ -52,11 +52,19 @@ class IndexService(
     private val maxThreads: Int = 2,
     /** Max texts per embedder call (background pass). */
     private val batchSize: Int = 32,
+    /** Optional second-stage reranker over the fused candidates. Default [NoneReranker] ⇒ no reranking. */
+    reranker: Reranker = NoneReranker,
+    /** How many top fused candidates the reranker re-scores per query (the rest keep fused order). */
+    private val rerankTopK: Int = 50,
 ) : AutoCloseable {
 
     /** The active embedder. Swappable at runtime via [setEmbedder] (provider change). */
     @Volatile
     private var embedder: Embedder = embedder
+
+    /** The active reranker (opt-in second stage). */
+    @Volatile
+    private var reranker: Reranker = reranker
 
     private val log = org.slf4j.LoggerFactory.getLogger(IndexService::class.java)
     private val index = LuceneIndex(indexDir)
@@ -424,7 +432,8 @@ class IndexService(
             else -> Rrf.fuse(listOf(kwIds, semIds)).entries.map { it.key to it.value }
         }
 
-        val hits = ordered.asSequence()
+        val ranked = maybeRerank(q.text, ordered)
+        val hits = ranked.asSequence()
             .mapNotNull { (id, score) ->
                 index.loadChunk(id)?.let { c ->
                     SearchHit(
@@ -461,6 +470,30 @@ class IndexService(
         } catch (e: Exception) {
             System.err.println("semantic query-embed failed, falling back to keyword: ${e.message}")
             emptyList()
+        }
+    }
+
+    /**
+     * Second-stage rerank of the top [rerankTopK] fused candidates with a cross-encoder, when a
+     * reranker is active. Re-scored items lead (best-first by rerank score); candidates beyond the
+     * cap keep their fused order behind them. ANY failure (cold/down endpoint, vanished chunk)
+     * degrades to the fused order — reranking never errors a search.
+     */
+    private fun maybeRerank(query: String, ordered: List<Pair<String, Double>>): List<Pair<String, Double>> {
+        val rr = reranker
+        if (!rr.isActive || query.isBlank() || ordered.size <= 1) return ordered
+        val k = rerankTopK.coerceAtMost(ordered.size)
+        val head = ordered.subList(0, k)
+        val tail = ordered.subList(k, ordered.size)
+        val texts = head.map { index.loadChunk(it.first)?.let { c -> if (c.heading.isBlank()) c.text else "${c.heading}\n${c.text}" } }
+        if (texts.any { it == null }) return ordered // a candidate vanished mid-flight; don't rerank a partial set
+        return try {
+            val scores = rr.rerank(query, texts.filterNotNull())
+            val rescored = head.indices.sortedByDescending { scores[it] }.map { head[it].first to scores[it].toDouble() }
+            rescored + tail
+        } catch (e: Exception) {
+            log.warn("rerank failed, falling back to fused order: {}", e.message)
+            ordered
         }
     }
 
