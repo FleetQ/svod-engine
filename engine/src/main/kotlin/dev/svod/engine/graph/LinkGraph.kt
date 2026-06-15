@@ -41,9 +41,16 @@ class LinkGraph private constructor(
 
     companion object {
         /** Build the graph from a snapshot of note path → content. */
-        fun build(notes: Map<String, String>): LinkGraph {
-            val paths = notes.keys
-            // Resolution indexes: exact path (with/without .md) and unique basename.
+        fun build(notes: Map<String, String>): LinkGraph =
+            buildFromTargets(notes.mapValues { WikiLinks.extract(it.value) })
+
+        /**
+         * Build from already-extracted targets (path → cleaned wikilink targets). Resolution depends on
+         * the whole path set (exact path with/without .md, unique basename), so it is done here over all
+         * notes; the per-note extraction is the caller's (so an incremental index can cache it).
+         */
+        fun buildFromTargets(targetsByPath: Map<String, List<String>>): LinkGraph {
+            val paths = targetsByPath.keys
             val byPath = HashSet(paths)
             val byBasename = HashMap<String, MutableList<String>>()
             for (p in paths) {
@@ -62,8 +69,8 @@ class LinkGraph private constructor(
 
             val out = HashMap<String, List<ResolvedLink>>()
             val back = HashMap<String, MutableList<String>>()
-            for ((path, content) in notes) {
-                val links = WikiLinks.extract(content).map { ResolvedLink(it, resolve(it)) }
+            for ((path, targets) in targetsByPath) {
+                val links = targets.map { ResolvedLink(it, resolve(it)) }
                 out[path] = links
                 for (l in links) if (l.resolvedPath != null) back.getOrPut(l.resolvedPath) { mutableListOf() }.add(path)
             }

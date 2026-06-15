@@ -31,7 +31,11 @@ class FederatedLinkGraph private constructor(
 
     companion object {
         /** Build from `vaultId → (path → content)` across every vault. */
-        fun build(vaults: Map<String, Map<String, String>>): FederatedLinkGraph {
+        fun build(vaults: Map<String, Map<String, String>>): FederatedLinkGraph =
+            buildFromTargets(vaults.mapValues { (_, notes) -> notes.mapValues { WikiLinks.extract(it.value) } })
+
+        /** Build from already-extracted targets: `vaultId → (path → cleaned wikilink targets)`. */
+        fun buildFromTargets(vaults: Map<String, Map<String, List<String>>>): FederatedLinkGraph {
             // Per-vault resolution indexes (exact path with/without .md, unique basename).
             data class Index(val byPath: Set<String>, val byBase: Map<String, List<String>>)
             val indexes = vaults.mapValues { (_, notes) ->
@@ -53,9 +57,9 @@ class FederatedLinkGraph private constructor(
             val out = HashMap<String, List<Edge>>()
             val back = HashMap<String, MutableList<String>>()
             for ((vault, notes) in vaults) {
-                for ((path, content) in notes) {
+                for ((path, targets) in notes) {
                     val src = "$vault:$path"
-                    val edges = WikiLinks.extract(content).map { raw ->
+                    val edges = targets.map { raw ->
                         // Qualified `vault:target` when the prefix is a known vault id; else local.
                         val colon = raw.indexOf(':')
                         val (tVault, tTarget) = if (colon > 0 && vaults.containsKey(raw.substring(0, colon)))

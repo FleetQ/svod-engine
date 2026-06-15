@@ -8,7 +8,6 @@ import dev.svod.engine.events.EventTypes
 import dev.svod.engine.events.SvodEvent
 import dev.svod.engine.graph.LinkGraph
 import dev.svod.engine.index.IndexService
-import dev.svod.engine.index.MarkdownChunker
 import dev.svod.engine.index.SearchFilters
 import dev.svod.engine.index.SearchMode
 import dev.svod.engine.index.SearchQuery
@@ -89,8 +88,8 @@ class AppApiServer(
         val webViewerPath: String? = null,
     )
 
-    class Running(val embedded: EmbeddedServer<*, *>, val port: Int) {
-        fun stop() = embedded.stop(500, 1000)
+    class Running(val embedded: EmbeddedServer<*, *>, val port: Int, private val onStop: () -> Unit = {}) {
+        fun stop() { try { embedded.stop(500, 1000) } finally { onStop() } }
     }
 
     // explicitNulls=false so optional fields (e.g. a file node's `children`) are omitted, not
@@ -103,7 +102,7 @@ class AppApiServer(
         val embedded = embeddedServer(CIO, host = config.host, port = requestedPort) { module() }
         embedded.start(wait = false)
         val port = runBlocking { embedded.engine.resolvedConnectors().first().port }
-        return Running(embedded, port)
+        return Running(embedded, port) { linkIndexes.values.forEach { runCatching { it.close() } } }
     }
 
     /** Resolve the request's target vault (`?vault=`, default when omitted); null ⇒ unknown id. */
@@ -637,28 +636,15 @@ class AppApiServer(
     private fun dev.svod.engine.sources.SourceSyncResult.toDto() =
         SourceSyncResultDto(id, created, updated, unchanged, conflicts, orphaned, deleted, skipped, error)
 
-    // Per-vault graph + tags cached by that vault's HEAD. A mutex serializes the build-and-store
-    // so concurrent requests don't each rebuild the graph (redundant work that stalls the writer).
-    private data class GraphSnapshot(val head: String?, val graph: LinkGraph, val tags: List<TagCountDto>)
-    private val graphCaches = ConcurrentHashMap<String, GraphSnapshot>()
-    private val graphMutex = kotlinx.coroutines.sync.Mutex()
+    // Per-vault incremental link/tag index, owned by the server (one per vault, created on demand).
+    // It catches up to HEAD by applying only the commit diff, so /file/links, /graph and /tags no
+    // longer re-read and re-parse every note on each change. Closed when the server stops.
+    private val linkIndexes = ConcurrentHashMap<String, dev.svod.engine.graph.LinkIndex>()
+    private fun linkIndex(vc: VaultView): dev.svod.engine.graph.LinkIndex =
+        linkIndexes.getOrPut(vc.id) { dev.svod.engine.graph.LinkIndex(vc.engine.root) }
 
-    private suspend fun snapshot(vc: VaultView): GraphSnapshot {
-        val head = vc.engine.head()
-        graphCaches[vc.id]?.let { if (it.head == head) return it }
-        return graphMutex.withLock {
-            graphCaches[vc.id]?.let { if (it.head == head) return@withLock it } // re-check under lock
-            val notes = vc.engine.readAllNotes()
-            val graph = LinkGraph.build(notes)
-            val tagCounts = HashMap<String, Int>()
-            for ((_, content) in notes) MarkdownChunker.parse(content).tags.forEach { tagCounts.merge(it, 1, Int::plus) }
-            val tags = tagCounts.entries.sortedByDescending { it.value }.map { TagCountDto(it.key, it.value) }
-            GraphSnapshot(head, graph, tags).also { graphCaches[vc.id] = it }
-        }
-    }
-
-    private suspend fun graph(vc: VaultView): LinkGraph = snapshot(vc).graph
-    private suspend fun tags(vc: VaultView): List<TagCountDto> = snapshot(vc).tags
+    private fun graph(vc: VaultView): LinkGraph = linkIndex(vc).graph()
+    private fun tags(vc: VaultView): List<TagCountDto> = linkIndex(vc).tagCounts().map { TagCountDto(it.tag, it.count) }
 
     // Qualified cross-vault wikilink: [[vault:target]] with optional #heading / |alias.
     private val qualifiedLink = Regex("""\[\[([^\[\]|#]+?):([^\[\]|#]+?)((?:#|\|)[^\[\]]*)?]]""")
@@ -694,16 +680,16 @@ class AppApiServer(
     private val fedMutex = kotlinx.coroutines.sync.Mutex()
     private suspend fun federated(): dev.svod.engine.graph.FederatedLinkGraph {
         val keyParts = StringBuilder()
-        val data = LinkedHashMap<String, Map<String, String>>()
+        val data = LinkedHashMap<String, Map<String, List<String>>>()
         for (v in vaults.all()) {
             keyParts.append(v.id).append('@').append(v.engine.head()).append('|')
-            data[v.id] = v.engine.readAllNotes()
+            data[v.id] = linkIndex(v).targetsByPath() // cached per-note targets, caught up to HEAD
         }
         val key = keyParts.toString()
         fedCache?.let { if (it.first == key) return it.second }
         return fedMutex.withLock {
             fedCache?.let { if (it.first == key) return@withLock it.second } // re-check under lock
-            dev.svod.engine.graph.FederatedLinkGraph.build(data).also { fedCache = key to it }
+            dev.svod.engine.graph.FederatedLinkGraph.buildFromTargets(data).also { fedCache = key to it }
         }
     }
 
