@@ -83,8 +83,21 @@ class SvodEngine private constructor(
      * overwritten); a text entry tripping the secret scanner is `skipped`. Still one write-actor
      * submission, so single-writer integrity holds and nothing else can interleave the batch.
      */
-    suspend fun writeBatch(entries: List<BatchEntry>, author: Author, message: String = "import: ${entries.size} files", overwrite: Boolean = false): BatchResult =
-        timed { actor.submit { doBatch(entries, author, message, overwrite) } }
+    suspend fun writeBatch(
+        entries: List<BatchEntry>,
+        author: Author,
+        message: String = "import: ${entries.size} files",
+        overwrite: Boolean = false,
+        /**
+         * Per-path expected on-disk revision (blob id), captured by the caller when it classified the
+         * batch. In [overwrite] mode an entry whose live blob no longer matches its expected value is a
+         * `conflict` (skipped, never clobbered) — this closes the classify→write race for source sync,
+         * where a vault edit can land between the read and the batch write. Empty ⇒ unconditional
+         * overwrite (the original behavior; import passes nothing).
+         */
+        expected: Map<String, String?> = emptyMap(),
+    ): BatchResult =
+        timed { actor.submit { doBatch(entries, author, message, overwrite, expected) } }
             .also { r -> if (r.written.isNotEmpty()) r.commit?.let { commitListener?.invoke(it) } }
 
     /** Git blob id (content hash) of [bytes] — the same value used as a file's revision. Pure, no I/O. */
@@ -243,10 +256,11 @@ class SvodEngine private constructor(
         return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)
     }
 
-    private fun doBatch(entries: List<BatchEntry>, author: Author, message: String, overwrite: Boolean): BatchResult {
+    private fun doBatch(entries: List<BatchEntry>, author: Author, message: String, overwrite: Boolean, expected: Map<String, String?>): BatchResult {
         val written = ArrayList<String>()
         val unchanged = ArrayList<String>()
         val skipped = ArrayList<String>()
+        val conflicts = ArrayList<String>()
         for (e in entries) {
             val vp = VaultPath.of(e.path)
             val incoming: ByteArray = when (e) {
@@ -257,18 +271,23 @@ class SvodEngine private constructor(
                 is BatchEntry.Bytes -> e.bytes
             }
             val target = vp.resolveAgainst(root)
-            if (Files.isRegularFile(target)) {
-                // Present & identical ⇒ unchanged. Different ⇒ skipped, UNLESS overwrite (source sync,
-                // where the caller has already decided the incoming content wins) ⇒ written.
-                if (Files.readAllBytes(target).contentEquals(incoming)) { unchanged.add(vp.value); continue }
-                if (!overwrite) { skipped.add(vp.value); continue }
+            val curBytes = if (Files.isRegularFile(target)) Files.readAllBytes(target) else null
+            // Present & identical ⇒ unchanged. Different ⇒ skipped, UNLESS overwrite (source sync,
+            // where the caller has already decided the incoming content wins) ⇒ written.
+            if (curBytes != null && curBytes.contentEquals(incoming)) { unchanged.add(vp.value); continue }
+            if (curBytes != null && !overwrite) { skipped.add(vp.value); continue }
+            // Overwrite mode with an expected revision: re-validate the live blob against what the
+            // caller classified. A mismatch means the vault changed between classify and now — a
+            // conflict, never a silent clobber. (Runs on the actor, so the check + write are atomic.)
+            if (overwrite && expected.containsKey(vp.value) && curBytes?.let { git.blobId(it) } != expected[vp.value]) {
+                conflicts.add(vp.value); continue
             }
             AtomicFile.write(target, incoming, crash)
             written.add(vp.value)
         }
         // One commit for the whole batch (the win); no commit when nothing was written.
         val commit = if (written.isNotEmpty()) (git.commitAll(message, author) ?: git.headId()) else git.headId()
-        return BatchResult(written.sorted(), unchanged.sorted(), skipped.sorted(), commit)
+        return BatchResult(written.sorted(), unchanged.sorted(), skipped.sorted(), commit, conflicts.sorted())
     }
 
     private fun doDelete(vp: VaultPath, expected: Revision?, author: Author): WriteOutcome {
@@ -529,4 +548,6 @@ data class BatchResult(
     val unchanged: List<String>,
     val skipped: List<String>,
     val commit: String?,
+    /** Paths not written because the live blob no longer matched the caller's expected revision (overwrite mode). */
+    val conflicts: List<String> = emptyList(),
 )

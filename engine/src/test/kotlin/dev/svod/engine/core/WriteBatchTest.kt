@@ -59,6 +59,35 @@ class WriteBatchTest {
     }
 
     @Test
+    fun `overwrite batch with a stale expected revision is a conflict, not a clobber`() = runBlocking {
+        engineOn().use { engine ->
+            engine.write("a.md", "# A original", null, author)
+            val staleRev = engine.read("a.md")!!.revision
+            // Someone edits a.md after we classified it at staleRev.
+            engine.write("a.md", "# A edited locally", staleRev, author)
+
+            // An overwrite batch carrying the now-stale expected revision must NOT clobber the edit.
+            val r = engine.writeBatch(
+                listOf(BatchEntry.Text("a.md", "# A from source"), BatchEntry.Text("b.md", "# B new")),
+                author, overwrite = true, expected = mapOf("a.md" to staleRev, "b.md" to null),
+            )
+            assertEquals(listOf("a.md"), r.conflicts, "the raced edit is a conflict")
+            assertEquals(listOf("b.md"), r.written, "the unraced file still writes")
+            assertEquals("# A edited locally", engine.read("a.md")!!.text, "local edit preserved, never clobbered")
+
+            // With the CURRENT revision as expected, the overwrite proceeds.
+            val cur = engine.read("a.md")!!.revision
+            val r2 = engine.writeBatch(
+                listOf(BatchEntry.Text("a.md", "# A from source")),
+                author, overwrite = true, expected = mapOf("a.md" to cur),
+            )
+            assertEquals(listOf("a.md"), r2.written)
+            assertTrue(r2.conflicts.isEmpty())
+            assertEquals("# A from source", engine.read("a.md")!!.text)
+        }
+    }
+
+    @Test
     fun `benchmark batched import throughput`() = runBlocking {
         org.junit.jupiter.api.Assumptions.assumeTrue(System.getProperty("svod.perf") == "true")
         val n = System.getProperty("svod.notes", "3000").toInt()

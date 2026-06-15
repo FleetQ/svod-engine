@@ -56,14 +56,18 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
         val toWrite = ArrayList<BatchEntry>()
         val createCandidates = HashSet<String>()
         val updateCandidates = HashSet<String>()
+        // The on-disk revision each to-be-written path had at classify time. Passed to the batch so the
+        // write re-validates against it — a vault edit landing between here and the write is a conflict,
+        // not a clobber (closes the classify→write race; create candidates expect "absent" = null).
+        val expected = HashMap<String, String?>()
 
         for ((vaultPath, bytes) in files) {
             val extRev = engine.blobId(bytes)
             val cur = engine.read(vaultPath)   // revision is blobId(bytes), valid for binary too
             when {
-                cur == null -> { toWrite += entry(vaultPath, bytes); createCandidates += vaultPath; newManifest[vaultPath] = extRev }
+                cur == null -> { toWrite += entry(vaultPath, bytes); createCandidates += vaultPath; expected[vaultPath] = null; newManifest[vaultPath] = extRev }
                 cur.revision == extRev -> { unchanged += vaultPath; newManifest[vaultPath] = extRev }
-                manifest[vaultPath] == cur.revision -> { toWrite += entry(vaultPath, bytes); updateCandidates += vaultPath; newManifest[vaultPath] = extRev }
+                manifest[vaultPath] == cur.revision -> { toWrite += entry(vaultPath, bytes); updateCandidates += vaultPath; expected[vaultPath] = cur.revision; newManifest[vaultPath] = extRev }
                 else -> { conflicts += vaultPath; manifest[vaultPath]?.let { newManifest[vaultPath] = it } }
             }
         }
@@ -72,11 +76,19 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
         var written = emptySet<String>()
         var secretSkipped = emptyList<String>()
         if (toWrite.isNotEmpty()) {
-            val r = engine.writeBatch(toWrite, author, "sync ${source.id}: ${toWrite.size} files", overwrite = true)
+            val r = engine.writeBatch(toWrite, author, "sync ${source.id}: ${toWrite.size} files", overwrite = true, expected = expected)
             written = r.written.toSet()
             secretSkipped = r.skipped
             // A secret-blocked entry was not written — don't claim it, and drop it from the manifest.
             for (s in r.skipped) newManifest.remove(s)
+            // A file edited in the vault during the sync window — surface it as a conflict (never
+            // clobbered), keep tracking it at its last-synced revision rather than the external one.
+            for (c in r.conflicts) {
+                createCandidates.remove(c); updateCandidates.remove(c)
+                conflicts += c
+                newManifest.remove(c)
+                manifest[c]?.let { newManifest[c] = it }
+            }
         }
 
         // A file gone from the source: pruned (soft-deleted) if the source opts in AND the vault copy
