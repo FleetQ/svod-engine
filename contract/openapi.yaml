@@ -222,9 +222,12 @@ paths:
     get:
       tags: [search]
       summary: Hybrid search (keyword / semantic / hybrid) with filters
+      description: >
+        `q` is optional when a filter (e.g. tags) is present — a filter-only query browses by tag/prefix
+        and returns every note carrying it. With neither a query nor a filter the request is a 400.
       operationId: search
       parameters:
-        - { name: q, in: query, required: true, schema: { type: string } }
+        - { name: q, in: query, required: false, schema: { type: string }, description: "Query text; optional when a filter is given." }
         - { name: mode, in: query, required: false, schema: { type: string, enum: [hybrid, keyword, semantic], default: hybrid } }
         - { name: limit, in: query, required: false, schema: { type: integer, default: 10 } }
         - { name: tags, in: query, required: false, schema: { type: array, items: { type: string } } }

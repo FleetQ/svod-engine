@@ -223,7 +223,6 @@ class AppApiServer(
 
             get("/api/v1/search") {
                 val vc = vault() ?: return@get call.notFound("vault")
-                val q = call.request.queryParameters["q"] ?: return@get call.badRequest("missing q")
                 val mode = when (call.request.queryParameters["mode"]?.lowercase()) {
                     "keyword" -> SearchMode.KEYWORD; "semantic" -> SearchMode.SEMANTIC; else -> SearchMode.HYBRID
                 }
@@ -232,6 +231,10 @@ class AppApiServer(
                     tags = call.request.queryParameters.getAll("tags") ?: emptyList(),
                     pathPrefix = call.request.queryParameters["pathPrefix"],
                 )
+                // `q` is optional when a filter is present: a filter-only query browses by tag/prefix
+                // (every note carrying the tag). With neither a query nor a filter there's nothing to do.
+                val q = call.request.queryParameters["q"] ?: ""
+                if (q.isBlank() && filters.isEmpty) return@get call.badRequest("provide q or a filter (e.g. tags)")
                 val across = call.request.queryParameters["across"]?.equals("true", ignoreCase = true) == true
                 if (across) {
                     // Federated: query every vault, tag each hit with its vault, merge by score.

@@ -5,6 +5,7 @@ import org.apache.lucene.queryparser.classic.MultiFieldQueryParser
 import org.apache.lucene.queryparser.classic.QueryParser
 import org.apache.lucene.search.BooleanClause
 import org.apache.lucene.search.BooleanQuery
+import org.apache.lucene.search.MatchAllDocsQuery
 import org.apache.lucene.search.Query
 import org.apache.lucene.search.TermQuery
 import org.eclipse.jgit.diff.DiffEntry
@@ -451,10 +452,14 @@ class IndexService(
         val filter = index.buildFilter(q.filters)
         val cand = maxOf(q.limit * 5, 50)
 
-        // Semantic is opt-in over BM25: inactive embedder (or a rebuild in flight) ⇒ lexical only.
-        val active = embedder.isActive && !suppressSemantic
-        val wantKeyword = q.mode != SearchMode.SEMANTIC || !active
-        val wantSemantic = q.mode != SearchMode.KEYWORD && active
+        // A filter-only query (blank text, e.g. "browse by tag") matches every doc passing the filter,
+        // via the lexical leg only — there's no query text to embed, so semantic is skipped.
+        val blankQuery = q.text.isBlank()
+        // Semantic is opt-in over BM25: inactive embedder (or a rebuild in flight, or a filter-only
+        // query) ⇒ lexical only.
+        val active = embedder.isActive && !suppressSemantic && !blankQuery
+        val wantKeyword = blankQuery || q.mode != SearchMode.SEMANTIC || !active
+        val wantSemantic = !blankQuery && q.mode != SearchMode.KEYWORD && active
         val keyword = if (wantKeyword) keywordLeg(q.text, filter, cand) else emptyList()
         val semantic = if (wantSemantic) semanticLeg(q.text, filter, cand) else emptyList()
         val kwIds = keyword.map { it.first }
@@ -491,8 +496,11 @@ class IndexService(
     }
 
     private fun keywordLeg(text: String, filter: Query?, k: Int): List<Pair<String, Float>> {
-        val userQuery = parseUserQuery(text) ?: return emptyList()
-        val b = BooleanQuery.Builder().add(userQuery, BooleanClause.Occur.MUST)
+        val userQuery = parseUserQuery(text)
+        // No query text but a filter present ⇒ filter-only browse: every doc passing the filter.
+        // No query text and no filter ⇒ nothing to search.
+        if (userQuery == null && filter == null) return emptyList()
+        val b = BooleanQuery.Builder().add(userQuery ?: MatchAllDocsQuery(), BooleanClause.Occur.MUST)
         if (filter != null) b.add(filter, BooleanClause.Occur.FILTER)
         return index.keywordSearch(b.build(), k)
     }
@@ -536,6 +544,9 @@ class IndexService(
     /** Supports fuzzy (`term~`), prefix (`term*`), phrase (`"..."`) and field-scoped queries. */
     private fun parseUserQuery(text: String): Query? {
         if (text.isBlank()) return null
+        // A lone "*" means "match everything" (a deterministic match-all so a filter ANDs cleanly),
+        // not a literal wildcard term — the latter parses inconsistently across analyzers.
+        if (text.trim() == "*") return MatchAllDocsQuery()
         val parser = MultiFieldQueryParser(arrayOf("text", "heading"), index.analyzer()).apply {
             defaultOperator = QueryParser.Operator.OR
         }
