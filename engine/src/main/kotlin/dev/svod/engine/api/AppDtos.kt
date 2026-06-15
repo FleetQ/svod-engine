@@ -105,6 +105,16 @@ data class SettingsDto(
     val host: String,
     /** Structured embedder view (additive; preferred over the flat embedder* fields). */
     val embedder: EmbedderInfoDto,
+    /** Active second-stage reranker (provider `none` when disabled). */
+    val reranker: RerankerInfoDto,
+)
+
+/** The active reranker, for the read-only settings view. */
+@Serializable
+data class RerankerInfoDto(
+    val provider: String,
+    val model: String,
+    val active: Boolean,
 )
 
 /** The active embedder for a vault. [endpoint] is null for in-process providers (onnx/none). */

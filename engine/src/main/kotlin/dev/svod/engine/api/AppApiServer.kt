@@ -275,6 +275,7 @@ class AppApiServer(
                     embedderDim = emb.dimension,
                     host = config.host,
                     embedder = emb,
+                    reranker = vc.index.rerankerInfo().let { RerankerInfoDto(it.provider, it.model, it.active) },
                 ))
             }
             get("/api/v1/index/status") {

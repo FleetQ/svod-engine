@@ -437,6 +437,11 @@ class IndexService(
 
     fun indexedDim(): Int? = IndexMeta.load(metaFile)?.embeddingDim
 
+    /** The active reranker for the read-only settings view. */
+    fun rerankerInfo(): RerankerInfo = reranker.let { RerankerInfo(it.provider, it.model, it.isActive) }
+
+    data class RerankerInfo(val provider: String, val model: String, val active: Boolean)
+
     fun docCount(): Int = index.numDocs()
 
     // ---- search (thread-safe; no executor needed) ----

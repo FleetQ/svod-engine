@@ -33,6 +33,7 @@ class RemoteReranker(
     private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()
     private val json = Json { ignoreUnknownKeys = true }
 
+    override val provider: String = "remote"
     override val isActive: Boolean = true
 
     override fun rerank(query: String, docs: List<String>): List<Float> {

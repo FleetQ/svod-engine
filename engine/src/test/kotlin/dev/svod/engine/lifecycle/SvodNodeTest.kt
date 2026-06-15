@@ -58,6 +58,8 @@ class SvodNodeTest {
             val s = get(port, "/api/v1/settings")
             assertEquals(200, s.statusCode())
             assertTrue(s.body().contains("\"embedder\"") && s.body().contains("\"provider\":\"none\""), s.body())
+            // the active reranker is exposed too (default: disabled)
+            assertTrue(s.body().contains("\"reranker\"") && s.body().contains("\"active\":false"), s.body())
 
             // probe a spec without persisting (none → ok, dimension 0)
             val probe = post(port, "/api/v1/embedder/test", """{"provider":"none"}""")

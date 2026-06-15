@@ -938,7 +938,7 @@ components:
 
     Settings:
       type: object
-      required: [vaultPath, apiVersion, embedderProvider, host, embedder]
+      required: [vaultPath, apiVersion, embedderProvider, host, embedder, reranker]
       properties:
         vaultPath: { type: string }
         apiVersion: { type: string }
@@ -947,6 +947,16 @@ components:
         embedderDim: { type: integer }
         host: { type: string }
         embedder: { $ref: "#/components/schemas/EmbedderInfo" }
+        reranker: { $ref: "#/components/schemas/RerankerInfo" }
+
+    RerankerInfo:
+      type: object
+      required: [provider, model, active]
+      description: The active second-stage reranker (provider 'none' when disabled).
+      properties:
+        provider: { type: string, description: "none | remote (| local-onnx when added)" }
+        model: { type: string }
+        active: { type: boolean }
 
     EmbedderInfo:
       type: object

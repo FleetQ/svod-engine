@@ -11,6 +11,9 @@ package dev.svod.engine.index
 interface Reranker {
     val model: String
 
+    /** Canonical provider name for the settings view: `none` | `remote` (| `local-onnx` when added). */
+    val provider: String
+
     /** Whether this reranker re-scores. False ⇒ search uses the fused order unchanged. */
     val isActive: Boolean get() = true
 
@@ -24,6 +27,7 @@ interface Reranker {
 /** The inactive baseline: no reranking. Search keeps the first-stage fused order. */
 object NoneReranker : Reranker {
     override val model = "none"
+    override val provider = "none"
     override val isActive = false
     override fun rerank(query: String, docs: List<String>): List<Float> =
         error("NoneReranker cannot rerank (reranking disabled)")

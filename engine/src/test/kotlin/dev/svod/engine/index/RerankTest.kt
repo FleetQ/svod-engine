@@ -12,6 +12,7 @@ class RerankTest {
     /** Scores a doc 1.0 if it contains [boost], else 0.0 — a deterministic stand-in for a cross-encoder. */
     private class FakeReranker(private val boost: String) : Reranker {
         override val model = "fake-rr"
+        override val provider = "fake"
         val calls = AtomicInteger(0)
         override fun rerank(query: String, docs: List<String>): List<Float> {
             calls.incrementAndGet()
@@ -21,6 +22,7 @@ class RerankTest {
 
     private class FailingReranker : Reranker {
         override val model = "rr-cold"
+        override val provider = "fake"
         override fun rerank(query: String, docs: List<String>): List<Float> = throw RuntimeException("reranker down")
     }
 
