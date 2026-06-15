@@ -102,8 +102,11 @@ class OllamaEmbedder(
         }
     }
 
+    // truncate=true: a chunk longer than the model's context is truncated to fit rather than returning
+    // HTTP 400 ("input length exceeds the context length"), which would otherwise abort the pass. The
+    // chunker keeps chunks small enough that truncation rarely triggers and loses little when it does.
     @Serializable
-    private data class EmbedRequest(val model: String, val input: List<String>)
+    private data class EmbedRequest(val model: String, val input: List<String>, val truncate: Boolean = true)
 
     @Serializable
     private data class EmbedResponse(val embeddings: List<List<Float>>)

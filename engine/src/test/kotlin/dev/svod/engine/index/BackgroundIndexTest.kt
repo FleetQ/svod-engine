@@ -142,6 +142,42 @@ class BackgroundIndexTest {
         }
     }
 
+    /** Embeds normally, but throws on any text containing "POISON" — a stand-in for a model rejecting one oversized chunk. */
+    private class SelectiveFailEmbedder(m: String = "sel") : Embedder {
+        private val inner = FakeEmbedder(m)
+        val embedded get() = inner.passageCalls
+        override val model = m
+        override val dim = 64
+        override val isActive = true
+        override fun knownDim() = dim
+        override fun embedPassages(texts: List<String>): List<FloatArray> {
+            if (texts.any { it.contains("POISON") }) throw RuntimeException("input length exceeds the context length")
+            return inner.embedPassages(texts)
+        }
+        override fun embedQuery(text: String) = inner.embedQuery(text)
+    }
+
+    @Test
+    fun `one chunk that fails to embed is skipped and the pass still completes`() {
+        IndexFixture.create().use { fx ->
+            runBlocking {
+                fx.seed("a.md", "# A\nclean alpha")
+                fx.seed("bad.md", "# Bad\nPOISON oversized content")
+                fx.seed("c.md", "# C\nclean gamma")
+            }
+            val emb = SelectiveFailEmbedder()
+            // batchSize 64 ⇒ one group; the batch fails on the poison chunk, individual retry skips it.
+            IndexService(fx.root, fx.indexDir, emb, blockStartup = true, maxThreads = 1, batchSize = 64).start().use { idx ->
+                val st = idx.embeddingStatus()
+                assertEquals(IndexService.EmbeddingState.IDLE, st.state, "pass completes despite one bad chunk")
+                assertEquals(st.total, st.done, "progress reaches 100%")
+                assertEquals(2, emb.embedded.get(), "the two clean chunks embed; the poison one is skipped")
+                // the clean docs are semantically searchable; the skipped one simply has no vector
+                assertEquals("a.md", idx.search(SearchQuery("alpha", mode = SearchMode.SEMANTIC)).hits.firstOrNull()?.path)
+            }
+        }
+    }
+
     /** Constructs with no network (like the fixed remote embedders) but fails every embed call. */
     private class FailingEmbedder(override val model: String = "remote-cold") : Embedder {
         override val dim: Int get() = throw RuntimeException("endpoint cold")

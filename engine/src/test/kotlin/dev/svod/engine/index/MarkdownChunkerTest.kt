@@ -47,6 +47,31 @@ class MarkdownChunkerTest {
     }
 
     @Test
+    fun `an oversized section is split into budget-sized chunks without losing content`() {
+        val big = "word ".repeat(1000) // ~5000 chars, well over the per-chunk budget
+        val doc = MarkdownChunker.parse("# Big\n$big")
+        assertTrue(doc.chunks.size > 1, "an oversized section splits into multiple chunks")
+        assertTrue(doc.chunks.all { it.heading == "Big" }, "each sub-chunk keeps the section heading")
+        assertTrue(doc.chunks.all { it.text.length <= 2000 }, "each chunk stays within the char budget")
+        val joined = doc.chunks.joinToString(" ") { it.text }
+        assertEquals(1000, Regex("\\bword\\b").findAll(joined).count(), "no words dropped across the split")
+    }
+
+    @Test
+    fun `a small section is not split`() {
+        assertEquals(1, MarkdownChunker.parse("# H\nshort body").chunks.size)
+    }
+
+    @Test
+    fun `a single token longer than the budget is hard-cut, not dropped`() {
+        val giant = "x".repeat(5000) // e.g. a base64 blob or URL with no whitespace
+        val doc = MarkdownChunker.parse("# G\n$giant")
+        assertTrue(doc.chunks.size > 1)
+        assertTrue(doc.chunks.all { it.text.length <= 2000 })
+        assertEquals(5000, doc.chunks.sumOf { it.text.count { ch -> ch == 'x' } }, "every char preserved")
+    }
+
+    @Test
     fun `comma-separated tag string is supported`() {
         val doc = MarkdownChunker.parse("---\ntags: alpha, beta, gamma\n---\nbody")
         assertEquals(listOf("alpha", "beta", "gamma"), doc.tags)

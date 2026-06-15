@@ -249,13 +249,15 @@ class IndexService(
                     if (closing.get()) return@submit
                     awaitIfPaused()
                     if (closing.get()) return@submit
-                    // One batched embed call for the whole group (the slow part, off exec)…
+                    // One batched embed call for the whole group (the slow part, off exec). On a batch
+                    // failure, retry items individually so one bad chunk (e.g. an oversized input the
+                    // model rejects) is skipped+logged, not fatal — only a wholesale failure aborts.
                     val items = group.flatMap { plan -> plan.toEmbed.map { plan to it } }
-                    val vecs = embedInBatches(items.map { embedText(it.second) })
-                    // …then upsert each file (Lucene writes on exec) with its own fresh vectors.
+                    val vecs = embedGroupResilient(items.map { embedText(it.second) })
+                    // …then upsert each file (Lucene writes on exec) with whatever vectors succeeded.
                     for (plan in group) {
                         val fresh = HashMap<String, FloatArray>()
-                        items.forEachIndexed { i, (p, c) -> if (p === plan) fresh[c.contentHash] = vecs[i] }
+                        items.forEachIndexed { i, (p, c) -> if (p === plan) vecs[i]?.let { fresh[c.contentHash] = it } }
                         exec.submit { finishEmbed(plan.path, plan, fresh) }.get()
                     }
                     exec.submit { index.commit() }.get()
@@ -642,6 +644,32 @@ class IndexService(
             LuceneIndex.ChunkDoc(c, plan.reusable[c.contentHash] ?: fresh[c.contentHash])
         }
         index.upsertFile(path, plan.blob, plan.tags, plan.created, docs)
+    }
+
+    /**
+     * Embed [texts] as one batch; if that fails, retry each text individually so a single bad chunk
+     * (e.g. one the model rejects as too long) is skipped (null in the result) and logged instead of
+     * aborting the whole pass. Throws only when NOTHING embeds — that looks like a real outage (cold/
+     * down endpoint), which must still surface as ERROR rather than silently produce no vectors.
+     */
+    private fun embedGroupResilient(texts: List<String>): List<FloatArray?> {
+        if (texts.isEmpty()) return emptyList()
+        return try {
+            embedInBatches(texts)
+        } catch (batchErr: Exception) {
+            val out = arrayOfNulls<FloatArray>(texts.size)
+            var ok = 0
+            for (i in texts.indices) {
+                try {
+                    out[i] = embedder.embedPassages(listOf(texts[i])).firstOrNull()
+                    if (out[i] != null) ok++
+                } catch (e: Exception) {
+                    log.warn("skipping a chunk that failed to embed: {}", (e.cause ?: e).message)
+                }
+            }
+            if (ok == 0) throw batchErr // nothing embedded ⇒ treat as an outage, abort to ERROR
+            out.toList()
+        }
     }
 
     /** Embed [texts] in windows of [batchSize] so a provider is never handed an unbounded batch. */

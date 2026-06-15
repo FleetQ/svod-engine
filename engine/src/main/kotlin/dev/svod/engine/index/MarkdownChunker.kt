@@ -43,6 +43,16 @@ object MarkdownChunker {
     private val FRONTMATTER = Regex("^\\uFEFF?---\\r?\\n(.*?)\\r?\\n---\\r?\\n?", RegexOption.DOT_MATCHES_ALL)
     private val HEADING = Regex("^(#{1,6})\\s+(.*)$")
 
+    /**
+     * Max characters of body text per chunk. A long section (or heading-less note) is split into
+     * several chunks so no single chunk overruns an embedder's context window — Ollama bge-m3 defaults
+     * to num_ctx=2048 and returns HTTP 400 on a longer input, and e5-small caps at 512 tokens. ~2000
+     * chars stays comfortably under ~1024 tokens even for multibyte/Cyrillic text (which tokenizes to
+     * more tokens per char). Combined with the embedder's own truncate safety net, an oversized chunk
+     * can no longer abort an embedding pass.
+     */
+    private const val MAX_CHUNK_CHARS = 2000
+
     fun parse(raw: String): ParsedDoc {
         val (fmText, body) = splitFrontmatter(raw)
         val fm: Map<String, Any?> = fmText?.let { parseYaml(it) } ?: emptyMap()
@@ -103,7 +113,10 @@ object MarkdownChunker {
         fun flush() {
             val text = buf.toString().trim()
             if (text.isNotEmpty() || heading.isNotEmpty()) {
-                chunks.add(Chunk(ordinal++, heading, text))
+                // Split an oversized section into budget-sized pieces; small sections stay as one chunk.
+                val pieces = splitToBudget(text)
+                if (pieces.isEmpty()) chunks.add(Chunk(ordinal++, heading, "")) // heading-only section
+                else for (piece in pieces) chunks.add(Chunk(ordinal++, heading, piece))
             }
             buf.setLength(0)
         }
@@ -120,5 +133,52 @@ object MarkdownChunker {
         flush()
         // A document with no headings and no text yields a single empty preamble; drop it.
         return chunks.ifEmpty { listOf(Chunk(0, "", body.trim())) }.filter { it.heading.isNotEmpty() || it.text.isNotEmpty() }
+    }
+
+    /**
+     * Split [text] into pieces of at most [MAX_CHUNK_CHARS], breaking at paragraph boundaries first,
+     * then (for an oversized single paragraph) at word boundaries, and only as a last resort mid-word
+     * (a giant token like a URL or base64 blob). Returns an empty list for blank text.
+     */
+    private fun splitToBudget(text: String): List<String> {
+        if (text.isEmpty()) return emptyList()
+        if (text.length <= MAX_CHUNK_CHARS) return listOf(text)
+        val out = mutableListOf<String>()
+        val cur = StringBuilder()
+        fun emit() { if (cur.isNotBlank()) out.add(cur.toString().trim()); cur.setLength(0) }
+        for (para in text.split(Regex("\\n{2,}"))) {
+            if (para.isBlank()) continue
+            if (cur.isNotEmpty() && cur.length + para.length + 2 > MAX_CHUNK_CHARS) emit()
+            if (para.length > MAX_CHUNK_CHARS) {
+                emit()
+                for (w in splitWords(para)) out.add(w)
+            } else {
+                if (cur.isNotEmpty()) cur.append("\n\n")
+                cur.append(para)
+            }
+        }
+        emit()
+        return out
+    }
+
+    /** Pack [para] into ≤[MAX_CHUNK_CHARS] pieces at word boundaries; hard-cuts a single oversized token. */
+    private fun splitWords(para: String): List<String> {
+        val out = mutableListOf<String>()
+        val cur = StringBuilder()
+        fun emit() { if (cur.isNotBlank()) out.add(cur.toString()); cur.setLength(0) }
+        for (word in para.split(Regex("\\s+"))) {
+            if (word.isEmpty()) continue
+            if (cur.isNotEmpty() && cur.length + word.length + 1 > MAX_CHUNK_CHARS) emit()
+            if (word.length > MAX_CHUNK_CHARS) {
+                emit()
+                var i = 0
+                while (i < word.length) { out.add(word.substring(i, minOf(i + MAX_CHUNK_CHARS, word.length))); i += MAX_CHUNK_CHARS }
+            } else {
+                if (cur.isNotEmpty()) cur.append(' ')
+                cur.append(word)
+            }
+        }
+        emit()
+        return out
     }
 }
