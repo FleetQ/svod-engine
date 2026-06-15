@@ -44,7 +44,7 @@ class McpHttpIntegrationTest {
                 // --- write agent ---
                 val scribe = connect(port, "write-token")
                 try {
-                    assertEquals(12, scribe.listTools().tools.size, "all 12 tools advertised")
+                    assertEquals(13, scribe.listTools().tools.size, "all 13 tools advertised")
 
                     val w = scribe.callTool("write", mapOf("path" to "http/a.md", "content" to "# A\nwritten via mcp"))
                     val wJson = Json.parseToJsonElement(w.text()).jsonObject

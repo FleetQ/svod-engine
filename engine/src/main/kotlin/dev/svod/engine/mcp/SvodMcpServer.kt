@@ -208,6 +208,15 @@ class SvodMcpServer(
         server.addTool("search", "Hybrid search (keyword/semantic/hybrid) with filters.", schema(mapOf("query" to "string", "mode" to "string", "limit" to "integer"), listOf("query"))) { req ->
             val (t, d) = routed(req); d ?: t!!.search(agent, req.toSearchQuery()).toCallToolResult()
         }
+        server.addTool("context_pack", "Assemble a token-budgeted, cited context block from hybrid search — agent-memory recall in one call.", schema(mapOf("query" to "string", "mode" to "string", "tokenBudget" to "integer"), listOf("query"))) { req ->
+            val (t, d) = routed(req)
+            d ?: run {
+                // Pull a generous candidate pool, then trim to the token budget.
+                val base = req.toSearchQuery()
+                val q = base.copy(limit = maxOf(base.limit, 50))
+                t!!.contextPack(agent, q, req.int("tokenBudget", 2000)).toCallToolResult()
+            }
+        }
         server.addTool("list", "List note paths (optionally filtered by prefix).", schema(mapOf("pathPrefix" to "string"), emptyList())) { req ->
             val (t, d) = routed(req); d ?: t!!.list(agent, req.str("pathPrefix")).toCallToolResult()
         }

@@ -3,15 +3,45 @@ package dev.svod.engine.mcp
 import dev.svod.engine.index.SearchMode
 import dev.svod.engine.index.SearchQuery
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class McpToolsTest {
 
     private fun ToolResult.str(key: String): String? = data[key]?.jsonPrimitive?.content
+
+    @Test
+    fun `context_pack assembles a budgeted, deduped, cited context block`() = runBlocking {
+        McpFixture().use { fx ->
+            fx.tools.write(fx.write, "a.md", "# A\nshared alpha topic", expectedRevision = null)
+            // two sections both matching ⇒ two search hits for ONE note ⇒ must dedup to one block
+            fx.tools.write(fx.write, "d.md", "# D1\nshared one\n# D2\nshared two", expectedRevision = null)
+            fx.index.waitIdle()
+
+            val r = fx.tools.contextPack(fx.read, SearchQuery("shared", mode = SearchMode.KEYWORD, limit = 50), tokenBudget = 2000)
+            assertFalse(r.isError)
+            val blocks = r.data["blocks"]!!.jsonArray
+            assertTrue(blocks.isNotEmpty(), "returns blocks")
+            val paths = blocks.map { it.jsonObject["path"]!!.jsonPrimitive.content }
+            assertEquals(paths.toSet().size, paths.size, "one block per note (d.md deduped despite two hits)")
+            assertTrue(paths.contains("d.md"))
+            // provenance: every block cites the latest commit + author that touched the note
+            val first = blocks.first().jsonObject
+            assertTrue(first["commit"]!!.jsonPrimitive.content.isNotEmpty(), "commit provenance")
+            assertEquals("Scribe", first["author"]!!.jsonPrimitive.content, "author provenance")
+            assertTrue(r.data["estimatedTokens"]!!.jsonPrimitive.int > 0)
+
+            // a tiny budget still returns at least the single top block (never empty when hits exist)
+            val tiny = fx.tools.contextPack(fx.read, SearchQuery("shared", mode = SearchMode.KEYWORD, limit = 50), tokenBudget = 1)
+            assertEquals(1, tiny.data["blocks"]!!.jsonArray.size, "at least one block even under a tiny budget")
+        }
+    }
 
     @Test
     fun `write then read round-trips and attributes the commit to the agent`() = runBlocking {

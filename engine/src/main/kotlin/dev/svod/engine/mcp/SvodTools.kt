@@ -108,6 +108,52 @@ class SvodTools(
         }
     }
 
+    /**
+     * Assemble a token-budgeted, cited context block from hybrid retrieval — the agent-memory recall
+     * primitive. Runs the same hybrid search (BM25 + kNN + RRF + any reranker), then DEDUPS to one
+     * block per note (so a single note can't dominate), and greedily fills up to [tokenBudget] in
+     * score order. Each block carries PROVENANCE (the latest commit + author that touched the note).
+     * Token cost is a char/4 heuristic — no tokenizer dependency. At least the top block is always
+     * returned, even if it alone exceeds the budget. Degrades with search (keyword-only if semantic is down).
+     */
+    suspend fun contextPack(agent: AgentIdentity, query: SearchQuery, tokenBudget: Int): ToolResult =
+        guarded(agent, "context_pack", write = false) {
+            val result = index.search(query)
+            val seenPaths = HashSet<String>()
+            val blocks = ArrayList<PackBlock>()
+            var total = 0
+            for (h in result.hits) {
+                if (!seenPaths.add(h.path)) continue // one block per note (dedup + source diversity)
+                val content = engine.read(h.path)?.text ?: h.snippet
+                val est = estimateTokens(content)
+                if (blocks.isNotEmpty() && total + est > tokenBudget) continue // keep ≥1 block, else respect budget
+                val prov = engine.history(h.path, 1).firstOrNull()
+                blocks.add(PackBlock(h.path, h.heading, content, h.score, prov?.commit, prov?.authorName, est))
+                total += est
+                if (total >= tokenBudget) break
+            }
+            ToolResult.ok {
+                put("query", query.text); put("mode", result.mode.name)
+                put("tokenBudget", tokenBudget); put("estimatedTokens", total)
+                putJsonArray("blocks") {
+                    blocks.forEach { b ->
+                        addJsonObject {
+                            put("path", b.path); put("heading", b.heading); put("content", b.content)
+                            put("score", b.score); put("commit", b.commit); put("author", b.author); put("tokens", b.tokens)
+                        }
+                    }
+                }
+            }
+        }
+
+    private class PackBlock(
+        val path: String, val heading: String, val content: String,
+        val score: Double, val commit: String?, val author: String?, val tokens: Int,
+    )
+
+    /** Cheap token estimate (~4 chars/token); avoids a tokenizer dependency, consistent with chunking. */
+    private fun estimateTokens(text: String): Int = Math.ceil(text.length / 4.0).toInt()
+
     // ---- mutating tools (WRITE role) ----
 
     suspend fun write(agent: AgentIdentity, path: String, content: String, expectedRevision: String?): ToolResult =
