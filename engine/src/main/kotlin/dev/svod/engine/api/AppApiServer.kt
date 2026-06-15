@@ -648,7 +648,7 @@ class AppApiServer(
         graphCaches[vc.id]?.let { if (it.head == head) return it }
         return graphMutex.withLock {
             graphCaches[vc.id]?.let { if (it.head == head) return@withLock it } // re-check under lock
-            val notes = vc.engine.list().associateWith { vc.engine.read(it)?.text ?: "" }
+            val notes = vc.engine.readAllNotes()
             val graph = LinkGraph.build(notes)
             val tagCounts = HashMap<String, Int>()
             for ((_, content) in notes) MarkdownChunker.parse(content).tags.forEach { tagCounts.merge(it, 1, Int::plus) }
@@ -697,9 +697,7 @@ class AppApiServer(
         val data = LinkedHashMap<String, Map<String, String>>()
         for (v in vaults.all()) {
             keyParts.append(v.id).append('@').append(v.engine.head()).append('|')
-            val notes = LinkedHashMap<String, String>()
-            for (p in v.engine.list()) notes[p] = v.engine.read(p)?.text ?: ""
-            data[v.id] = notes
+            data[v.id] = v.engine.readAllNotes()
         }
         val key = keyParts.toString()
         fedCache?.let { if (it.first == key) return it.second }

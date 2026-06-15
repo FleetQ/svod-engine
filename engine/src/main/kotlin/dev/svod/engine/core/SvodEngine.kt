@@ -167,6 +167,14 @@ class SvodEngine private constructor(
         out.sorted()
     }
 
+    /**
+     * Every `.md` note's content, path → text, read in ONE actor pass. For derived snapshots (the
+     * link graph, tag counts) that need all note bodies but not per-file revisions: this is a single
+     * tree walk with direct reads, vs. N round-trips + N git blob hashes from [list] + per-path [read]
+     * (which made /file/links O(notes) and seconds-slow on large vaults).
+     */
+    suspend fun readAllNotes(): Map<String, String> = actor.submit { readAllNotesOnActor() }
+
     suspend fun head(): String? = actor.submit { git.headId() }
 
     fun branch(): String = git.branch()
