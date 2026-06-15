@@ -22,8 +22,10 @@ import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticFiles
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.http.ContentType
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.RoutingContext
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
@@ -118,6 +120,11 @@ class AppApiServer(
                 val ready = ReadyDto(ready = r, engine = true, index = vaults.resolve(null)!!.index.docCount() >= 0)
                 call.respond(if (r) HttpStatusCode.OK else HttpStatusCode.ServiceUnavailable, ready)
             }
+
+            // Prometheus scrape endpoint (loopback ops surface). Deliberately OUTSIDE the versioned
+            // /api/v1 contract — it is for monitoring, not the UI, so it carries no apiVersion and is
+            // not part of contract/openapi.yaml. The JSON /api/v1/metrics remains the UI-facing view.
+            get("/metrics") { call.respondText(prometheusExposition(), ContentType.Text.Plain) }
 
             get("/api/v1/vaults") {
                 call.respond(VaultsDto(vaults.all().map { VaultInfoDto(it.id, it.name, it.id == vaults.defaultId(), vaultStatus(it)) }))
@@ -510,6 +517,68 @@ class AppApiServer(
     private fun embedderInfo(vc: VaultView): EmbedderInfoDto {
         embedderControl?.descriptor(vc.id)?.let { return EmbedderInfoDto(it.provider, it.model, it.endpoint, it.dimension) }
         return EmbedderInfoDto(config.embedderProvider, vc.index.indexedModel() ?: config.embedderModel, config.embedderEndpoint, vc.index.indexedDim() ?: 0)
+    }
+
+    /** Per-vault metrics snapshot used to render the Prometheus exposition (built off the suspend API). */
+    private data class VaultMetrics(
+        val id: String, val docs: Int, val keywordReady: Boolean, val synced: Boolean,
+        val embDone: Int, val embTotal: Int, val embState: String,
+        val write: dev.svod.engine.obs.Metrics.WriteStats, val queue: Int, val queuePeak: Int, val conflicts: Int,
+    )
+
+    /**
+     * Render all vaults' runtime metrics in the Prometheus text exposition format (hand-rolled — no
+     * Micrometer dependency, and native-image-safe). Each per-vault series carries a `vault` label.
+     */
+    private suspend fun prometheusExposition(): String {
+        val snaps = vaults.all().map { v ->
+            val st = v.index.embeddingStatus()
+            VaultMetrics(
+                id = v.id, docs = v.index.docCount(), keywordReady = v.index.keywordReady(),
+                synced = v.engine.head() == v.index.headCommitIndexed(),
+                embDone = st.done, embTotal = st.total, embState = st.state.name.lowercase(),
+                write = v.engine.metrics.snapshot(), queue = v.engine.queueDepth(),
+                queuePeak = v.engine.peakQueueDepth(), conflicts = v.conflicts?.all()?.size ?: 0,
+            )
+        }
+        val sb = StringBuilder()
+        fun emit(name: String, type: String, help: String, samples: List<Pair<String, Number>>) {
+            sb.append("# HELP ").append(name).append(' ').append(help).append('\n')
+            sb.append("# TYPE ").append(name).append(' ').append(type).append('\n')
+            for ((labels, value) in samples) sb.append(name).append(labels).append(' ').append(value).append('\n')
+        }
+        fun vlabel(id: String) = "{vault=\"${id.replace("\\", "\\\\").replace("\"", "\\\"")}\"}"
+
+        emit("svod_up", "gauge", "1 if the engine is serving.", listOf("" to 1))
+        emit("svod_index_doc_count", "gauge", "Indexed Lucene documents (chunks) per vault.",
+            snaps.map { vlabel(it.id) to it.docs })
+        emit("svod_index_keyword_ready", "gauge", "1 when BM25/keyword search is consistent with HEAD.",
+            snaps.map { vlabel(it.id) to if (it.keywordReady) 1 else 0 })
+        emit("svod_index_synced", "gauge", "1 when the index HEAD matches the engine HEAD.",
+            snaps.map { vlabel(it.id) to if (it.synced) 1 else 0 })
+        emit("svod_embedding_done", "gauge", "Chunks embedded so far in the current/last pass.",
+            snaps.map { vlabel(it.id) to it.embDone })
+        emit("svod_embedding_total", "gauge", "Chunks targeted by the current/last embedding pass.",
+            snaps.map { vlabel(it.id) to it.embTotal })
+        emit("svod_embedding_state", "gauge", "1 for the embedding pass's current state (idle/running/paused/error).",
+            snaps.flatMap { v ->
+                IndexService.EmbeddingState.values().map { s ->
+                    "{vault=\"${v.id}\",state=\"${s.name.lowercase()}\"}" to if (s.name.lowercase() == v.embState) 1 else 0
+                }
+            })
+        emit("svod_write_total", "counter", "Total write-path mutations served.",
+            snaps.map { vlabel(it.id) to it.write.count })
+        emit("svod_write_latency_avg_ms", "gauge", "Average write-path latency (ms).",
+            snaps.map { vlabel(it.id) to it.write.avgMs })
+        emit("svod_write_latency_max_ms", "gauge", "Max write-path latency (ms).",
+            snaps.map { vlabel(it.id) to it.write.maxMs })
+        emit("svod_queue_depth", "gauge", "Current write-actor queue depth.",
+            snaps.map { vlabel(it.id) to it.queue })
+        emit("svod_queue_depth_peak", "gauge", "Peak write-actor queue depth.",
+            snaps.map { vlabel(it.id) to it.queuePeak })
+        emit("svod_conflicts", "gauge", "Open sync conflicts per vault.",
+            snaps.map { vlabel(it.id) to it.conflicts })
+        return sb.toString()
     }
 
     private fun indexStatus(vc: VaultView): IndexStatusDto {
