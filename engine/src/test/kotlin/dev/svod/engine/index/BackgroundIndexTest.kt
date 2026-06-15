@@ -58,6 +58,29 @@ class BackgroundIndexTest {
     }
 
     @Test
+    fun `embedding status reports a rate and ETA while running and clears when idle`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { for (i in 1..6) fx.seed("n$i.md", "# N$i\nbody $i unique words here") }
+            val emb = FakeEmbedder("fake-v1", delayMs = 60)
+            val idx = IndexService(fx.root, fx.indexDir, emb, blockStartup = false, maxThreads = 1, batchSize = 1)
+            try {
+                idx.start()
+                // mid-pass: a measurable rate + ETA are reported
+                await(15_000) {
+                    val s = idx.embeddingStatus()
+                    s.state == IndexService.EmbeddingState.RUNNING && s.done in 1 until s.total &&
+                        (s.ratePerSec ?: 0.0) > 0.0 && s.etaSeconds != null
+                }
+                // once idle, rate + ETA clear
+                await(15_000) { idx.embeddingStatus().state == IndexService.EmbeddingState.IDLE }
+                val done = idx.embeddingStatus()
+                assertEquals(null, done.ratePerSec, "no rate when idle")
+                assertEquals(null, done.etaSeconds, "no ETA when idle")
+            } finally { idx.close() }
+        }
+    }
+
+    @Test
     fun `embeddings persist across a restart - resume re-embeds nothing`() {
         IndexFixture.create().use { fx ->
             fx.seedCorpus()

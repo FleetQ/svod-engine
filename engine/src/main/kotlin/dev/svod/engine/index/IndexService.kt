@@ -82,6 +82,10 @@ class IndexService(
         val total: Int,
         val model: String,
         val error: String?,
+        /** Rolling embed throughput (chunks/sec) while a pass runs; null when idle or not yet measurable. */
+        val ratePerSec: Double? = null,
+        /** Estimated seconds until the current pass finishes; null when idle or not yet measurable. */
+        val etaSeconds: Long? = null,
     )
 
     private val keywordReadyFlag = AtomicBoolean(false)
@@ -104,6 +108,10 @@ class IndexService(
 
     private var lastProgressEmit = 0L
 
+    // Throughput tracking for the ETA: when the current pass entered RUNNING and the done-count then.
+    @Volatile private var passStartMs = 0L
+    @Volatile private var passStartDone = 0
+
     /** Invoked on the indexer thread after the index advances to a new HEAD (drives index.updated). */
     @Volatile
     var onSynced: ((headCommit: String?) -> Unit)? = null
@@ -115,8 +123,24 @@ class IndexService(
     /** True once the BM25/keyword index is consistent with HEAD (semantic may still be filling). */
     fun keywordReady(): Boolean = keywordReadyFlag.get()
 
-    fun embeddingStatus(): EmbeddingStatus =
-        EmbeddingStatus(embeddingState.get(), embeddingDone.get(), embeddingTotal.get(), embedder.model, embeddingError)
+    fun embeddingStatus(): EmbeddingStatus {
+        val state = embeddingState.get()
+        val done = embeddingDone.get()
+        val total = embeddingTotal.get()
+        // Rate + ETA only while a pass is actively running and has made measurable progress.
+        var rate: Double? = null
+        var eta: Long? = null
+        if (state == EmbeddingState.RUNNING) {
+            val elapsedSec = (System.currentTimeMillis() - passStartMs) / 1000.0
+            val progressed = done - passStartDone
+            if (elapsedSec > 0.0 && progressed > 0) {
+                rate = progressed / elapsedSec
+                val remaining = (total - done).coerceAtLeast(0)
+                eta = Math.round(remaining / rate!!)
+            }
+        }
+        return EmbeddingStatus(state, done, total, embedder.model, embeddingError, rate, eta)
+    }
 
     /** Open the index and bring it consistent with HEAD. Non-blocking unless [blockStartup]. */
     fun start(): IndexService {
@@ -380,6 +404,11 @@ class IndexService(
     }
 
     private fun transition(state: EmbeddingState) {
+        // Start (or restart, e.g. after a pause) the throughput clock when the pass enters RUNNING.
+        if (state == EmbeddingState.RUNNING && embeddingState.get() != EmbeddingState.RUNNING) {
+            passStartMs = System.currentTimeMillis()
+            passStartDone = embeddingDone.get()
+        }
         embeddingState.set(state)
         onProgress?.invoke(embeddingDone.get(), embeddingTotal.get(), state.name.lowercase())
     }

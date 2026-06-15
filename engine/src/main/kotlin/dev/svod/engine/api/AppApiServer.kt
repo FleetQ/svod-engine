@@ -79,7 +79,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.9.0",
+        val apiVersion: String = "0.10.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
@@ -603,7 +603,7 @@ class AppApiServer(
             model = vc.index.indexedModel() ?: "none",
             dim = vc.index.indexedDim() ?: 0,
             keywordReady = vc.index.keywordReady(),
-            embedding = EmbeddingStatusDto(s.state.name.lowercase(), s.done, s.total, provider, s.model, s.error),
+            embedding = EmbeddingStatusDto(s.state.name.lowercase(), s.done, s.total, provider, s.model, s.error, s.ratePerSec, s.etaSeconds),
         )
     }
 

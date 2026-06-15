@@ -120,6 +120,10 @@ data class EmbeddingStatusDto(
     val provider: String,
     val model: String,
     val error: String? = null,
+    /** Rolling embed throughput (chunks/sec) while running; null when idle/not yet measurable. */
+    val ratePerSec: Double? = null,
+    /** Estimated seconds remaining for the current pass; null when idle/not yet measurable. */
+    val etaSeconds: Long? = null,
 )
 
 @Serializable
