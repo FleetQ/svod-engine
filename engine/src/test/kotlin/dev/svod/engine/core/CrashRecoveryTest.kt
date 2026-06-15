@@ -100,6 +100,27 @@ class CrashRecoveryTest {
     }
 
     @Test
+    fun `a stale git index-lock is self-healed on open (no crash-loop)`() = runBlocking {
+        VaultFixture.create().use { fx ->
+            fx.open().also { it.write("a.md", "x\n", null, BOB) }
+            fx.simulateCrash()
+
+            // Leftover .git/index.lock from an unclean kill — would make the next git write throw
+            // jgit LockFailedException and crash-loop under KeepAlive.
+            val indexLock = fx.root.resolve(".git").resolve("index.lock")
+            Files.writeString(indexLock, "")
+            assertTrue(indexLock.exists())
+
+            val e2 = fx.open() // must not throw — the stale lock is removed first
+            assertTrue(!indexLock.exists(), "stale git index.lock must be removed on open")
+            // a write still succeeds (proves git is usable, not just that boot survived)
+            val ok = e2.write("b.md", "y\n", null, BOB)
+            assertTrue(ok is WriteOutcome.Success)
+            assertTrue(GitCli.isWorkingTreeClean(fx.root))
+        }
+    }
+
+    @Test
     fun `second instance on the same vault is refused (single-instance)`() = runBlocking {
         VaultFixture.create().use { fx ->
             fx.open()

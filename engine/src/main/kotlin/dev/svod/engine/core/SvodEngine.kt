@@ -468,6 +468,12 @@ class SvodEngine private constructor(
             Files.createDirectories(root)
             val lock = VaultLock.acquire(root)
             try {
+                // The vault lock we just acquired guarantees no other live engine owns this vault, so a
+                // leftover .git/index.lock can only be stale debris from an unclean kill (SIGKILL / power
+                // loss / KeepAlive after a hard crash). Left in place it makes the first git write throw
+                // jgit LockFailedException, which crash-loops the engine under launchd KeepAlive. Acquiring
+                // the vault lock is the interlock that makes removing it safe; do it before any git write.
+                clearStaleGitLock(root)
                 val git = GitRepo.openOrInit(root)
                 ensureScaffold(root, git)
                 val engine = SvodEngine(root, lock, git, WriteActor(scope), CrashInjection(), secretScanner)
@@ -476,6 +482,20 @@ class SvodEngine private constructor(
             } catch (t: Throwable) {
                 lock.close()
                 throw t
+            }
+        }
+
+        private val log = org.slf4j.LoggerFactory.getLogger(SvodEngine::class.java)
+
+        /**
+         * Remove a stale `<root>/.git/index.lock` left by a previously-killed engine. Safe ONLY because
+         * the caller already holds the exclusive [VaultLock] (no other live engine can own the index).
+         * No-op when the repo or the lock doesn't exist (e.g. a brand-new vault).
+         */
+        private fun clearStaleGitLock(root: Path) {
+            val indexLock = root.resolve(".git").resolve("index.lock")
+            if (Files.exists(indexLock) && runCatching { Files.deleteIfExists(indexLock) }.getOrDefault(false)) {
+                log.warn("removed stale git index.lock at {} (left by an unclean shutdown)", indexLock)
             }
         }
 
