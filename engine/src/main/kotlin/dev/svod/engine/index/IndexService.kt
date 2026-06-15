@@ -58,6 +58,7 @@ class IndexService(
     @Volatile
     private var embedder: Embedder = embedder
 
+    private val log = org.slf4j.LoggerFactory.getLogger(IndexService::class.java)
     private val index = LuceneIndex(indexDir)
     private val reader = GitReader(root)
     private val metaFile = indexDir.resolve("meta.json")
@@ -114,7 +115,7 @@ class IndexService(
         if (blockStartup) {
             runBoot()
         } else {
-            bootThread = Thread({ runCatching { runBoot() }.onFailure { System.err.println("index boot failed: $it") } },
+            bootThread = Thread({ runCatching { runBoot() }.onFailure { log.error("index boot failed", it) } },
                 "svod-index-boot").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }.also { it.start() }
         }
         return this
@@ -129,10 +130,41 @@ class IndexService(
         // IndexMeta.compatibleWith treats an unknown (0) dimension as a wildcard, so a remote whose
         // dim isn't probed yet resumes against its existing index instead of wiping it.
         if (meta != null && !meta.compatibleWith(schemaVersion, emb.model, emb.knownDim())) {
+            // This is the ONLY restart path that re-embeds the whole vault. It is expensive (re-hits a
+            // remote/GPU embedder for every chunk), so name the exact reason — that line is how an
+            // operator diagnoses a vault that unexpectedly re-embeds on every boot.
+            log.warn(
+                "full re-embed: persisted index (model={} dim={} schema={}) is incompatible with the " +
+                    "configured embedder (model={} dim={} schema={}) — {}",
+                meta.embeddingModel, meta.embeddingDim, meta.schemaVersion,
+                emb.model, emb.knownDim(), schemaVersion, incompatibilityReason(meta, emb),
+            )
             exec.submit { index.deleteAll() }.get()
         }
         keywordCatchUp()
-        if (emb.isActive && !closing.get()) embedBacklog()
+        if (!emb.isActive || closing.get()) return
+        // keywordCatchUp() has reconciled the index to HEAD reusing every still-valid vector, so the
+        // remaining backlog is exactly the chunks with no vector. Empty ⇒ semantic is already current
+        // for this (model, dim, HEAD): do nothing rather than re-embed. Non-empty ⇒ resume just the
+        // delta. This is the resume-across-restarts guarantee, made observable.
+        val head = exec.submit<String?> { reader.headCommit() }.get()
+        val missing = exec.submit<List<String>> { index.pathsMissingVectors() }.get()
+        if (missing.isEmpty()) {
+            log.info("semantic index up-to-date at HEAD {} (model {}); nothing to embed", shortHead(head), emb.model)
+            transition(EmbeddingState.IDLE)
+            return
+        }
+        log.info("resuming embedding: {} file(s) missing vectors at HEAD {} (model {})", missing.size, shortHead(head), emb.model)
+        embedPass(missing, force = false)
+    }
+
+    private fun shortHead(head: String?): String = head?.take(8) ?: "—"
+
+    /** Human-readable reason an existing index is incompatible with the active embedder (for the boot log). */
+    private fun incompatibilityReason(meta: IndexMeta, emb: Embedder): String = when {
+        meta.schemaVersion != schemaVersion -> "schema changed ${meta.schemaVersion} → $schemaVersion"
+        meta.embeddingModel != emb.model -> "model changed '${meta.embeddingModel}' → '${emb.model}'"
+        else -> "embedding dimension changed ${meta.embeddingDim} → ${emb.knownDim()}"
     }
 
     /**
@@ -234,7 +266,7 @@ class IndexService(
             embeddingError = (t.cause ?: t).message ?: t.toString()
             runCatching { exec.submit { index.commit() }.get() }
             transition(EmbeddingState.ERROR)
-            System.err.println("embedding pass failed: $t")
+            log.error("embedding pass failed", t)
         } finally {
             pool.shutdownNow()
             suppressSemantic = false

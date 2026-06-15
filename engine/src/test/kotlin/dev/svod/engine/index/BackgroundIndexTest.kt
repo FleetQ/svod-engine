@@ -76,6 +76,72 @@ class BackgroundIndexTest {
         }
     }
 
+    /**
+     * Like [FakeEmbedder] but with a LAZY dimension: [knownDim] is 0 until the first successful embed.
+     * This mirrors the real remote/Ollama embedders, whose dimension is unknown on a cold process —
+     * the case the plain [FakeEmbedder] (eager dim) didn't cover for restart-resume.
+     */
+    private class LazyDimEmbedder(m: String, private val d: Int = 64) : Embedder {
+        private val inner = FakeEmbedder(m, d)
+        val passageCalls get() = inner.passageCalls
+        @Volatile private var cached = 0
+        override val model = m
+        override val isActive = true
+        override val dim: Int get() { if (cached == 0) cached = d; return cached }
+        override fun knownDim() = cached
+        override fun embedPassages(texts: List<String>): List<FloatArray> { cached = d; return inner.embedPassages(texts) }
+        override fun embedQuery(text: String) = inner.embedQuery(text)
+    }
+
+    @Test
+    fun `a lazy-dimension (remote) embedder resumes across restart with zero re-embed`() {
+        IndexFixture.create().use { fx ->
+            fx.seedCorpus()
+            val first = LazyDimEmbedder("remote-bge")
+            IndexService(fx.root, fx.indexDir, first, blockStartup = true).start().use { idx ->
+                assertEquals(3, first.passageCalls.get(), "first run embeds all chunks")
+                assertEquals(64, idx.indexedDim(), "the real dimension is recorded after the first embed")
+            }
+            // Reopen with a FRESH lazy embedder (knownDim()==0, like a cold remote). The dim-0 wildcard
+            // in IndexMeta.compatibleWith must let it resume against the existing index — NOT wipe + re-embed.
+            val second = LazyDimEmbedder("remote-bge")
+            IndexService(fx.root, fx.indexDir, second, blockStartup = true).start().use { idx ->
+                assertEquals(0, second.passageCalls.get(), "cold remote restart must reuse persisted vectors, not re-embed")
+                assertEquals("c.md", idx.search(SearchQuery("cherry", mode = SearchMode.SEMANTIC)).hits.firstOrNull()?.path)
+            }
+        }
+    }
+
+    /** Embeds the first [n] calls, then throws — simulating an interruption partway through the backlog. */
+    private class FailAfterNEmbedder(override val model: String, private val n: Int, override val dim: Int = 64) : Embedder {
+        val attempts = java.util.concurrent.atomic.AtomicInteger(0)
+        override val isActive = true
+        override fun knownDim() = dim
+        override fun embedPassages(texts: List<String>): List<FloatArray> {
+            if (attempts.incrementAndGet() > n) throw RuntimeException("simulated interruption")
+            return texts.map { FloatArray(dim).also { it[0] = 1f } }
+        }
+        override fun embedQuery(text: String) = FloatArray(dim).also { it[0] = 1f }
+    }
+
+    @Test
+    fun `an interrupted embedding pass resumes only the remaining files on restart`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { for (i in 1..6) fx.seed("n$i.md", "# N$i\nbody $i words") }
+            // batchSize=1 + maxThreads=1 ⇒ one file per embed call, committed in order. The embedder
+            // dies after 3 → exactly 3 files end up with vectors, the pass lands in ERROR.
+            val dying = FailAfterNEmbedder("fake-v1", n = 3)
+            IndexService(fx.root, fx.indexDir, dying, blockStartup = true, maxThreads = 1, batchSize = 1).start().use { idx ->
+                assertEquals(IndexService.EmbeddingState.ERROR, idx.embeddingStatus().state)
+            }
+            // Restart with a healthy embedder: only the 3 files still missing vectors are embedded.
+            val healthy = FakeEmbedder("fake-v1")
+            IndexService(fx.root, fx.indexDir, healthy, blockStartup = true, maxThreads = 1, batchSize = 1).start().use {
+                assertEquals(3, healthy.passageCalls.get(), "resume embeds only the 3 unfinished files, not all 6")
+            }
+        }
+    }
+
     /** Constructs with no network (like the fixed remote embedders) but fails every embed call. */
     private class FailingEmbedder(override val model: String = "remote-cold") : Embedder {
         override val dim: Int get() = throw RuntimeException("endpoint cold")
