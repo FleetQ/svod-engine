@@ -72,10 +72,30 @@ class LinkGraph private constructor(
     }
 }
 
-/** Extracts `[[wikilink]]` targets, tolerating `[[target|alias]]` and `[[target#heading]]`. */
+/** Extracts canonical `[[wikilink]]` targets, dropping the `|alias` and tolerating `#heading`. */
 object WikiLinks {
     private val LINK = Regex("\\[\\[([^\\[\\]]+?)]]")
 
     fun extract(content: String): List<String> =
-        LINK.findAll(content).map { it.groupValues[1].trim() }.filter { it.isNotEmpty() }.toList()
+        LINK.findAll(content).map { clean(it.groupValues[1]) }.filter { it.isNotEmpty() }.toList()
+
+    /**
+     * Canonical link target: drop the `[[target|alias]]` display alias (split on the first UNESCAPED
+     * `|`) and normalize a trailing slash on the path, so `[[a/b/|Label]]`, `[[a/b/]]` and `[[a/b]]`
+     * all reference the note `a/b`. A `#heading` suffix is preserved. Without this the stored target
+     * keeps the alias and trailing slash, which is shown verbatim AND never resolves.
+     */
+    fun clean(inner: String): String {
+        val sb = StringBuilder()
+        var i = 0
+        while (i < inner.length) {
+            val c = inner[i]
+            if (c == '\\' && i + 1 < inner.length && inner[i + 1] == '|') { sb.append('|'); i += 2; continue }
+            if (c == '|') break
+            sb.append(c); i++
+        }
+        val t = sb.toString().trim()
+        val hash = t.indexOf('#')
+        return if (hash < 0) t.trimEnd('/') else t.substring(0, hash).trimEnd('/') + t.substring(hash)
+    }
 }
