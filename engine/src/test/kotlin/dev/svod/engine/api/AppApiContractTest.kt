@@ -233,6 +233,15 @@ class AppApiContractTest {
             val test = fx.post("$ap/embedder/test", """{"provider":"none"}""")
             assertEquals(501, test.statusCode())
             validate("$ap/embedder/test", Request.Method.POST, 501, test.body())
+
+            // No embedder control wired ⇒ 501; and the 200 EmbedderModels shape conforms to the schema.
+            val models = fx.post("$ap/embedder/models", """{"provider":"none"}""")
+            assertEquals(501, models.statusCode())
+            validate("$ap/embedder/models", Request.Method.POST, 501, models.body())
+            validate(
+                "$ap/embedder/models", Request.Method.POST, 200,
+                """{"provider":"local-ollama","models":[{"id":"bge-m3","dimension":1024},{"id":"nomic-embed-text"}]}""",
+            )
         }
     }
 
@@ -249,7 +258,7 @@ class AppApiContractTest {
             "/api/v1/sync/config", "/api/v1/sync/now", "/api/v1/backup/now",
             "/api/v1/settings/backup", "/api/v1/maintenance/reindex",
             "/api/v1/sources", "/api/v1/sources/{id}", "/api/v1/sources/{id}/sync", "/api/v1/sources/sync",
-            "/api/v1/embedder", "/api/v1/embedder/test",
+            "/api/v1/embedder", "/api/v1/embedder/test", "/api/v1/embedder/models",
             "/api/v1/index/reembed", "/api/v1/index/pause", "/api/v1/index/resume",
         )
         assertEquals(declared, implemented, "contract paths and implemented routes must match exactly")

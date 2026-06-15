@@ -72,6 +72,26 @@ class SvodNodeTest {
             // a RAW api key (not a Secrets ref) is rejected — keys never travel as plaintext
             val bad = put(port, "/api/v1/embedder", """{"provider":"remote-openai","apiKeyRef":"sk-rawsecret"}""")
             assertEquals(422, bad.statusCode())
+
+            // list models: onnx-local enumerates the bundled model with its dimension
+            val onnxModels = post(port, "/api/v1/embedder/models", """{"provider":"onnx-local"}""")
+            assertEquals(200, onnxModels.statusCode())
+            assertTrue(onnxModels.body().contains("\"provider\":\"local-onnx\""), onnxModels.body())
+            assertTrue(onnxModels.body().contains("multilingual-e5-small") && onnxModels.body().contains("\"dimension\":384"), onnxModels.body())
+
+            // none → empty list (UI falls back to manual entry)
+            val noneModels = post(port, "/api/v1/embedder/models", """{"provider":"none"}""")
+            assertEquals(200, noneModels.statusCode())
+            assertTrue(noneModels.body().contains("\"models\":[]"), noneModels.body())
+
+            // an unreachable provider endpoint is NOT an error — empty list, 200
+            val downModels = post(port, "/api/v1/embedder/models", """{"provider":"local-ollama","endpoint":"http://127.0.0.1:1"}""")
+            assertEquals(200, downModels.statusCode())
+            assertTrue(downModels.body().contains("\"provider\":\"local-ollama\"") && downModels.body().contains("\"models\":[]"), downModels.body())
+
+            // a raw API key is rejected here too (422), never enumerated
+            val badModels = post(port, "/api/v1/embedder/models", """{"provider":"remote-openai","apiKeyRef":"sk-rawsecret"}""")
+            assertEquals(422, badModels.statusCode())
         } finally {
             node.shutdown()
         }

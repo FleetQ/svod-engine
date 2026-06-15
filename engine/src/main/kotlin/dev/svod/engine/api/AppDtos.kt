@@ -153,6 +153,20 @@ data class EmbedderTestResultDto(
     val error: String? = null,
 )
 
+/** Models a provider can serve (POST /embedder/models). Empty list ⇒ the UI falls back to manual entry. */
+@Serializable
+data class EmbedderModelsDto(
+    val provider: String,
+    val models: List<EmbedderModelOptionDto>,
+)
+
+/** One selectable model; [dimension] is included only when cheaply known (omitted otherwise). */
+@Serializable
+data class EmbedderModelOptionDto(
+    val id: String,
+    val dimension: Int? = null,
+)
+
 @Serializable
 data class ConflictEntryDto(
     val path: String,

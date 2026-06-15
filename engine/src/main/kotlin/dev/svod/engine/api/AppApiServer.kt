@@ -79,7 +79,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.8.0",
+        val apiVersion: String = "0.9.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
@@ -302,6 +302,19 @@ class AppApiServer(
                 val req = call.receive<EmbedderRequestDto>()
                 val r = control.test(vc.id, req.toSpec())
                 call.respond(EmbedderTestResultDto(r.ok, r.dimension, r.latencyMs, r.error))
+            }
+            post("/api/v1/embedder/models") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val control = embedderControl ?: return@post call.notImplemented("embedder control")
+                val req = call.receive<EmbedderRequestDto>()
+                try {
+                    val r = control.models(vc.id, req.toSpec())
+                    call.respond(EmbedderModelsDto(r.provider, r.models.map { EmbedderModelOptionDto(it.id, it.dimension) }))
+                } catch (e: EmbedderControl.InvalidSpec) {
+                    // A raw API key (not a Secrets ref) or an unknown provider is the only 4xx here; an
+                    // unreachable endpoint returns 200 with an empty list (the controller swallows it).
+                    call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("invalid_embedder", e.message ?: "invalid embedder spec"))
+                }
             }
             post("/api/v1/index/reembed") {
                 val vc = vault() ?: return@post call.notFound("vault")

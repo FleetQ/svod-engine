@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.8.0
+  version: 0.9.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -621,6 +621,38 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "501": { $ref: "#/components/responses/NotImplemented" }
 
+  /api/v1/embedder/models:
+    post:
+      tags: [ops]
+      summary: List the models a provider can serve (for the UI's model picker)
+      description: >
+        Mirrors POST /embedder/test (same EmbedderRequest body; model/maxThreads are ignored).
+        endpoint/apiKeyRef fall back to the configured embedder when omitted. A provider that cannot be
+        enumerated (endpoint unreachable, Ollama down, no key) returns 200 with an empty list — the UI
+        treats empty as "fall back to manual entry" — never a 4xx. A raw API key (not a Secrets ref) is
+        rejected with 422.
+      operationId: listEmbedderModels
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmbedderRequest" }
+      responses:
+        "200":
+          description: The provider and the models it can serve (possibly empty).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmbedderModels" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: Invalid spec (unknown provider, or a raw API key instead of a Secrets ref).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
   /api/v1/index/reembed:
     post:
       tags: [ops]
@@ -960,6 +992,23 @@ components:
         dimension: { type: integer, nullable: true }
         latencyMs: { type: integer, format: int64, nullable: true }
         error: { type: string, nullable: true }
+
+    EmbedderModels:
+      type: object
+      required: [provider, models]
+      description: The models a provider can serve. An empty list means "fall back to manual entry".
+      properties:
+        provider: { type: string, description: "local-onnx | local-ollama | remote-openai | none" }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/EmbedderModelOption" }
+
+    EmbedderModelOption:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        dimension: { type: integer, nullable: true, description: "Included only when cheaply known." }
 
     IndexStatus:
       type: object

@@ -21,6 +21,9 @@ object ModelManager {
     const val MODEL_FILE = "model.onnx"
     const val TOKENIZER_FILE = "tokenizer.json"
 
+    /** Bundled ONNX embedding models (downloadable without a localPath): id → vector dimension. */
+    val BUNDLED: Map<String, Int> = mapOf("multilingual-e5-small" to 384)
+
     private data class Pinned(
         val modelUrl: String,
         val modelSha256: String,

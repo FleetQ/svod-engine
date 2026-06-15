@@ -1,9 +1,20 @@
 package dev.svod.engine.lifecycle
 
 import dev.svod.engine.api.EmbedderControl
+import dev.svod.engine.index.EmbedderProvider
 import dev.svod.engine.index.Embedders
+import dev.svod.engine.index.ModelManager
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 
 /**
  * Runtime embedder control for the App API. The embedder is a global engine setting (one provider
@@ -19,6 +30,9 @@ class EmbedderController(
 
     @Volatile
     private var config = initialConfig
+
+    private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
+    private val json = Json { ignoreUnknownKeys = true }
 
     override fun descriptor(vaultId: String): EmbedderControl.EmbedderDescriptor {
         val ec = config.toEmbedderConfig()
@@ -59,6 +73,52 @@ class EmbedderController(
         } catch (e: Throwable) {
             EmbedderControl.ProbeResult(ok = false, dimension = null, latencyMs = null, error = (e.cause ?: e).message)
         }
+    }
+
+    override fun models(vaultId: String, spec: EmbedderControl.EmbedderSpec): EmbedderControl.ModelsResult {
+        // merge() validates (unknown provider / raw API key ⇒ InvalidSpec ⇒ 422) and resolves the
+        // effective endpoint/apiKeyRef from config when the spec omits them.
+        val ec = config.copy(embedder = merge(config.embedder, spec)).toEmbedderConfig()
+        val options = try {
+            when (ec.provider) {
+                EmbedderProvider.NONE -> emptyList()
+                EmbedderProvider.ONNX_LOCAL -> ModelManager.BUNDLED.map { EmbedderControl.ModelOption(it.key, it.value) }
+                EmbedderProvider.OLLAMA -> ollamaModels(ec.ollamaEndpoint)
+                EmbedderProvider.OPENAI -> openaiModels(ec.openaiEndpoint, ec.openaiApiKeyRef)
+            }
+        } catch (_: Exception) {
+            emptyList() // a provider that can't be enumerated (down / no key) ⇒ empty, never an error
+        }
+        return EmbedderControl.ModelsResult(ec.providerName, options)
+    }
+
+    /** Installed Ollama models via GET {endpoint}/api/tags (`models[].name`); no dimension is cheap to know. */
+    private fun ollamaModels(endpoint: String): List<EmbedderControl.ModelOption> {
+        val body = httpGet("$endpoint/api/tags", null) ?: return emptyList()
+        val models = (json.parseToJsonElement(body) as? JsonObject)?.get("models") as? JsonArray ?: return emptyList()
+        return models.mapNotNull { (it as? JsonObject)?.get("name")?.jsonPrimitive?.content }
+            .map { EmbedderControl.ModelOption(it, null) }
+    }
+
+    /** OpenAI-compatible models via GET {endpoint}/v1/models (`data[].id`). The key is a resolved Secrets ref. */
+    private fun openaiModels(endpoint: String, apiKeyRef: String?): List<EmbedderControl.ModelOption> {
+        val key = apiKeyRef?.takeIf { it.isNotBlank() }?.let { dev.svod.engine.security.Secrets.resolve(it) }
+        val body = httpGet("$endpoint/v1/models", key) ?: return emptyList()
+        val data = (json.parseToJsonElement(body) as? JsonObject)?.get("data") as? JsonArray ?: return emptyList()
+        return data.mapNotNull { (it as? JsonObject)?.get("id")?.jsonPrimitive?.content }
+            .map { EmbedderControl.ModelOption(it, null) }
+    }
+
+    /** GET [url] (optionally with a Bearer key); returns the body on HTTP 200, else null. Never throws. */
+    private fun httpGet(url: String, bearer: String?): String? = try {
+        val req = HttpRequest.newBuilder(URI.create(url))
+            .timeout(Duration.ofSeconds(5))
+            .apply { if (!bearer.isNullOrBlank()) header("Authorization", "Bearer $bearer") }
+            .GET().build()
+        val resp = http.send(req, HttpResponse.BodyHandlers.ofString())
+        if (resp.statusCode() == 200) resp.body() else null
+    } catch (_: Exception) {
+        null
     }
 
     private fun merge(current: SvodConfig.EmbedderSettings, spec: EmbedderControl.EmbedderSpec): SvodConfig.EmbedderSettings {
