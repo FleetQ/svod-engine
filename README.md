@@ -18,6 +18,19 @@ with a conflict, never silently overwritten.
 > not a note-taking app and not a vector database you bolt on. The store of record *is* a git
 > repo of Markdown — zero lock-in, full provenance.
 
+**Jump to:**
+[Why Svod](#why-svod-exists) ·
+[Feature tour](#what-it-does-feature-tour) ·
+[Architecture](#how-it-works-90-second-architecture) ·
+[Agent interface (13 MCP tools)](#the-agent-interface--13-mcp-tools) ·
+[Connecting an LLM agent](#connecting-an-llm-agent) ·
+[App API for UIs](#the-ui-interface--local-app-api) ·
+[Download & install](#download--install) ·
+[Quickstart](#quickstart) ·
+[Example scenarios](#example-scenarios) ·
+[How it compares](#how-it-compares) ·
+[Status](#status)
+
 ---
 
 ## Why Svod exists
@@ -57,8 +70,9 @@ index. The result:
 | **Optimistic concurrency** | Revision = git blob hash. Write with a stale revision → structured `conflict` + current content for a 3-way merge. **Never a silent overwrite.** |
 | **Crash recovery** | On startup the engine reconciles the working tree against git, completes/rolls back partial writes, and removes orphan `.tmp` files. |
 | **Hybrid search** | Lucene BM25 (lexical) + optional HNSW kNN vectors (semantic), fused with Reciprocal Rank Fusion. Heading-aware chunking. Filters by tag / path / date; fuzzy / prefix / phrase / field-scoped queries. |
-| **Pluggable embeddings, in-process** | Default `onnx-local` runs `multilingual-e5-small` (MIT) via ONNX Runtime — no server, no Python, no network at query time. Or `ollama` (optional), or `none` for a guaranteed BM25-only baseline. |
-| **MCP server for agents** | 12 tools over streamable HTTP, per-agent bearer tokens → git author, read-only/write roles, token-bucket rate limiting, append-only audit log, optional TLS. |
+| **Pluggable embeddings** | Default `onnx-local` runs `multilingual-e5-small` (MIT) in-process via ONNX Runtime — no server, no Python, no network at query time. Or `local-ollama` (a local Ollama server), `remote-openai` (any OpenAI-compatible `/v1/embeddings` endpoint, API key as a Secrets ref), or `none` for a guaranteed BM25-only baseline. Switchable at runtime via `PUT /api/v1/embedder`; `POST /api/v1/embedder/models` lists what a provider can serve. |
+| **Optional reranking** | A second-stage cross-encoder re-scores the fused candidates for a relevance lift — opt-in, default off, degrades to the fused order on any failure. Configured under `reranker` and reported in `GET /settings`. |
+| **MCP server for agents** | 13 tools over streamable HTTP, per-agent bearer tokens → git author, read-only/write roles, token-bucket rate limiting, append-only audit log, optional TLS. |
 | **Local App API + WebSocket** | A loopback-only HTTP/JSON API for UIs, plus a live `/api/v1/events` stream (agent activity, commits, index updates, conflicts) so a UI feels alive. |
 | **Wikilink graph** | `[[wikilinks]]` parsed into a backlink/outlink graph. Moving or renaming a note **rewrites every backlink in a single commit** — link integrity for free. |
 | **Multiple vaults** | Run N vaults in one engine (e.g. `personal` + `work`), each its own git repo, lock, index, and sync remote. Routes select a vault via `?vault=`; agents are scoped to their granted vault. Cross-vault `[[vault:note]]` links resolve and surface as backlinks. |
@@ -107,15 +121,19 @@ Full detail: [`docs/architecture.md`](docs/architecture.md) and the ADRs in
 
 ---
 
-## The agent interface — 12 MCP tools
+## The agent interface — 13 MCP tools
 
 Per-agent bearer token authenticates and **becomes the git commit author**. Roles are
 enforced *before* the engine is touched.
 
-**Read (any role):** `read` · `list` · `search` · `history` · `diff` · `get_revision` ·
-`link` · `graph_query`
+**Read (any role):** `read` · `list` · `search` · `context_pack` · `history` · `diff` ·
+`get_revision` · `link` · `graph_query`
 **Write (WRITE role):** `write` · `delete` · `move` · `promote`
 
+- `search` runs hybrid retrieval (BM25 + vectors, RRF-fused, plus any reranker) with `mode`
+  (`keyword`/`semantic`/`hybrid`) and filters; `context_pack` goes one step further — it assembles
+  the top hits into a single **token-budgeted, deduped, cited** context block (each block carries the
+  note's latest commit + author), the one-call "recall my memory about X" primitive for an agent.
 - `write` / `delete` / `move` take an optional `expectedRevision` for optimistic concurrency —
   a mismatch returns a structured `conflict` (with current content), not a protocol error.
 - `move` rewrites all backlinks atomically.
@@ -124,22 +142,85 @@ enforced *before* the engine is touched.
 - A read-only agent's mutation is denied and audited; an over-quota agent gets `rate_limited`;
   every action (including denials and conflicts) lands in an append-only audit log.
 
+### Connecting an LLM agent
+
+Point any MCP-capable client (Claude Desktop/Code, Cursor, your own SDK) at the engine's **MCP
+endpoint** and authenticate with one of the bearer tokens from your config's `agents` list:
+
+- **URL:** `http://127.0.0.1:7518/mcp` (streamable HTTP; HTTPS when `mcpTls` is configured — required
+  for any non-loopback access).
+- **Auth:** header `Authorization: Bearer <token>`, where `<token>` is an agent's `token` from the
+  config (a literal value or a `env:` / `file:` / `keychain:` Secrets ref). The token *is* the
+  identity — its `agentId` becomes the git commit author and its `role` (`WRITE` / `READ_ONLY`) gates
+  every call.
+
+A minimal Claude Desktop / Cursor MCP server entry:
+
+```json
+{
+  "mcpServers": {
+    "svod-memory": {
+      "url": "http://127.0.0.1:7518/mcp",
+      "headers": { "Authorization": "Bearer friday-write-token" }
+    }
+  }
+}
+```
+
+#### Ready-to-paste system prompt
+
+Drop this into your agent's system prompt so it actually *uses* the memory well:
+
+```text
+You have a persistent, git-backed memory called Svod, reached through its MCP tools. It is your
+durable long-term memory across sessions — auditable Markdown notes, not a black box.
+
+Recall first, then answer:
+- Before answering anything that might rely on earlier knowledge, call `context_pack` with a short
+  query and a token budget (e.g. 1500) to pull the relevant notes assembled into one cited block.
+  Use `search` (mode=hybrid) when you want raw hits to inspect, or filter-only (tags/pathPrefix) to
+  browse. Use `link` / `graph_query` to follow connections between notes.
+
+Write durable facts as you learn them:
+- Use `write` to save a note as Markdown. Put it under a clear path (e.g. `projects/<x>/decisions.md`).
+  Add YAML frontmatter `tags: [..]` for retrieval, and link related notes with `[[wikilinks]]`.
+- To UPDATE an existing note safely, first `read` it to get its `revision`, then `write` with
+  `expectedRevision` set to that value. If you get a `conflict`, someone changed it meanwhile — re-read,
+  merge, and retry. Never blindly overwrite.
+- Draft uncertain material under `messy/` and `promote` it into `vault/` once confirmed.
+- Deletes are soft (recoverable); use `delete` rather than overwriting with empty content.
+
+Principles:
+- Prefer small, well-titled, linked notes over one giant note. One fact per note where it helps recall.
+- Everything you write is attributed to you and versioned — write as if a human will read the diff.
+- If a tool returns `rate_limited` or `denied`, stop and report it; do not retry in a loop.
+```
+
 ## The UI interface — local App API
 
 Loopback HTTP/JSON, validated against [`contract/openapi.yaml`](contract/openapi.yaml) (the
-versioned single source of truth for every client):
+versioned single source of truth for every client — currently **0.10.0**):
 
-`/health` · `/ready` · `/api/v1/` `tree` · `file` (GET/PUT/DELETE) · `file/move` ·
-`file/restore` · `file/history` · `file/diff` · `file/revision` · `file/links` · `search` ·
-`graph` · `tags` · `settings` · `index/status` · `metrics` · `conflicts` ·
-`conflicts/resolve` · `events` (WebSocket).
+- **Health:** `/health` · `/ready`
+- **Content:** `/api/v1/` `tree` · `file` (GET/PUT/DELETE) · `file/move` · `file/restore` ·
+  `file/history` · `file/diff` · `file/revision` · `file/links`
+- **Discovery:** `search` (filter-only "browse by tag" when `q` is omitted) · `graph` · `tags`
+- **Index & embedder:** `index/status` · `index/reembed` · `index/pause` · `index/resume` ·
+  `embedder` (PUT, switch provider) · `embedder/test` · `embedder/models` · `settings`
+- **Conflicts & sync:** `conflicts` · `conflicts/resolve` · `sync/config` · `sync/now` ·
+  `backup/now` · `settings/backup` · `maintenance/reindex`
+- **Import & external sources:** `import` · `sources` (GET/POST) · `sources/{id}` (DELETE) ·
+  `sources/{id}/sync` · `sources/sync`
+- **Multi-vault:** `vaults`; every per-vault route takes `?vault=<id>`
+- **Live + metrics:** `events` (WebSocket) · `/api/v1/metrics` (JSON) · **`/metrics`** (Prometheus
+  text exposition, for scrapers — at the root, outside the versioned contract)
 
 The `conflicts` endpoint carries each conflict's `base`/`ours`/`theirs` so a client can render a
 3-way merge; `conflicts/resolve` commits the merged content through the single writer and clears
 it — the engine half of the UI's conflict-resolution screen.
 
-The WebSocket streams `agent.activity` / `commit.created` / `index.updated` / `file.changed` /
-`conflict` / `engine.status` live — what powers the "watch your agents think" feed.
+The WebSocket streams `agent.activity` / `commit.created` / `index.updated` / `index.progress` /
+`file.changed` / `conflict` / `engine.status` live — what powers the "watch your agents think" feed.
 
 ---
 
@@ -155,20 +236,55 @@ no Java needed, every embedder including in-process `onnx-local` semantic search
 | **Linux** (x64) | `SvodEngine-linux-x64.tar.gz` | `./SvodEngine/bin/SvodEngine config.json` |
 | **Windows** (x64) | `SvodEngine-windows-x64.zip` | `SvodEngine\SvodEngine.exe config.json` |
 
+Every OS follows the same three steps: **(1)** unpack the download, **(2)** write a `config.json`
+(see [Quickstart](#quickstart) for a minimal one, or copy
+[`dist/config.sample.json`](dist/config.sample.json)), **(3)** run the engine with that config as its
+only argument. It binds `127.0.0.1:7517` (App API) + `127.0.0.1:7518` (MCP) by default.
+
+#### macOS (Apple Silicon)
+
 ```sh
-# macOS / Linux
-tar xzf SvodEngine-macos-arm64.tar.gz
-./SvodEngine.app/Contents/MacOS/SvodEngine /path/to/config.json   # macOS (see Quickstart for the config)
-./SvodEngine/bin/SvodEngine /path/to/config.json                  # Linux
+tar xzf SvodEngine-macos-arm64.tar.gz                       # → SvodEngine.app
+xattr -dr com.apple.quarantine SvodEngine.app              # only if the build is unsigned (see note)
+./SvodEngine.app/Contents/MacOS/SvodEngine ~/svod/config.json
 ```
 
-> macOS Gatekeeper: release binaries are signed + notarized when a signing identity is configured;
-> an unsigned build needs `xattr -dr com.apple.quarantine SvodEngine.app` (or right-click → Open) once.
+> Gatekeeper: release binaries are signed + notarized when a signing identity is configured. For an
+> unsigned build, run the `xattr` line above once (or right-click the app → **Open**).
 
-**Run as a background service** so the engine is always up (and the UI's "Start Svod" can wake it):
-- **macOS** — launchd; see [`dist/`](dist/) (`dev.svod.engine.plist` + `launchctl bootstrap`).
-- **Linux** — a `systemd --user` unit running the binary with your config; enable + start it.
-- **Windows** — Task Scheduler "At log on", or a service wrapper (e.g. NSSM) around the `.exe`.
+#### Linux (x64)
+
+```sh
+tar xzf SvodEngine-linux-x64.tar.gz                         # → SvodEngine/
+./SvodEngine/bin/SvodEngine ~/svod/config.json
+```
+
+#### Windows (x64)
+
+```powershell
+Expand-Archive SvodEngine-windows-x64.zip -DestinationPath .   # → SvodEngine\
+.\SvodEngine\SvodEngine.exe C:\svod\config.json
+```
+
+Verify it's up (any OS): `curl http://127.0.0.1:7517/ready` → `{"ready":true,...}`, and open
+`http://127.0.0.1:7517/` for the bundled reference viewer.
+
+#### Run it as a background service (always-on)
+
+So the engine survives logout/reboot and the UI's "Start Svod" can wake it:
+
+- **macOS — launchd.** Edit the sample `dev.svod.engine.plist` in [`dist/`](dist/) (set the binary +
+  config paths), then:
+  ```sh
+  cp dist/dev.svod.engine.plist ~/Library/LaunchAgents/
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.svod.engine.plist
+  launchctl kickstart -k gui/$(id -u)/dev.svod.engine     # start (or restart) now
+  ```
+- **Linux — `systemd --user`.** Create `~/.config/systemd/user/svod.service` with
+  `ExecStart=/path/to/SvodEngine/bin/SvodEngine /path/to/config.json`, then
+  `systemctl --user enable --now svod` (add `loginctl enable-linger $USER` to keep it running after logout).
+- **Windows — Task Scheduler.** Create a task triggered **At log on** running
+  `SvodEngine.exe C:\svod\config.json`, or wrap the `.exe` as a Windows service with a tool like NSSM.
 
 ### Native binary (single executable, no JVM)
 
@@ -285,7 +401,7 @@ a working, dependency-free reference you can crib from.)
 | **Conflict surfaced, not auto-merged** | ✅ | ❌ | ❌ | ❌ | n/a | ❌ |
 | **Hybrid search (BM25 + vectors)** | ✅ RRF | ⚠️ vector-first | ⚠️ | ✅ | ⚠️ plugins | ⚠️ vector-only |
 | **Runs fully local, no Python/server** | ✅ single JVM, in-proc embeddings | ⚠️ | ⚠️ | ⚠️ | ✅ | ⚠️ |
-| **Agent protocol** | ✅ MCP (12 tools) | SDK | SDK | SDK | ❌ | ❌ (DIY) |
+| **Agent protocol** | ✅ MCP (13 tools) | SDK | SDK | SDK | ❌ | ❌ (DIY) |
 | **Multi-host replication** | ✅ git transport | ⚠️ hosted | ⚠️ | ⚠️ hosted | ⚠️ sync apps | ⚠️ |
 | **Lock-in** | None (git clone) | High | Medium | High | None | High |
 
