@@ -248,7 +248,14 @@ data class WriteStatsDto(val count: Long, val avgMs: Double, val maxMs: Double, 
 data class IndexLagDto(val docCount: Int, val head: String? = null, val indexedHead: String? = null, val lagging: Boolean)
 
 @Serializable
-data class SyncStatusDto(val role: String, val lastHead: String? = null, val conflicts: Int)
+data class SyncStatusDto(
+    val role: String,
+    val lastHead: String? = null,
+    val conflicts: Int,
+    /** Live sync state: inSync | syncing | conflicts | offline | error (null for non-synced vaults). */
+    val syncStatus: String? = null,
+    val lastSyncedAt: String? = null,
+)
 
 @Serializable
 data class MetricsDto(
@@ -264,27 +271,58 @@ data class MetricsDto(
 // Wire shapes match FleetQ/svod-ui-macos exactly. Credentials in any remote URL are REDACTED before
 // they leave the process (invariant: secrets never on the wire).
 
-/** Request to set a vault's backup destination. [remote] must be credential-free or a `Secrets` ref. */
+/**
+ * Request to set a vault's backup destination and (optionally) its auto-backup schedule. [remote]
+ * must be credential-free or a `Secrets` ref. The three schedule fields are additive and optional;
+ * omitting one leaves that part of the schedule disabled (its default).
+ */
 @Serializable
-data class BackupConfigRequestDto(val remote: String, val enabled: Boolean)
+data class BackupConfigRequestDto(
+    val remote: String,
+    val enabled: Boolean,
+    val backupOnStartup: Boolean = false,
+    val backupIntervalMinutes: Int? = null,
+    val backupOnChange: Boolean = false,
+    /** Two-way sync: when true the same [remote] is the bidirectional bus (one-way backup retired). */
+    val syncEnabled: Boolean = false,
+    /** Background sync poll cadence in minutes; null ⇒ engine default (3). */
+    val syncIntervalMinutes: Int? = null,
+)
 
 /** A vault's sync + backup configuration (GET /sync/config; also the body PUT /settings/backup returns). */
 @Serializable
 data class SyncConfigDto(
     val backupRemote: String? = null,
     val backupEnabled: Boolean = false,
+    /** Auto-backup schedule (all opt-in; only active when backupEnabled). */
+    val backupOnStartup: Boolean = false,
+    val backupIntervalMinutes: Int? = null,
+    val backupOnChange: Boolean = false,
+    /** Observable status: ISO-8601 instant + sha of the last successful backup (null until one runs). */
+    val lastBackupAt: String? = null,
+    val lastBackupHead: String? = null,
     val syncPeers: List<String> = emptyList(),
-    val role: String? = null,        // "authority" | "follower" | "solo"
+    val role: String? = null,        // "synced" | "authority" | "follower" | "solo"
     val hostId: String? = null,
+    /** Two-way sync (subsumes one-way backup when on); same remote as [backupRemote]. */
+    val syncEnabled: Boolean = false,
+    val syncIntervalMinutes: Int? = null,
+    /** Live sync state: inSync | syncing | conflicts | offline | error (null until first sync). */
+    val syncStatus: String? = null,
+    val lastSyncedAt: String? = null,
 )
 
 /** Ack for POST /api/v1/maintenance/reindex (index self-heal from git HEAD). */
 @Serializable
 data class MaintenanceAckDto(val started: Boolean, val docCount: Int? = null)
 
-/** Ack for POST /api/v1/backup/now. [head] = pushed commit sha, null when nothing was pushed. */
+/**
+ * Ack for POST /api/v1/backup/now. [head] = backup commit sha, null when there is nothing to back up.
+ * [noChange] is true when the backup succeeded but had nothing new to push (already up to date) — still
+ * [ok]=true; [ok]=false is reserved for real failures (auth, network, rejected push).
+ */
 @Serializable
-data class BackupAckDto(val ok: Boolean, val head: String? = null)
+data class BackupAckDto(val ok: Boolean, val head: String? = null, val noChange: Boolean = false)
 
 /** Ack for POST /api/v1/sync/now. [conflicts] = merge conflicts surfaced (then visible via /conflicts). */
 @Serializable

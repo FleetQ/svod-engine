@@ -62,6 +62,8 @@ class AppApiServer(
     private val syncConfig: (VaultView) -> SyncConfigDto = { SyncConfigDto(role = "solo") },
     /** Per-vault sync status for the GET /vaults `sync` field; null ⇒ no sync/backup dot. */
     private val vaultStatus: (VaultView) -> SyncStatusDto? = { null },
+    /** Run one real reconcile cycle for a synced vault; null result ⇒ not a synced vault (no peers). */
+    private val syncNow: suspend (VaultView) -> dev.svod.engine.sync.SyncEngine.Result? = { null },
     /** Runtime embedder control; null ⇒ PUT /embedder & POST /embedder/test return 501. */
     private val embedderControl: EmbedderControl? = null,
 ) {
@@ -78,7 +80,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.10.0",
+        val apiVersion: String = "0.12.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
@@ -398,21 +400,24 @@ class AppApiServer(
 
             post("/api/v1/sync/now") {
                 val vc = vault() ?: return@post call.notFound("vault")
-                // No peers ⇒ nothing to reconcile: a successful no-op (ok=false), not an error.
-                if (syncConfig(vc).syncPeers.isEmpty()) {
-                    return@post call.respond(SyncAckDto(ok = false, head = vc.engine.head(), conflicts = 0))
+                // Not a synced vault ⇒ nothing to reconcile: a successful no-op (ok=false), not an error.
+                val r = syncNow(vc)
+                    ?: return@post call.respond(SyncAckDto(ok = false, head = vc.engine.head(), conflicts = 0))
+                when (r.status) {
+                    // Reconciled (incl. surfaced conflicts — a successful sync that found overlaps, the
+                    // user resolves via /conflicts/resolve; conflicts is NOT a transport failure).
+                    dev.svod.engine.sync.SyncEngine.Status.inSync,
+                    dev.svod.engine.sync.SyncEngine.Status.syncing,
+                    dev.svod.engine.sync.SyncEngine.Status.conflicts ->
+                        call.respond(SyncAckDto(ok = true, head = r.head, conflicts = r.conflicts))
+                    // A transport failure (remote unreachable / auth / push rejected past retry) → 409, never 500.
+                    dev.svod.engine.sync.SyncEngine.Status.offline,
+                    dev.svod.engine.sync.SyncEngine.Status.error ->
+                        call.respond(HttpStatusCode.Conflict, ErrorDto(
+                            "sync_failed",
+                            "sync failed (${r.status}) — check the remote is reachable and its credentials resolve",
+                        ))
                 }
-                // A transport failure (peer unreachable / auth) is an expected outcome → 409, never 500.
-                try {
-                    vaults.syncNow(vc.id)
-                } catch (e: Exception) {
-                    return@post call.respond(HttpStatusCode.Conflict, ErrorDto(
-                        "sync_failed",
-                        "sync with peers failed — check the remotes are reachable and their credentials resolve",
-                    ))
-                }
-                val status = vc.syncStatus()
-                call.respond(SyncAckDto(ok = true, head = status?.lastHead ?: vc.engine.head(), conflicts = status?.conflicts ?: 0))
             }
 
             post("/api/v1/backup/now") {
@@ -428,7 +433,10 @@ class AppApiServer(
                 val r = backup.backupNow(vc.id)
                 when (r.status) {
                     "ok" -> call.respond(BackupAckDto(ok = true, head = r.head))
-                    "noop" -> call.respond(BackupAckDto(ok = false, head = r.head))
+                    // Nothing new to push (already up to date / another backup in flight / empty repo)
+                    // is a SUCCESS, not a failure — the off-site copy is current. ok=false is reserved
+                    // for real push failures below.
+                    "noop" -> call.respond(BackupAckDto(ok = true, head = r.head, noChange = true))
                     else -> call.respond(HttpStatusCode.Conflict, ErrorDto(
                         "backup_failed",
                         "backup push failed (${r.status}) — check the remote is reachable and its credentials resolve",
@@ -448,9 +456,12 @@ class AppApiServer(
                         "backup remote must not embed credentials inline; reference them as a Secrets ref (keychain:/env:/file:)",
                     ))
                 }
-                // Set + persist THIS vault's backup remote (survives restart via its BackupConfigStore),
-                // then return the vault's updated, redacted sync+backup config.
-                backup?.configure(vc.id, dev.svod.engine.lifecycle.SvodConfig.BackupSettings(req.remote, req.enabled))
+                // Set + persist THIS vault's backup remote + auto-backup schedule (survives restart via
+                // its BackupConfigStore), then return the vault's updated, redacted sync+backup config.
+                backup?.configure(vc.id, dev.svod.engine.lifecycle.SvodConfig.BackupSettings(
+                    req.remote, req.enabled, req.backupOnStartup, req.backupIntervalMinutes, req.backupOnChange,
+                    req.syncEnabled, req.syncIntervalMinutes,
+                ))
                 call.respond(syncConfig(vc))
             }
 

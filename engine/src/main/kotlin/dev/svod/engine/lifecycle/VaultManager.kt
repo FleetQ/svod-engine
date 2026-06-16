@@ -21,7 +21,8 @@ class VaultManager(
     override fun defaultId(): String = defaultId
     override fun resolve(id: String?): VaultView? = byId[id ?: defaultId]
     override fun all(): List<VaultView> = byId.values.toList()
-    override suspend fun syncNow(vaultId: String) { byId[vaultId]?.sync() }
+    // syncNow is driven by the node (it resolves each vault's remote from the backup/sync config and
+    // records the success markers); the router keeps the VaultRouter default no-op.
 
     override fun close() {
         // reverse open order, best-effort: one vault's failure must not strand the others
@@ -30,11 +31,11 @@ class VaultManager(
 
     companion object {
         /** Open all resolved vaults from config. On any failure, close those already opened. */
-        fun open(config: SvodConfig, scope: kotlinx.coroutines.CoroutineScope, eventBus: dev.svod.engine.events.EventBus): VaultManager {
+        fun open(config: SvodConfig, scope: kotlinx.coroutines.CoroutineScope, eventBus: dev.svod.engine.events.EventBus, hostId: String): VaultManager {
             val opened = LinkedHashMap<String, VaultContext>()
             try {
                 for (vs in config.resolvedVaults()) {
-                    opened[vs.id] = VaultContext.open(vs, config, scope, eventBus)
+                    opened[vs.id] = VaultContext.open(vs, config, scope, eventBus, hostId)
                 }
                 return VaultManager(opened, config.defaultVaultId())
             } catch (t: Throwable) {

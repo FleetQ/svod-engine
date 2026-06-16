@@ -30,6 +30,8 @@ class SvodNode private constructor(
     private val api: AppApiServer.Running,
     val backup: dev.svod.engine.sync.BackupService,
     private val sourceScheduler: dev.svod.engine.sources.SourceScheduler,
+    private val backupScheduler: dev.svod.engine.sync.BackupScheduler,
+    private val syncScheduler: dev.svod.engine.sync.SyncScheduler,
     private val ready: AtomicBoolean,
     private val ownsScope: CoroutineScope,
 ) : AutoCloseable {
@@ -41,9 +43,9 @@ class SvodNode private constructor(
     /** The default vault's engine (back-compat convenience for single-vault callers/tests). */
     val engine: SvodEngine get() = vaults.default().engine
 
-    /** Trigger one reconcile with peers across every vault (no-op where sync isn't configured). */
+    /** Trigger one reconcile across every vault (no-op where sync isn't configured). */
     suspend fun sync() {
-        for (vc in vaults.contexts()) vc.sync()
+        for (vc in vaults.contexts()) runSync(vaults, backup, vc.id)
     }
 
     @Volatile
@@ -55,6 +57,8 @@ class SvodNode private constructor(
         ready.set(false)
         // 1. stop accepting new work
         runCatching { sourceScheduler.stop() }
+        runCatching { backupScheduler.stop() }
+        runCatching { syncScheduler.stop() }
         runCatching { api.stop() }
         runCatching { mcp.stop() }
         // 2. close every vault: watcher + peers, then index, then the engine (drains the queue).
@@ -64,13 +68,35 @@ class SvodNode private constructor(
     override fun close() = shutdown()
 
     companion object {
+        /**
+         * Run one reconcile cycle for [id] when it is a synced vault (its remote resolves), recording
+         * the success markers (lastSyncedAt/head) for the UI + restart. Returns null when [id] is not
+         * a synced vault. Shared by POST /sync/now, the [SyncScheduler], and [sync].
+         */
+        private suspend fun runSync(
+            vaults: VaultManager,
+            backup: dev.svod.engine.sync.BackupService,
+            id: String,
+        ): dev.svod.engine.sync.SyncEngine.Result? {
+            val remote = backup.syncRemote(id) ?: return null
+            val vc = vaults.context(id) ?: return null
+            val res = vc.sync(remote)
+            if (res.status == dev.svod.engine.sync.SyncEngine.Status.inSync) {
+                backup.recordSyncSuccess(id, res.head, res.lastSyncedAt ?: java.time.Instant.now().toString())
+            }
+            return res
+        }
+
         fun start(config: SvodConfig, scope: CoroutineScope? = null, configPath: java.nio.file.Path? = null): SvodNode {
             val errors = config.validate()
             require(errors.isEmpty()) { "invalid config:\n - " + errors.joinToString("\n - ") }
 
             val workScope = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Default)
             val eventBus = EventBus()
-            val vaults = VaultManager.open(config, workScope, eventBus)
+            // A stable, persistent per-machine id: commits record it as the committer and the conflict
+            // UI shows "edited on <machineA> vs <machineB>". An explicit config.hostId still wins.
+            val hostId = HostIdentity.resolve(config.hostId)
+            val vaults = VaultManager.open(config, workScope, eventBus, hostId)
             try {
                 // Per-agent vault scoping: each vault has its own tool set (own engine/index/audit).
                 // A call selects its target vault (default = the agent's first grant); the MCP layer
@@ -91,8 +117,15 @@ class SvodNode private constructor(
                 val backup = dev.svod.engine.sync.BackupService(
                     vaults.contexts().map { vc ->
                         val store = BackupConfigStore(vc.engine.root)
-                        val effective = store.load()?.let { SvodConfig.BackupSettings(it.remote, it.enabled) } ?: config.backupFor(vc.id)
-                        dev.svod.engine.sync.BackupService.Binding(vc.id, vc.engine.root, effective, store)
+                        val persisted = store.load()
+                        // A persisted runtime config (incl. backup schedule + sync toggle) wins over startup.
+                        val effective = persisted?.let {
+                            SvodConfig.BackupSettings(it.remote, it.enabled, it.backupOnStartup, it.backupIntervalMinutes, it.backupOnChange, it.syncEnabled, it.syncIntervalMinutes)
+                        } ?: config.backupFor(vc.id)
+                        dev.svod.engine.sync.BackupService.Binding(
+                            vc.id, vc.engine.root, effective, store,
+                            persisted?.lastBackupAt, persisted?.lastBackupHead, persisted?.lastSyncedAt, persisted?.lastSyncedHead,
+                        )
                     },
                 )
                 val ecView = config.toEmbedderConfig()
@@ -112,23 +145,42 @@ class SvodNode private constructor(
                     backup = backup,
                     syncConfig = { vc ->
                         val b = backup.configOf(vc.id)
+                        val synced = b?.isSynced() == true
+                        val redacted = b?.let { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it.remote) }
+                        val st = vc.syncStatus()
                         dev.svod.engine.api.SyncConfigDto(
-                            backupRemote = b?.let { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it.remote) },
+                            backupRemote = redacted,
                             backupEnabled = b?.enabled ?: false,
-                            syncPeers = config.syncRemotesFor(vc.id).map { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it) },
-                            role = config.roleFor(vc.id),
-                            hostId = config.hostIdFor(vc.id),
+                            backupOnStartup = b?.backupOnStartup ?: false,
+                            backupIntervalMinutes = b?.backupIntervalMinutes,
+                            backupOnChange = b?.backupOnChange ?: false,
+                            lastBackupAt = backup.lastBackupAt(vc.id),
+                            lastBackupHead = backup.lastBackupHead(vc.id),
+                            // When synced, the same remote IS the bidirectional bus → surface it as the peer.
+                            syncPeers = if (synced && redacted != null) listOf(redacted) else config.syncRemotesFor(vc.id).map { dev.svod.engine.lifecycle.SvodConfig.redactRemote(it) },
+                            role = if (synced) "synced" else config.roleFor(vc.id),
+                            hostId = hostId,
+                            syncEnabled = synced,
+                            syncIntervalMinutes = b?.syncIntervalMinutes,
+                            syncStatus = st?.syncStatus,
+                            lastSyncedAt = backup.lastSyncedAt(vc.id),
                         )
                     },
                     vaultStatus = { vc ->
-                        // A sync dot shows for vaults that have peers OR a backup remote configured.
+                        // A sync dot shows for vaults that have peers OR a backup/sync remote configured.
                         if (config.syncRemotesFor(vc.id).isEmpty() && backup.configOf(vc.id) == null) null
-                        else dev.svod.engine.api.SyncStatusDto(
-                            role = config.roleFor(vc.id),
-                            lastHead = vc.syncStatus()?.lastHead,
-                            conflicts = vc.syncStatus()?.conflicts ?: 0,
-                        )
+                        else {
+                            val st = vc.syncStatus()
+                            dev.svod.engine.api.SyncStatusDto(
+                                role = if (backup.isSynced(vc.id)) "synced" else config.roleFor(vc.id),
+                                lastHead = st?.lastHead,
+                                conflicts = st?.conflicts ?: (vc.conflicts?.all()?.size ?: 0),
+                                syncStatus = st?.syncStatus,
+                                lastSyncedAt = backup.lastSyncedAt(vc.id),
+                            )
+                        }
                     },
+                    syncNow = { vc -> runSync(vaults, backup, vc.id) },
                 ).start(config.appApiPort)
 
                 val mcpServer = dev.svod.engine.mcp.SvodMcpServer({ vid -> toolsByVault[vid] }, defaultId, registry, host = config.host)
@@ -155,9 +207,20 @@ class SvodNode private constructor(
                 }
                 sourceScheduler.start()
 
+                // Optional automatic backup (on-startup + interval + on-change), per vault, driven by
+                // the same runtime config the App API exposes. Reuses the backup service above.
+                val backupScheduler = dev.svod.engine.sync.BackupScheduler(workScope, backup, eventBus)
+                backupScheduler.start()
+
+                // Two-way sync driver: startup + interval poll + on-change debounce, per synced vault.
+                val syncScheduler = dev.svod.engine.sync.SyncScheduler(
+                    workScope, backup, { id -> runSync(vaults, backup, id) }, eventBus,
+                )
+                syncScheduler.start()
+
                 ready.set(true)
                 eventBus.publish(dev.svod.engine.events.EventTypes.ENGINE_STATUS) { put("status", "ready") }
-                return SvodNode(config, vaults, eventBus, mcp, api, backup, sourceScheduler, ready, workScope)
+                return SvodNode(config, vaults, eventBus, mcp, api, backup, sourceScheduler, backupScheduler, syncScheduler, ready, workScope)
             } catch (t: Throwable) {
                 vaults.close()
                 throw t

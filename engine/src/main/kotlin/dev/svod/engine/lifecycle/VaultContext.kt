@@ -12,10 +12,6 @@ import dev.svod.engine.sync.SyncEngine
 import dev.svod.engine.sync.SyncGit
 import dev.svod.engine.watch.FileWatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 import kotlinx.serialization.json.put
 import java.nio.file.Paths
 
@@ -31,37 +27,37 @@ class VaultContext private constructor(
     override val engine: SvodEngine,
     override val index: IndexService,
     private val conflictStore: ConflictStore,
-    val syncEngine: SyncEngine?,
-    private val syncGit: SyncGit?,
+    val syncEngine: SyncEngine,
+    private val syncGit: SyncGit,
     private val watcher: FileWatcher,
-    private val syncJob: Job?,
 ) : VaultView, AutoCloseable {
 
     override val conflicts: ConflictStore get() = conflictStore
 
-    override fun syncStatus(): SyncStatusDto? = syncEngine?.let { se ->
-        val r = se.lastResult
-        SyncStatusDto(role = se.role, lastHead = r?.head, conflicts = r?.conflicts ?: 0)
+    // A sync result exists only once a synced vault has run a cycle; a solo vault (never synced)
+    // reports no sync status. The authoritative role for the UI comes from GET /sync/config.
+    override fun syncStatus(): SyncStatusDto? = syncEngine.lastResult?.let { r ->
+        SyncStatusDto(role = "synced", lastHead = r.head, conflicts = r.conflicts, syncStatus = r.status.name, lastSyncedAt = r.lastSyncedAt)
     }
 
-    suspend fun sync() { syncEngine?.sync() }
+    /** Run one reconcile cycle against [remote] (caller resolves it from the vault's sync config). */
+    suspend fun sync(remote: String): SyncEngine.Result = syncEngine.sync(remote)
 
-    /** Graceful, ordered close: stop watching + peers, close the index, then drain the engine. */
+    /** Graceful, ordered close: stop watching, close the index, then drain the engine. */
     override fun close() {
-        runCatching { syncJob?.cancel() }
         runCatching { watcher.close() }
-        runCatching { syncGit?.close() }
+        runCatching { syncGit.close() }
         runCatching { index.close() }
         runCatching { engine.close() }
     }
 
     companion object {
-        private val log = org.slf4j.LoggerFactory.getLogger(VaultContext::class.java)
-
-        fun open(vs: SvodConfig.VaultSettings, config: SvodConfig, scope: CoroutineScope, eventBus: EventBus): VaultContext {
+        fun open(vs: SvodConfig.VaultSettings, config: SvodConfig, scope: CoroutineScope, eventBus: EventBus, hostId: String): VaultContext {
             val vault = Paths.get(vs.path)
-            // Single-instance per vault: SvodEngine.open acquires the exclusive vault lock.
-            val engine = SvodEngine.open(vault, scope, dev.svod.engine.security.SecretScanner(config.secretScanning))
+            // Single-instance per vault: SvodEngine.open acquires the exclusive vault lock. Commits
+            // record committer = this machine's host id (author stays the agent/UI) for sync provenance.
+            val committer = dev.svod.engine.core.Author(hostId, "$hostId@svod.local")
+            val engine = SvodEngine.open(vault, scope, dev.svod.engine.security.SecretScanner(config.secretScanning), committer)
             try {
                 val ec = config.toEmbedderConfig()
                 val embedder = Embedders.create(ec, vault)
@@ -85,27 +81,15 @@ class VaultContext private constructor(
                 engine.onCommit { index.onCommit(it) }
 
                 val conflicts = ConflictStore()
-                val syncGit: SyncGit?
-                val syncEngine: SyncEngine?
-                if (vs.syncRemotes.isNotEmpty()) {
-                    syncGit = SyncGit(vault)
-                    syncEngine = SyncEngine(engine, syncGit, conflicts, eventBus, vs.hostId, vs.mergeAuthority, vs.syncRemotes.first())
-                } else {
-                    syncGit = null; syncEngine = null
-                }
+                // The sync engine is always assembled (cheap — just handles); whether a vault actually
+                // reconciles is decided at runtime by its sync config (driven by the SyncScheduler /
+                // POST /sync/now), so toggling sync needs no restart and no vault re-open.
+                val syncGit = SyncGit(vault)
+                val syncEngine = SyncEngine(engine, syncGit, conflicts, eventBus, vs.id, hostId)
 
                 val watcher = FileWatcher(vault, engine, index, eventBus).start()
 
-                val syncJob: Job? = if (syncEngine != null && vs.syncIntervalSeconds > 0) {
-                    scope.launch {
-                        while (isActive) {
-                            delay(vs.syncIntervalSeconds * 1000L)
-                            runCatching { syncEngine.sync() }.onFailure { log.warn("sync failed for vault {}", vs.id, it) }
-                        }
-                    }
-                } else null
-
-                return VaultContext(vs.id, vs.name ?: vs.id, engine, index, conflicts, syncEngine, syncGit, watcher, syncJob)
+                return VaultContext(vs.id, vs.name ?: vs.id, engine, index, conflicts, syncEngine, syncGit, watcher)
             } catch (t: Throwable) {
                 engine.close()
                 throw t
