@@ -199,7 +199,7 @@ Principles:
 ## The UI interface — local App API
 
 Loopback HTTP/JSON, validated against [`contract/openapi.yaml`](contract/openapi.yaml) (the
-versioned single source of truth for every client — currently **0.10.0**):
+versioned single source of truth for every client — currently **0.12.0**):
 
 - **Health:** `/health` · `/ready`
 - **Content:** `/api/v1/` `tree` · `file` (GET/PUT/DELETE) · `file/move` · `file/restore` ·
@@ -447,7 +447,7 @@ fault tolerance → embedder model enumeration (`POST /embedder/models`) → emb
 link/tag index, `context_pack` agent-memory recall, reranker in `/settings`, filter-only tag browse.
 Full suite green;
 CI gates every change; packaged as self-contained app-images **and** GraalVM `native-image` single
-binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.10.0**
+binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.12.0**
 (versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0017) for the decision record.
 
 Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption).
