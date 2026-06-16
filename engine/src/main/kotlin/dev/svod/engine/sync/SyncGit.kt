@@ -38,6 +38,48 @@ class SyncGit(root: Path) : AutoCloseable {
             .call()
     }
 
+    /**
+     * Fetch the canonical sync ref `refs/svod/sync/<vaultId>` into the local tracking ref
+     * `refs/svodremote/sync/<vaultId>`. Force (`+`) only updates a tracking ref, never the vault.
+     * A missing remote ref (no machine has pushed yet) is not an error — the tracking ref stays
+     * absent and [syncRef] returns null.
+     */
+    fun fetchSync(remote: String, vaultId: String) {
+        // A wildcard refspec matches zero refs without error when no machine has pushed the
+        // canonical ref yet (first machine bootstrapping); a real transport failure still throws.
+        git.fetch()
+            .setRemote(remote)
+            .setRefSpecs(RefSpec("+refs/svod/sync/*:refs/svodremote/sync/*"))
+            .call()
+    }
+
+    /** The canonical sync head for [vaultId] as last fetched (null until a peer has pushed it). */
+    fun syncRef(vaultId: String): String? = repo.resolve("refs/svodremote/sync/$vaultId")?.name
+
+    /** Outcome of a canonical-ref push: pushed cleanly, rejected (a peer advanced it first), or a transport error. */
+    enum class PushResult { OK, REJECTED, ERROR }
+
+    /**
+     * Push the local [branch] to the canonical sync ref `refs/svod/sync/<vaultId>` on [remote],
+     * **non-force**: a non-fast-forward (another machine pushed in between) is [PushResult.REJECTED]
+     * so the caller re-fetches/re-merges and retries. A transport failure is [PushResult.ERROR].
+     */
+    fun pushSync(remote: String, branch: String, vaultId: String): PushResult = try {
+        val results = git.push().setRemote(remote)
+            .setRefSpecs(RefSpec("refs/heads/$branch:refs/svod/sync/$vaultId"))
+            .call()
+        var ok = true
+        for (result in results) for (update in result.remoteUpdates) {
+            when (update.status) {
+                RemoteRefUpdate.Status.OK, RemoteRefUpdate.Status.UP_TO_DATE -> {}
+                else -> ok = false
+            }
+        }
+        if (ok) PushResult.OK else PushResult.REJECTED
+    } catch (_: Exception) {
+        PushResult.ERROR
+    }
+
     /** Push [refspec] to [remote]; true if every update was OK/UP_TO_DATE (not rejected). */
     fun push(remote: String, refspec: String): Boolean {
         val results = git.push().setRemote(remote).setRefSpecs(RefSpec(refspec)).call()
