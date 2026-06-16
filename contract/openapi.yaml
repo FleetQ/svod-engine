@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.12.0
+  version: 0.13.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -511,6 +511,32 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/sources/{id}:
+    patch:
+      tags: [ops]
+      summary: Update a source's settings (toggle auto-sync / followSymlinks / prune) without re-registering
+      operationId: patchSource
+      description: >
+        Partial update — only the provided fields change. Toggling `autoSync` starts or stops the
+        filesystem watcher for this source immediately (no restart). The returned source's `watching`
+        flag reflects whether a watcher is now running.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/VaultQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PatchSourceRequest" }
+      responses:
+        "200":
+          description: The updated source
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExternalSource" }
+        "404": { $ref: "#/components/responses/NotFound" }
     delete:
       tags: [ops]
       summary: Remove an external source registration (its synced files stay in the vault)
@@ -571,8 +597,9 @@ paths:
       description: >
         Upgrade to a WebSocket. The server pushes JSON-encoded Event objects. Event types:
         file.changed, index.updated, index.progress, commit.created, conflict, engine.status,
-        agent.activity. index.progress carries { vault, done, total, state } during background
-        embedding (throttled emit).
+        agent.activity, source.synced. index.progress carries { vault, done, total, state } during
+        background embedding (throttled emit). source.synced fires when a source's auto-sync watcher
+        runs, carrying { vault, sourceId, created, updated, conflicts, deleted } (counts).
       responses:
         "101": { description: Switching Protocols (WebSocket) }
 
@@ -1127,6 +1154,20 @@ components:
           description: >
             Propagate deletions — a file gone from the source is soft-deleted from the vault (still
             guarded: a locally-edited copy is left as orphaned, never deleted). Off by default.
+        autoSync:
+          type: boolean
+          default: false
+          description: >
+            Auto-sync on filesystem change — a watcher re-syncs this source shortly (~1s) after its
+            files settle. Off by default. Emits a `source.synced` event (see GET /api/v1/events).
+
+    PatchSourceRequest:
+      type: object
+      description: Partial update of a source; omitted fields are left unchanged.
+      properties:
+        autoSync: { type: boolean, nullable: true, description: Toggle the auto-sync filesystem watcher. }
+        followSymlinks: { type: boolean, nullable: true }
+        prune: { type: boolean, nullable: true }
 
     ExternalSource:
       type: object
@@ -1138,6 +1179,8 @@ components:
         into: { type: string }
         followSymlinks: { type: boolean }
         prune: { type: boolean }
+        autoSync: { type: boolean, description: Auto-sync on filesystem change is enabled. }
+        watching: { type: boolean, description: "Live, read-only: a filesystem watcher is currently running for this source." }
         lastSyncedAt: { type: string, nullable: true, description: "ISO-8601 instant of the last successful sync, or null." }
 
     SourceSyncResult:
@@ -1308,6 +1351,6 @@ components:
       properties:
         type:
           type: string
-          enum: [file.changed, index.updated, index.progress, commit.created, conflict, engine.status, agent.activity]
+          enum: [file.changed, index.updated, index.progress, commit.created, conflict, engine.status, agent.activity, source.synced]
         ts: { type: integer, format: int64 }
         data: { type: object, additionalProperties: true }
