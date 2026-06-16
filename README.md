@@ -199,7 +199,7 @@ Principles:
 ## The UI interface — local App API
 
 Loopback HTTP/JSON, validated against [`contract/openapi.yaml`](contract/openapi.yaml) (the
-versioned single source of truth for every client — currently **0.12.0**):
+versioned single source of truth for every client — currently **0.13.0**):
 
 - **Health:** `/health` · `/ready`
 - **Content:** `/api/v1/` `tree` · `file` (GET/PUT/DELETE) · `file/move` · `file/restore` ·
@@ -438,7 +438,7 @@ dependency. The engine stays vendor-agnostic (see
 
 ## Status
 
-**v1.4.0 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
+**v1.5.0 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
 watcher → lifecycle → reference viewer → multi-host sync → hardening → multi-vault + Obsidian
 import → backup/DR + ops surface → external sources (prune + auto-sync) → non-blocking keyword-first
 indexing + pluggable embedders (local-onnx / local-ollama / remote-openai) → restart robustness
@@ -446,10 +446,11 @@ indexing + pluggable embedders (local-onnx / local-ollama / remote-openai) → r
 fault tolerance → embedder model enumeration (`POST /embedder/models`) → embedding ETA, incremental
 link/tag index, `context_pack` agent-memory recall, reranker in `/settings`, filter-only tag browse →
 scheduled auto-backup → two-way multi-machine sync (canonical `refs/svod/sync/<vault>`, 3-way merge,
-conflict surface/resolve, `clone` bootstrap).
+conflict surface/resolve, `clone` bootstrap) → per-source filesystem auto-sync (FSEvents watcher,
+debounced; `autoSync` toggle via PATCH).
 Full suite green;
 CI gates every change; packaged as self-contained app-images **and** GraalVM `native-image` single
-binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.12.0**
+binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.13.0**
 (versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0017) for the decision record.
 
 Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption).

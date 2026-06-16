@@ -3,6 +3,31 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.5.0 — 2026-06-16 (App API contract 0.13.0)
+
+### Added — per-source filesystem auto-sync
+- **Auto-sync external sources on change.** A registered source can now opt into `autoSync`: a native
+  FSEvents-backed filesystem watcher re-syncs it into the vault ~1s after its files settle, so an
+  external project's docs flow in automatically without a manual sync. Events are debounced/coalesced
+  (an editor's atomic temp-file-then-rename becomes a single sync) and noisy temp/dot files are
+  ignored. Sync semantics are unchanged (it reuses `SourceSync`): external-wins-unless-locally-edited,
+  conflict-preserve, prune soft-delete, secret-scanner skip, incremental reindex.
+- **Runtime control, no restart**: `autoSync` on `POST /api/v1/sources` (idempotent by path) and a new
+  **`PATCH /api/v1/sources/{id}`** `{ autoSync?, followSymlinks?, prune? }` that starts/stops the
+  watcher immediately. Each source response carries `autoSync` and a live read-only `watching` flag.
+- **`source.synced` event** (`{ vault, sourceId, created, updated, conflicts, deleted }`) emitted on
+  each auto-sync, for the UI to reflect.
+- The existing global scheduled `sourceSync` (config polling) stays as a coarse safety-net for hosts
+  where native watching doesn't fire. A vanished source path stops its watcher (logged, no crash) and
+  is re-watched when it reappears.
+
+### Changed
+- App API **contract 0.13.0** (additive): `autoSync`/`watching` on `ExternalSource`, `autoSync` on
+  `RegisterSourceRequest`, new `PATCH /sources/{id}` + `PatchSourceRequest`, `source.synced` event.
+
+### Out of scope (documented)
+Watching remote/network paths; two-way (vault → source) flow — sources stay input-only.
+
 ## v1.4.0 — 2026-06-16 (App API contract 0.12.0)
 
 ### Added — two-way multi-machine sync
