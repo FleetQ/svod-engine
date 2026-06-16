@@ -32,6 +32,7 @@ class SvodNode private constructor(
     private val sourceScheduler: dev.svod.engine.sources.SourceScheduler,
     private val backupScheduler: dev.svod.engine.sync.BackupScheduler,
     private val syncScheduler: dev.svod.engine.sync.SyncScheduler,
+    private val sourceWatch: dev.svod.engine.sources.SourceWatchManager,
     private val ready: AtomicBoolean,
     private val ownsScope: CoroutineScope,
 ) : AutoCloseable {
@@ -59,6 +60,7 @@ class SvodNode private constructor(
         runCatching { sourceScheduler.stop() }
         runCatching { backupScheduler.stop() }
         runCatching { syncScheduler.stop() }
+        runCatching { sourceWatch.stop() }
         runCatching { api.stop() }
         runCatching { mcp.stop() }
         // 2. close every vault: watcher + peers, then index, then the engine (drains the queue).
@@ -128,6 +130,14 @@ class SvodNode private constructor(
                         )
                     },
                 )
+                // Per-source filesystem auto-sync: a watcher re-syncs each autoSync source shortly after
+                // its files change. Built before the API so the API can query "is it watching?" and ask
+                // it to reconcile after a register/PATCH/remove.
+                val sourceWatch = dev.svod.engine.sources.SourceWatchManager(
+                    workScope, eventBus,
+                    vaults.contexts().map { dev.svod.engine.sources.SourceWatchManager.Vault(it.id, it.engine, it.engine.root) },
+                )
+
                 val ecView = config.toEmbedderConfig()
                 val embedderControl = EmbedderController(vaults, configPath, config)
                 val api = AppApiServer(
@@ -181,6 +191,8 @@ class SvodNode private constructor(
                         }
                     },
                     syncNow = { vc -> runSync(vaults, backup, vc.id) },
+                    sourceWatching = { vc, sourceId -> sourceWatch.isWatching(vc.id, sourceId) },
+                    reconcileSourceWatchers = { vc -> sourceWatch.reconcile(vc.id) },
                 ).start(config.appApiPort)
 
                 val mcpServer = dev.svod.engine.mcp.SvodMcpServer({ vid -> toolsByVault[vid] }, defaultId, registry, host = config.host)
@@ -218,9 +230,13 @@ class SvodNode private constructor(
                 )
                 syncScheduler.start()
 
+                // Start the FS watchers for every autoSync source (the global SourceScheduler above stays
+                // as a coarse polling safety-net for hosts where native watching doesn't fire).
+                sourceWatch.start()
+
                 ready.set(true)
                 eventBus.publish(dev.svod.engine.events.EventTypes.ENGINE_STATUS) { put("status", "ready") }
-                return SvodNode(config, vaults, eventBus, mcp, api, backup, sourceScheduler, backupScheduler, syncScheduler, ready, workScope)
+                return SvodNode(config, vaults, eventBus, mcp, api, backup, sourceScheduler, backupScheduler, syncScheduler, sourceWatch, ready, workScope)
             } catch (t: Throwable) {
                 vaults.close()
                 throw t
