@@ -210,6 +210,15 @@ data class RegisterSourceRequestDto(
     val into: String? = null,
     val followSymlinks: Boolean = false,
     val prune: Boolean = false,
+    val autoSync: Boolean = false,
+)
+
+/** Partial update of a registered source; null fields are left unchanged. */
+@Serializable
+data class PatchSourceRequestDto(
+    val autoSync: Boolean? = null,
+    val followSymlinks: Boolean? = null,
+    val prune: Boolean? = null,
 )
 
 @Serializable
@@ -219,6 +228,9 @@ data class ExternalSourceDto(
     val into: String,
     val followSymlinks: Boolean,
     val prune: Boolean,
+    val autoSync: Boolean = false,
+    /** Live, read-only: a filesystem watcher for this source is currently running. */
+    val watching: Boolean = false,
     val lastSyncedAt: String? = null,
 )
 

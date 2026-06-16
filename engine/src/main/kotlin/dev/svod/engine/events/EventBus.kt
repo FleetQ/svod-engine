@@ -17,6 +17,7 @@ object EventTypes {
     const val CONFLICT = "conflict"
     const val ENGINE_STATUS = "engine.status"
     const val AGENT_ACTIVITY = "agent.activity"
+    const val SOURCE_SYNCED = "source.synced"
 }
 
 /** One event: a type, a timestamp, and a free-form data object (matches the contract). */

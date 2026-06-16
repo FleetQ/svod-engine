@@ -30,6 +30,10 @@ data class ExternalSource(
     /** Propagate deletions: a file gone from the source is soft-deleted from the vault (still guarded
      *  against clobbering a locally-edited copy). Off by default — deletion is destructive. */
     val prune: Boolean = false,
+    /** Auto-sync this source on filesystem change: a watcher re-syncs it shortly after edits settle.
+     *  Off by default. The live "is a watcher running right now" state is reported separately by the
+     *  API (it is runtime, not persisted). */
+    val autoSync: Boolean = false,
     val lastSyncedAt: String? = null,
 ) {
     companion object {
