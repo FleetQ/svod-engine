@@ -23,6 +23,7 @@ import java.util.concurrent.CountDownLatch
  */
 fun main(args: Array<String>) {
     if (args.firstOrNull() == "import") return runImport(args.drop(1))
+    if (args.firstOrNull() == "clone") return runClone(args.drop(1))
 
     val configPath = args.firstOrNull()?.let { Paths.get(it) }
     val config = configPath
@@ -38,6 +39,20 @@ fun main(args: Array<String>) {
     println("  mcp:     http://${config.host}:${node.mcpPort}")
 
     CountDownLatch(1).await() // park until SIGTERM; the shutdown hook does the cleanup
+}
+
+/**
+ * Bootstrap a new machine into an existing synced vault:
+ *   svod-engine clone <remote> <dest-dir> <vaultId> [branch]
+ * Clones the canonical `refs/svod/sync/<vaultId>` from the remote into <dest-dir>; then point the
+ * engine config at <dest-dir> with sync enabled + the same remote. Run while the daemon is stopped.
+ */
+private fun runClone(args: List<String>) {
+    require(args.size >= 3) { "usage: svod-engine clone <remote> <dest-dir> <vaultId> [branch]" }
+    val (remote, dest, vaultId) = args
+    dev.svod.engine.sync.SyncBootstrap.clone(remote, Paths.get(dest), vaultId, args.getOrNull(3) ?: "master")
+    println("clone: $vaultId ← $remote into $dest (sync ref refs/svod/sync/$vaultId)")
+    println("  next: add this dir to the engine config with sync enabled + the same remote, then start the engine")
 }
 
 private fun runImport(args: List<String>) {
