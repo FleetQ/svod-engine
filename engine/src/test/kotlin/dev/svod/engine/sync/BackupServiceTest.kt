@@ -129,6 +129,35 @@ class BackupServiceTest {
     }
 
     @Test
+    fun `records last-backup markers, persists them, and skips when nothing changed`() = runBlocking {
+        val bare = bareRemote()
+        val dir = Files.createTempDirectory("svod-last-")
+        val engine = SvodEngine.open(dir, scope)
+        try {
+            engine.write("a.md", "# A", null, T)
+            val store = BackupConfigStore(dir)
+            val backup = BackupService(listOf(binding("v", dir, bare.toString(), store = store)))
+
+            val first = backup.backupNow("v")
+            assertEquals("ok", first.status)
+            assertEquals(engine.head(), backup.lastBackupHead("v"))
+            assertNotNull(backup.lastBackupAt("v"))
+            // The markers are persisted (a fresh service reloading the store sees them).
+            assertEquals(engine.head(), store.load()?.lastBackupHead)
+
+            // Nothing changed since the last success ⇒ the next call is a no-op (no redundant push).
+            assertEquals("noop", backup.backupNow("v").status)
+
+            // A new write makes the head differ again ⇒ backup pushes once more.
+            engine.write("b.md", "# B", null, T)
+            assertEquals("ok", backup.backupNow("v").status)
+            assertEquals(engine.head(), backup.lastBackupHead("v"))
+        } finally {
+            engine.close()
+        }
+    }
+
+    @Test
     fun `backupAll backs up every configured vault`() = runBlocking {
         val bare = bareRemote()
         val dirA = Files.createTempDirectory("svod-A-")
