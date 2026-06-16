@@ -78,12 +78,32 @@ data class SvodConfig(
      * credentials must NOT be inline in the URL — supply them via the remote's credential helper
      * or a `Secrets` reference, so they never sit in plaintext config. Each vault's canonical
      * branch is pushed to `refs/svod/backup/<vaultId>` on this remote.
+     *
+     * Auto-backup (opt-in, drives [dev.svod.engine.sync.BackupScheduler], only runs when [enabled]):
+     * [backupOnStartup] backs up once shortly after the engine is ready; [backupIntervalMinutes]
+     * (>0) then backs up on that cadence; [backupOnChange] backs up after vault writes settle
+     * (a short quiet period). All off ⇒ backup runs only on POST /api/v1/backup/now.
+     *
+     * **Two-way sync (opt-in, [syncEnabled]).** When set (and [enabled] with a [remote]), the vault
+     * is a *synced* vault: the same [remote] is the bidirectional sync bus, the canonical ref is
+     * `refs/svod/sync/<vaultId>`, and the one-way backup push (`refs/svod/backup/<vaultId>`) is
+     * retired — the canonical sync ref IS the off-site copy. [syncIntervalMinutes] (default 3 when
+     * null) is the background poll cadence; sync also runs on POST /api/v1/sync/now and debounced
+     * after local writes settle.
      */
     @Serializable
     data class BackupSettings(
         val remote: String,
         val enabled: Boolean = true,
-    )
+        val backupOnStartup: Boolean = false,
+        val backupIntervalMinutes: Int? = null,
+        val backupOnChange: Boolean = false,
+        val syncEnabled: Boolean = false,
+        val syncIntervalMinutes: Int? = null,
+    ) {
+        /** This vault replicates two-way (sync subsumes one-way backup) — needs an enabled remote. */
+        fun isSynced(): Boolean = syncEnabled && enabled && remote.isNotBlank()
+    }
     /** One vault: its own git repo, lock, index, and sync configuration. */
     @Serializable
     data class VaultSettings(
@@ -231,6 +251,8 @@ data class SvodConfig(
             else if (remoteHasInlineCredentials(b.remote)) {
                 errors += "backup.remote must not embed credentials inline; use a credential helper or a Secrets ref"
             }
+            b.backupIntervalMinutes?.let { if (it < 0) errors += "backup.backupIntervalMinutes must be >= 0, was $it" }
+            b.syncIntervalMinutes?.let { if (it < 0) errors += "backup.syncIntervalMinutes must be >= 0, was $it" }
         }
         return errors
     }

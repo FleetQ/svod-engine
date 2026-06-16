@@ -15,3 +15,11 @@ engine/build/
 # engine internals if a vault is ever checked out here
 .svod/
 *.svod-tmp
+
+# local tooling / agent indexes (machine-local, never committed)
+.serena/
+PROJECT_INDEX.json
+PROJECT_INDEX.md
+
+# local machine configs (real paths / secret refs)
+dist/config.local.*
