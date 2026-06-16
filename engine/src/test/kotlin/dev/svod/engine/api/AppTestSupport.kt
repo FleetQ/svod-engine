@@ -72,6 +72,14 @@ class ApiFixture : AutoCloseable {
     fun delete(path: String): HttpResponse<String> =
         http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port$path")).DELETE().build(), HttpResponse.BodyHandlers.ofString())
 
+    fun patch(path: String, body: String): HttpResponse<String> =
+        http.send(
+            HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port$path"))
+                .header("Content-Type", "application/json")
+                .method("PATCH", HttpRequest.BodyPublishers.ofString(body)).build(),
+            HttpResponse.BodyHandlers.ofString(),
+        )
+
     override fun close() {
         running.stop()
         index.close()

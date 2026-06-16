@@ -206,6 +206,12 @@ class AppApiContractTest {
             assertEquals(200, syncAll.statusCode())
             validate("$ap/sources/sync", Request.Method.POST, 200, syncAll.body())
 
+            // PATCH toggles a setting and conforms; the response carries autoSync + watching.
+            val patched = fx.patch("$ap/sources/$id", """{"autoSync":true}""")
+            assertEquals(200, patched.statusCode())
+            validate("$ap/sources/{id}", Request.Method.PATCH, 200, patched.body())
+            assertTrue(patched.body().contains("\"autoSync\":true"), patched.body())
+
             // remove → 204
             val removed = fx.delete("$ap/sources/$id")
             assertEquals(204, removed.statusCode())
