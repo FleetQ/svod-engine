@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.10.0
+  version: 0.12.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -387,17 +387,27 @@ paths:
   /api/v1/sync/now:
     post:
       tags: [ops]
-      summary: Trigger one reconcile with peers (multi-host sync)
+      summary: Run one multi-machine sync cycle (fetch → 3-way merge → push the canonical ref)
       operationId: syncNow
+      description: >
+        Reconciles this vault with the shared remote: commit pending local changes, fetch
+        refs/svod/sync/<vault>, fast-forward or 3-way merge, then push (retrying on a non-fast-forward).
+        ok=false when the vault is not synced (a no-op). A surfaced conflict is still ok=true with
+        conflicts>0 (resolve via /conflicts/resolve). A transport failure is 409, never 500.
       parameters:
         - $ref: "#/components/parameters/VaultQuery"
       responses:
         "200":
-          description: Reconcile triggered (ok=false when no peers are configured — a no-op, not an error).
+          description: Reconcile ran (ok=false when sync is not enabled; ok=true with conflicts>0 when overlaps were surfaced).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SyncAck" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Sync failed (remote unreachable / auth / push rejected past retry).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/backup/now:
     post:
@@ -1196,25 +1206,46 @@ components:
             role: { type: string }
             lastHead: { type: string, nullable: true }
             conflicts: { type: integer }
+            syncStatus: { type: string, nullable: true }
+            lastSyncedAt: { type: string, nullable: true }
 
     SyncStatus:
       type: object
       required: [role, conflicts]
       description: Per-vault sync status (the GET /vaults `sync` dot).
       properties:
-        role: { type: string, description: "authority | follower | solo" }
+        role: { type: string, description: "synced | authority | follower | solo" }
         lastHead: { type: string, nullable: true }
         conflicts: { type: integer }
+        syncStatus: { type: string, nullable: true, description: "inSync | syncing | conflicts | offline | error (null until first sync)" }
+        lastSyncedAt: { type: string, nullable: true, description: ISO-8601 instant of the last successful two-way sync. }
 
     BackupConfigRequest:
       type: object
       required: [remote, enabled]
       description: >
-        Set a vault's backup destination. `remote` must be a credential-free git URL or a `Secrets`
-        ref (env:/file:/keychain:) — a URL embedding a password (user:pass@) is rejected (422).
+        Set a vault's backup destination and (optionally) its auto-backup schedule. `remote` must be a
+        credential-free git URL or a `Secrets` ref (env:/file:/keychain:) — a URL embedding a password
+        (user:pass@) is rejected (422). The three schedule fields are additive and optional; auto-backup
+        runs only when `enabled` is true. Credentials are never accepted or returned over this API.
       properties:
         remote: { type: string }
         enabled: { type: boolean }
+        backupOnStartup: { type: boolean, description: Back up once shortly after the engine becomes ready. }
+        backupIntervalMinutes:
+          type: integer
+          nullable: true
+          description: Periodic backup cadence in minutes; null or 0 disables the timer.
+        backupOnChange: { type: boolean, description: Back up after vault writes settle (a short quiet period). }
+        syncEnabled:
+          type: boolean
+          description: >
+            Enable two-way multi-machine sync on this vault. When true the same `remote` becomes the
+            bidirectional bus (canonical ref refs/svod/sync/<vault>) and one-way backup is retired.
+        syncIntervalMinutes:
+          type: integer
+          nullable: true
+          description: Background sync poll cadence in minutes; null ⇒ engine default (3).
 
     SyncConfig:
       type: object
@@ -1223,12 +1254,30 @@ components:
       properties:
         backupRemote: { type: string, nullable: true }
         backupEnabled: { type: boolean }
+        backupOnStartup: { type: boolean, description: Auto-backup once after the engine is ready (opt-in). }
+        backupIntervalMinutes:
+          type: integer
+          nullable: true
+          description: Periodic auto-backup cadence in minutes; null or 0 means no timer.
+        backupOnChange: { type: boolean, description: Auto-backup after vault writes settle (opt-in). }
+        lastBackupAt:
+          type: string
+          nullable: true
+          description: ISO-8601 instant of the last successful backup (null until one succeeds).
+        lastBackupHead:
+          type: string
+          nullable: true
+          description: Commit sha last pushed to the backup ref (null until one succeeds).
         syncPeers:
           type: array
           items: { type: string }
-          description: Configured sync remotes, credentials redacted.
-        role: { type: string, nullable: true, description: "authority | follower | solo" }
-        hostId: { type: string, nullable: true }
+          description: Configured sync remotes, credentials redacted (the sync remote when synced).
+        role: { type: string, nullable: true, description: "synced | authority | follower | solo" }
+        hostId: { type: string, nullable: true, description: "This machine's stable, persistent host id." }
+        syncEnabled: { type: boolean, description: Two-way sync on (same remote as backupRemote; one-way backup retired). }
+        syncIntervalMinutes: { type: integer, nullable: true, description: Background sync poll cadence in minutes (default 3). }
+        syncStatus: { type: string, nullable: true, description: "inSync | syncing | conflicts | offline | error (null until first sync)" }
+        lastSyncedAt: { type: string, nullable: true, description: ISO-8601 instant of the last successful sync. }
 
     MaintenanceAck:
       type: object
@@ -1241,8 +1290,9 @@ components:
       type: object
       required: [ok]
       properties:
-        ok: { type: boolean }
-        head: { type: string, nullable: true, description: Pushed commit sha (null when nothing pushed). }
+        ok: { type: boolean, description: "True on success (including 'already up to date'); false only on real failures (auth, network, rejected push)." }
+        head: { type: string, nullable: true, description: Backup commit sha (null when there is nothing to back up). }
+        noChange: { type: boolean, description: "True when the backup succeeded but had nothing new to push (already up to date). Still ok=true." }
 
     SyncAck:
       type: object
