@@ -438,13 +438,15 @@ dependency. The engine stays vendor-agnostic (see
 
 ## Status
 
-**v1.3.0 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
+**v1.4.0 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
 watcher → lifecycle → reference viewer → multi-host sync → hardening → multi-vault + Obsidian
 import → backup/DR + ops surface → external sources (prune + auto-sync) → non-blocking keyword-first
 indexing + pluggable embedders (local-onnx / local-ollama / remote-openai) → restart robustness
 (stale-lock self-heal, observable resume), Prometheus `/metrics`, opt-in reranking, oversized-chunk
 fault tolerance → embedder model enumeration (`POST /embedder/models`) → embedding ETA, incremental
-link/tag index, `context_pack` agent-memory recall, reranker in `/settings`, filter-only tag browse.
+link/tag index, `context_pack` agent-memory recall, reranker in `/settings`, filter-only tag browse →
+scheduled auto-backup → two-way multi-machine sync (canonical `refs/svod/sync/<vault>`, 3-way merge,
+conflict surface/resolve, `clone` bootstrap).
 Full suite green;
 CI gates every change; packaged as self-contained app-images **and** GraalVM `native-image` single
 binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.12.0**

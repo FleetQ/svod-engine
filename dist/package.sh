@@ -7,8 +7,8 @@ set -euo pipefail
 DIST_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENGINE_DIR="$(cd "$DIST_DIR/../engine" && pwd)"
 OUT="$DIST_DIR/build"
-VERSION="1.3.0"
-BUNDLE_VERSION="1.3.0"   # macOS CFBundleVersion must not start with 0
+VERSION="1.4.0"
+BUNDLE_VERSION="1.4.0"   # macOS CFBundleVersion must not start with 0
 NAME="SvodEngine"
 MAIN_JAR="svod-engine-$VERSION.jar"
 MAIN_CLASS="dev.svod.engine.MainKt"
