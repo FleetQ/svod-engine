@@ -25,7 +25,16 @@ import java.nio.file.Path
 class GitRepo private constructor(
     private val repo: Repository,
     private val git: Git,
+    /**
+     * Identity recorded as the git *committer* on every commit (the *author* stays the caller —
+     * the agent/UI that made the change). On a synced machine this is the host id, so history and
+     * the conflict UI can show "edited on machineA vs machineB". Null ⇒ committer = author.
+     */
+    private val committer: Author? = null,
 ) : AutoCloseable {
+
+    private fun committerIdent(author: Author): PersonIdent =
+        committer?.let { PersonIdent(it.name, it.email) } ?: PersonIdent(author.name, author.email)
 
     /**
      * Content-addressed blob id of [bytes] — identical to `git hash-object`. Computed
@@ -50,10 +59,9 @@ class GitRepo private constructor(
         val nothingStaged = status.added.isEmpty() && status.changed.isEmpty() && status.removed.isEmpty()
         if (nothingStaged) return headId()
 
-        val ident = PersonIdent(author.name, author.email)
         val commit = git.commit()
-            .setAuthor(ident)
-            .setCommitter(ident)
+            .setAuthor(PersonIdent(author.name, author.email))
+            .setCommitter(committerIdent(author))
             .setMessage(message)
             .setSign(false)
             .call()
@@ -82,8 +90,11 @@ class GitRepo private constructor(
         git.add().setUpdate(true).addFilepattern(".").call()
         repo.writeMergeHeads(listOf(ObjectId.fromString(theirs)))
         repo.writeMergeCommitMsg(message)
-        val ident = PersonIdent(author.name, author.email)
-        return git.commit().setAuthor(ident).setCommitter(ident).setMessage(message).call().name
+        return git.commit()
+            .setAuthor(PersonIdent(author.name, author.email))
+            .setCommitter(committerIdent(author))
+            .setMessage(message)
+            .call().name
     }
 
     /** History for a single path (most recent first), or vault-wide when [path] is null. */
@@ -138,7 +149,7 @@ class GitRepo private constructor(
     }
 
     companion object {
-        fun openOrInit(root: Path): GitRepo {
+        fun openOrInit(root: Path, committer: Author? = null): GitRepo {
             val gitDir = root.resolve(".git").toFile()
             val existed = gitDir.isDirectory
             val repo = FileRepositoryBuilder()
@@ -154,7 +165,7 @@ class GitRepo private constructor(
                 setString("i18n", null, "logOutputEncoding", "UTF-8")
                 save()
             }
-            return GitRepo(repo, Git(repo))
+            return GitRepo(repo, Git(repo), committer)
         }
     }
 }

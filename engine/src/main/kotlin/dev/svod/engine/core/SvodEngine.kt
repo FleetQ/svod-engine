@@ -181,16 +181,33 @@ class SvodEngine private constructor(
 
     // ---- sync write primitives (actor-serialized; keep the single-writer guarantee) ----
 
-    /** Fast-forward the vault to [commit] (a descendant fetched from a peer). */
-    suspend fun fastForwardTo(commit: String) {
-        actor.submit { git.resetHardTo(commit) }
-        commitListener?.invoke(commit)
+    /** Secret-scan [content] (defense-in-depth for incoming sync files); empty ⇒ clean. */
+    fun scanSecrets(content: String): List<String> = secretScanner.scan(content).map { "${it.rule} (line ${it.line})" }
+
+    /**
+     * Fast-forward the vault to [commit] (a descendant fetched from a peer). When [expectedHead] is
+     * given, the move is applied on the actor ONLY if HEAD still equals it — so a local write that
+     * landed mid-sync (HEAD moved) aborts the fast-forward (returns false) instead of discarding it;
+     * the caller re-syncs. Returns true when the vault was moved to [commit].
+     */
+    suspend fun fastForwardTo(commit: String, expectedHead: String? = null): Boolean {
+        val moved = actor.submit {
+            if (expectedHead != null && git.headId() != expectedHead) false
+            else { git.resetHardTo(commit); true }
+        }
+        if (moved) commitListener?.invoke(commit)
+        return moved
     }
 
     /**
      * Apply a merge: write [writes] (merged file contents) and remove [deletes], then create a
      * MERGE commit with parents [HEAD, theirs]. Conflicted files are simply not in [writes]
      * (ours is kept), so they are never silently overwritten.
+     *
+     * When [expectedHead] is given, the merge commit is created on the actor ONLY if HEAD still
+     * equals it — a concurrent local write (HEAD moved between planning the merge and applying it)
+     * aborts the apply (returns null) so the caller re-plans against the new HEAD. This keeps the
+     * merge atomic with respect to local writes without a cross-handle lock.
      */
     suspend fun applyMerge(
         writes: Map<String, String>,
@@ -198,15 +215,17 @@ class SvodEngine private constructor(
         theirs: String,
         message: String,
         author: Author,
-    ): String {
+        expectedHead: String? = null,
+    ): String? {
         val commit = actor.submit {
+            if (expectedHead != null && git.headId() != expectedHead) return@submit null
             for ((path, content) in writes) {
                 AtomicFile.write(VaultPath.of(path).resolveAgainst(root), content.toByteArray(UTF_8), crash)
             }
             for (path in deletes) Files.deleteIfExists(VaultPath.of(path).resolveAgainst(root))
             git.commitMerge(message, author, theirs)
         }
-        commitListener?.invoke(commit)
+        if (commit != null) commitListener?.invoke(commit)
         return commit
     }
 
@@ -491,7 +510,12 @@ class SvodEngine private constructor(
          * ensures git + scaffold exist, then runs crash recovery before returning a
          * ready engine. [scope] owns the write-actor coroutine.
          */
-        fun open(root: Path, scope: CoroutineScope, secretScanner: SecretScanner = SecretScanner.OFF): SvodEngine {
+        fun open(
+            root: Path,
+            scope: CoroutineScope,
+            secretScanner: SecretScanner = SecretScanner.OFF,
+            committer: Author? = null,
+        ): SvodEngine {
             Files.createDirectories(root)
             val lock = VaultLock.acquire(root)
             try {
@@ -501,7 +525,7 @@ class SvodEngine private constructor(
                 // jgit LockFailedException, which crash-loops the engine under launchd KeepAlive. Acquiring
                 // the vault lock is the interlock that makes removing it safe; do it before any git write.
                 clearStaleGitLock(root)
-                val git = GitRepo.openOrInit(root)
+                val git = GitRepo.openOrInit(root, committer)
                 ensureScaffold(root, git)
                 val engine = SvodEngine(root, lock, git, WriteActor(scope), CrashInjection(), secretScanner)
                 engine.recover()
