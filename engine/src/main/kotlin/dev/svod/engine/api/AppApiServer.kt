@@ -28,6 +28,7 @@ import io.ktor.server.response.respondText
 import io.ktor.server.routing.RoutingContext
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
+import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.routing
@@ -64,6 +65,10 @@ class AppApiServer(
     private val vaultStatus: (VaultView) -> SyncStatusDto? = { null },
     /** Run one real reconcile cycle for a synced vault; null result ⇒ not a synced vault (no peers). */
     private val syncNow: suspend (VaultView) -> dev.svod.engine.sync.SyncEngine.Result? = { null },
+    /** Live: is a filesystem watcher currently running for this (vault, source)? Default false. */
+    private val sourceWatching: (VaultView, String) -> Boolean = { _, _ -> false },
+    /** Called after a source register/PATCH/remove so the watcher set is reconciled (no restart). */
+    private val reconcileSourceWatchers: (VaultView) -> Unit = { },
     /** Runtime embedder control; null ⇒ PUT /embedder & POST /embedder/test return 501. */
     private val embedderControl: EmbedderControl? = null,
 ) {
@@ -80,7 +85,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.12.0",
+        val apiVersion: String = "0.13.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
@@ -477,7 +482,7 @@ class AppApiServer(
             get("/api/v1/sources") {
                 val vc = vault() ?: return@get call.notFound("vault")
                 val store = dev.svod.engine.sources.ExternalSourceStore(vc.engine.root)
-                call.respond(store.list().map { it.toDto() })
+                call.respond(store.list().map { it.toDto(sourceWatching(vc, it.id)) })
             }
 
             post("/api/v1/sources") {
@@ -498,15 +503,36 @@ class AppApiServer(
                     into = (req.into ?: "").trim('/'),
                     followSymlinks = req.followSymlinks,
                     prune = req.prune,
+                    autoSync = req.autoSync,
                 )
-                call.respond(store.put(source).toDto())
+                val stored = store.put(source)
+                reconcileSourceWatchers(vc) // start/stop the watcher to match the new registration
+                call.respond(stored.toDto(sourceWatching(vc, stored.id)))
+            }
+
+            patch("/api/v1/sources/{id}") {
+                val vc = vault() ?: return@patch call.notFound("vault")
+                val id = call.parameters["id"] ?: return@patch call.badRequest("missing source id")
+                val req = call.receive<PatchSourceRequestDto>()
+                val store = dev.svod.engine.sources.ExternalSourceStore(vc.engine.root)
+                val current = store.get(id) ?: return@patch call.notFound("source '$id'")
+                // null fields leave that setting unchanged; toggling autoSync (re)starts/stops the watcher.
+                val updated = store.put(current.copy(
+                    autoSync = req.autoSync ?: current.autoSync,
+                    followSymlinks = req.followSymlinks ?: current.followSymlinks,
+                    prune = req.prune ?: current.prune,
+                ))
+                reconcileSourceWatchers(vc)
+                call.respond(updated.toDto(sourceWatching(vc, updated.id)))
             }
 
             delete("/api/v1/sources/{id}") {
                 val vc = vault() ?: return@delete call.notFound("vault")
                 val id = call.parameters["id"] ?: return@delete call.badRequest("missing source id")
                 val store = dev.svod.engine.sources.ExternalSourceStore(vc.engine.root)
-                if (store.remove(id)) call.respond(HttpStatusCode.NoContent) else call.notFound("source '$id'")
+                val removed = store.remove(id)
+                if (removed) reconcileSourceWatchers(vc) // stop the watcher for the removed source
+                if (removed) call.respond(HttpStatusCode.NoContent) else call.notFound("source '$id'")
             }
 
             post("/api/v1/sources/sync") {
@@ -645,8 +671,8 @@ class AppApiServer(
 
     private fun WriteOutcome.Conflict.toConflictDto() = ConflictBodyDto(path, expected, current, currentContent)
 
-    private fun dev.svod.engine.sources.ExternalSource.toDto() =
-        ExternalSourceDto(id, path, into, followSymlinks, prune, lastSyncedAt)
+    private fun dev.svod.engine.sources.ExternalSource.toDto(watching: Boolean = false) =
+        ExternalSourceDto(id, path, into, followSymlinks, prune, autoSync, watching, lastSyncedAt)
 
     private fun dev.svod.engine.sources.SourceSyncResult.toDto() =
         SourceSyncResultDto(id, created, updated, unchanged, conflicts, orphaned, deleted, skipped, error)
