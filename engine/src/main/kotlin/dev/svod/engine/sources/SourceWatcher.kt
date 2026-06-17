@@ -39,7 +39,7 @@ class SourceWatcher(
     private val eventBus: EventBus,
     private val sourceId: String,
     sourcePath: String,
-    private val debounceMs: Long = 700,
+    private val debounceMs: Long = 250,
 ) : AutoCloseable {
 
     private val log = LoggerFactory.getLogger(SourceWatcher::class.java)

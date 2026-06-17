@@ -3,6 +3,17 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.6.1 — 2026-06-17 (App API contract 0.14.0)
+
+### Changed — external-source auto-sync latency
+- **Sub-second auto-sync.** Lowered the per-source watcher debounce from 700 ms to 250 ms, cutting the
+  measured edit→vault-update latency from ~757 ms to ~285 ms median (5 runs) — comfortably under 1 s
+  even against FSEvents' 0.5 s worst-case coalescing window. The watcher already used the native
+  FSEvents-backed `io.methvin:directory-watcher` (not the JDK `WatchService` polling fallback), so
+  detection was never the bottleneck — the debounce was. Atomic-save (temp+rename) coalescing and the
+  burst→single-sync behavior are unchanged (the existing coalescing test already ran at 250 ms).
+  No API/contract change.
+
 ## v1.6.0 — 2026-06-17 (App API contract 0.14.0)
 
 ### Added — memory-system primitives (borrowed from "RAG → Memory Systems")
