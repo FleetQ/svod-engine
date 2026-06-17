@@ -16,6 +16,11 @@ data class ParsedDoc(
     val created: Long?,
     /** epoch seconds from frontmatter modified/updated, or null. */
     val modified: Long?,
+    /** Memory typing/lifecycle (frontmatter): type, status, superseded_by id/path, expires_at epoch. */
+    val type: String?,
+    val status: String?,
+    val supersededBy: String?,
+    val expiresAt: Long?,
     val body: String,
     val chunks: List<Chunk>,
 )
@@ -61,8 +66,12 @@ object MarkdownChunker {
         val title = (fm["title"] as? String)?.trim()
         val created = firstEpoch(fm, "created", "date", "createdAt")
         val modified = firstEpoch(fm, "modified", "updated", "updatedAt")
+        val type = (fm["type"] as? Any?)?.toString()?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        val status = (fm["status"] as? Any?)?.toString()?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        val supersededBy = (fm["superseded_by"] ?: fm["supersededBy"])?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+        val expiresAt = firstEpoch(fm, "expires_at", "expiresAt", "expires")
 
-        return ParsedDoc(fm, tags, title, created, modified, body, chunk(body))
+        return ParsedDoc(fm, tags, title, created, modified, type, status, supersededBy, expiresAt, body, chunk(body))
     }
 
     private fun splitFrontmatter(raw: String): Pair<String?, String> {

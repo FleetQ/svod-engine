@@ -99,8 +99,11 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
         out
     }
 
+    /** Memory typing/lifecycle fields parsed from frontmatter, indexed for filtering. */
+    data class MemoryMeta(val type: String? = null, val status: String? = null, val supersededBy: String? = null, val expiresAt: Long? = null)
+
     /** Replace all chunks for [path] with [docs]. Caller has already resolved vectors. */
-    fun upsertFile(path: String, blob: String, tags: List<String>, created: Long?, docs: List<ChunkDoc>) {
+    fun upsertFile(path: String, blob: String, tags: List<String>, created: Long?, docs: List<ChunkDoc>, memory: MemoryMeta = MemoryMeta()) {
         writer.deleteDocuments(Term("path", path))
         for (cd in docs) {
             val d = Document()
@@ -113,6 +116,14 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
             d.add(StoredField("ord", cd.chunk.ordinal))
             for (t in tags) d.add(StringField("tag", t, Field.Store.YES))
             if (created != null) d.add(LongPoint("created", created))
+            // Memory typing/lifecycle (only indexed when present → notes without these stay unaffected).
+            memory.type?.let { d.add(StringField("type", it, Field.Store.YES)) }
+            memory.status?.let { d.add(StringField("status", it, Field.Store.YES)) }
+            if (memory.supersededBy != null) {
+                d.add(StringField("superseded", "true", Field.Store.NO))
+                d.add(StoredField("supersededBy", memory.supersededBy))
+            }
+            memory.expiresAt?.let { d.add(LongPoint("expiresAt", it)) }
             if (cd.vector != null) {
                 d.add(KnnFloatVectorField("vec", cd.vector, VectorSimilarityFunction.COSINE))
                 d.add(StoredField("vecBytes", floatsToBytes(cd.vector)))
@@ -173,16 +184,49 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
         val tags: List<String>,
     )
 
-    /** Build a Lucene filter from structured search filters (applied to both legs). */
-    fun buildFilter(filters: SearchFilters): Query? {
-        if (filters.isEmpty) return null
+    /**
+     * Build a Lucene filter from structured search filters (applied to both legs). Beyond the
+     * user-facing filters it ALWAYS applies the default memory-lifecycle hiding (unless
+     * [SearchFilters.includeAll]): revoked / provisional / superseded / expired memories are
+     * excluded from recall. Notes that don't carry these frontmatter fields never match an
+     * exclusion, so ordinary notes are unaffected. [nowEpoch] is the expiry cutoff (now).
+     */
+    fun buildFilter(filters: SearchFilters, nowEpoch: Long = System.currentTimeMillis() / 1000): Query? {
         val b = BooleanQuery.Builder()
-        for (tag in filters.tags) b.add(TermQuery(Term("tag", tag)), BooleanClause.Occur.FILTER)
-        filters.pathPrefix?.let { b.add(PrefixQuery(Term("path", it)), BooleanClause.Occur.FILTER) }
+        var positives = 0
+        for (tag in filters.tags) { b.add(TermQuery(Term("tag", tag)), BooleanClause.Occur.FILTER); positives++ }
+        filters.pathPrefix?.let { b.add(PrefixQuery(Term("path", it)), BooleanClause.Occur.FILTER); positives++ }
+        filters.type?.let { b.add(TermQuery(Term("type", it.lowercase())), BooleanClause.Occur.FILTER); positives++ }
         if (filters.createdFrom != null || filters.createdTo != null) {
-            b.add(LongPoint.newRangeQuery("created", filters.createdFrom ?: Long.MIN_VALUE, filters.createdTo ?: Long.MAX_VALUE), BooleanClause.Occur.FILTER)
+            b.add(LongPoint.newRangeQuery("created", filters.createdFrom ?: Long.MIN_VALUE, filters.createdTo ?: Long.MAX_VALUE), BooleanClause.Occur.FILTER); positives++
         }
+        var negatives = 0
+        if (filters.status != null) {
+            // Explicit status request → positive filter; the default status-hiding is skipped for it.
+            b.add(TermQuery(Term("status", filters.status.lowercase())), BooleanClause.Occur.FILTER); positives++
+        } else if (!filters.includeAll) {
+            b.add(TermQuery(Term("status", "revoked")), BooleanClause.Occur.MUST_NOT); negatives++
+            b.add(TermQuery(Term("status", "provisional")), BooleanClause.Occur.MUST_NOT); negatives++
+        }
+        if (!filters.includeAll) {
+            b.add(TermQuery(Term("superseded", "true")), BooleanClause.Occur.MUST_NOT); negatives++
+            b.add(LongPoint.newRangeQuery("expiresAt", Long.MIN_VALUE, nowEpoch), BooleanClause.Occur.MUST_NOT); negatives++
+        }
+        if (positives == 0 && negatives == 0) return null
+        // Lucene: a clause set with only MUST_NOT matches nothing — anchor with match-all.
+        if (positives == 0) b.add(MatchAllDocsQuery(), BooleanClause.Occur.MUST)
         return b.build()
+    }
+
+    /** Distinct note paths matching [filter] (or all, when null), capped at [limit]. For Path A enumeration. */
+    fun enumeratePaths(filter: Query?, limit: Int): List<String> = withSearcher { s ->
+        if (s.indexReader.numDocs() == 0) return@withSearcher emptyList()
+        val q = filter ?: MatchAllDocsQuery()
+        val td = s.search(q, limit * 8) // over-fetch chunks; dedup to distinct notes below
+        val sf = s.storedFields()
+        val seen = LinkedHashSet<String>()
+        for (sd in td.scoreDocs) { seen.add(sf.document(sd.doc).get("path")); if (seen.size >= limit) break }
+        seen.toList().sorted()
     }
 
     fun analyzer(): StandardAnalyzer = analyzer

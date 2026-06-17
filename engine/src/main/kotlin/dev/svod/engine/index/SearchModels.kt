@@ -8,9 +8,20 @@ data class SearchFilters(
     /** Inclusive epoch-second bounds on the document's `created` frontmatter. */
     val createdFrom: Long? = null,
     val createdTo: Long? = null,
+    /** Memory typing: match only notes with this frontmatter `type` (policy/preference/fact/episode/…). */
+    val type: String? = null,
+    /** Match only notes with this frontmatter `status`; overrides the default lifecycle hiding for it. */
+    val status: String? = null,
+    /**
+     * Bypass the default lifecycle hiding (revoked / provisional / superseded / expired). Off by
+     * default so recall stays clean; the UI sets it to manage/inspect all memories.
+     */
+    val includeAll: Boolean = false,
 ) {
+    /** True when no USER-facing filter is set. (The default lifecycle hiding is applied regardless,
+     *  inside the index, so a blank-query browse-by-filter guard still works off this.) */
     val isEmpty: Boolean
-        get() = tags.isEmpty() && pathPrefix == null && createdFrom == null && createdTo == null
+        get() = tags.isEmpty() && pathPrefix == null && createdFrom == null && createdTo == null && type == null && status == null
 }
 
 enum class SearchMode { HYBRID, KEYWORD, SEMANTIC }

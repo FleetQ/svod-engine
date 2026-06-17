@@ -447,8 +447,19 @@ class IndexService(
 
     // ---- search (thread-safe; no executor needed) ----
 
+    /**
+     * Path A enumeration: every distinct note path matching [filters] (type/tag/prefix + the default
+     * lifecycle hiding), unranked, deterministic by path, capped at [limit]. The caller reads each
+     * note's full content. This is the "load the rule book in full" path, not relevance ranking.
+     */
+    fun enumerate(filters: SearchFilters, limit: Int = 500): List<String> =
+        index.enumeratePaths(index.buildFilter(filters), limit)
+
     fun search(q: SearchQuery): SearchResult {
         val start = System.nanoTime()
+        // Blank text AND no user-facing filter ⇒ nothing to search (the lifecycle defaults alone must
+        // not turn an empty query into a match-all browse). The App API already 400s this case.
+        if (q.text.isBlank() && q.filters.isEmpty) return SearchResult(emptyList(), q.mode, 0)
         val filter = index.buildFilter(q.filters)
         val cand = maxOf(q.limit * 5, 50)
 
@@ -622,8 +633,10 @@ class IndexService(
         onSynced?.invoke(head)
     }
 
-    /** Prepared documents for one file: blob id, tags/created, and resolved Lucene chunk docs. */
-    private class FileDocs(val blob: String, val tags: List<String>, val created: Long?, val docs: List<LuceneIndex.ChunkDoc>)
+    /** Prepared documents for one file: blob id, tags/created, memory meta, and resolved chunk docs. */
+    private class FileDocs(val blob: String, val tags: List<String>, val created: Long?, val memory: LuceneIndex.MemoryMeta, val docs: List<LuceneIndex.ChunkDoc>)
+
+    private fun memoryMetaOf(doc: ParsedDoc) = LuceneIndex.MemoryMeta(doc.type, doc.status, doc.supersededBy, doc.expiresAt)
 
     /**
      * Build the Lucene docs for [path] at [commit]. [embed]=false ⇒ text + reused vectors only (the
@@ -652,13 +665,13 @@ class IndexService(
                 doc.chunks.map { c -> LuceneIndex.ChunkDoc(c, reusable[c.contentHash] ?: fresh.getValue(c.contentHash)) }
             }
         }
-        return FileDocs(blob, doc.tags, doc.created, chunkDocs)
+        return FileDocs(blob, doc.tags, doc.created, memoryMetaOf(doc), chunkDocs)
     }
 
     /** Apply prepared docs to Lucene (MUST run on [exec]). Null prep ⇒ delete the path. */
     private fun applyDocs(path: String, prep: FileDocs?) {
         if (prep == null) { index.deletePath(path); return }
-        index.upsertFile(path, prep.blob, prep.tags, prep.created, prep.docs)
+        index.upsertFile(path, prep.blob, prep.tags, prep.created, prep.docs, prep.memory)
     }
 
     /** A file's chunks split into reusable (already-vectored) and to-embed, for the background pass. */
@@ -667,6 +680,7 @@ class IndexService(
         val blob: String,
         val tags: List<String>,
         val created: Long?,
+        val memory: LuceneIndex.MemoryMeta,
         val chunks: List<Chunk>,
         val reusable: Map<String, FloatArray>,
         val toEmbed: List<Chunk>,
@@ -680,7 +694,7 @@ class IndexService(
         if (doc.chunks.isEmpty()) return null
         val reusable = if (force) emptyMap() else index.existingVectors(path)
         val toEmbed = doc.chunks.filter { it.contentHash !in reusable }
-        return EmbedPlan(path, blob, doc.tags, doc.created, doc.chunks, reusable, toEmbed)
+        return EmbedPlan(path, blob, doc.tags, doc.created, memoryMetaOf(doc), doc.chunks, reusable, toEmbed)
     }
 
     /** Combine reused + freshly-embedded vectors and upsert (MUST run on [exec]). */
@@ -688,7 +702,7 @@ class IndexService(
         val docs = plan.chunks.map { c ->
             LuceneIndex.ChunkDoc(c, plan.reusable[c.contentHash] ?: fresh[c.contentHash])
         }
-        index.upsertFile(path, plan.blob, plan.tags, plan.created, docs)
+        index.upsertFile(path, plan.blob, plan.tags, plan.created, docs, plan.memory)
     }
 
     /**
