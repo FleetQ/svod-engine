@@ -22,7 +22,7 @@ with a conflict, never silently overwritten.
 [Why Svod](#why-svod-exists) ·
 [Feature tour](#what-it-does-feature-tour) ·
 [Architecture](#how-it-works-90-second-architecture) ·
-[Agent interface (13 MCP tools)](#the-agent-interface--13-mcp-tools) ·
+[Agent interface (14 MCP tools)](#the-agent-interface--14-mcp-tools) ·
 [Connecting an LLM agent](#connecting-an-llm-agent) ·
 [App API for UIs](#the-ui-interface--local-app-api) ·
 [Download & install](#download--install) ·
@@ -72,7 +72,7 @@ index. The result:
 | **Hybrid search** | Lucene BM25 (lexical) + optional HNSW kNN vectors (semantic), fused with Reciprocal Rank Fusion. Heading-aware chunking. Filters by tag / path / date; fuzzy / prefix / phrase / field-scoped queries. |
 | **Pluggable embeddings** | Default `onnx-local` runs `multilingual-e5-small` (MIT) in-process via ONNX Runtime — no server, no Python, no network at query time. Or `local-ollama` (a local Ollama server), `remote-openai` (any OpenAI-compatible `/v1/embeddings` endpoint, API key as a Secrets ref), or `none` for a guaranteed BM25-only baseline. Switchable at runtime via `PUT /api/v1/embedder`; `POST /api/v1/embedder/models` lists what a provider can serve. |
 | **Optional reranking** | A second-stage cross-encoder re-scores the fused candidates for a relevance lift — opt-in, default off, degrades to the fused order on any failure. Configured under `reranker` and reported in `GET /settings`. |
-| **MCP server for agents** | 13 tools over streamable HTTP, per-agent bearer tokens → git author, read-only/write roles, token-bucket rate limiting, append-only audit log, optional TLS. |
+| **MCP server for agents** | 14 tools over streamable HTTP, per-agent bearer tokens → git author, read-only/write roles, token-bucket rate limiting, append-only audit log, optional TLS. |
 | **Local App API + WebSocket** | A loopback-only HTTP/JSON API for UIs, plus a live `/api/v1/events` stream (agent activity, commits, index updates, conflicts) so a UI feels alive. |
 | **Wikilink graph** | `[[wikilinks]]` parsed into a backlink/outlink graph. Moving or renaming a note **rewrites every backlink in a single commit** — link integrity for free. |
 | **Multiple vaults** | Run N vaults in one engine (e.g. `personal` + `work`), each its own git repo, lock, index, and sync remote. Routes select a vault via `?vault=`; agents are scoped to their granted vault. Cross-vault `[[vault:note]]` links resolve and surface as backlinks. |
@@ -121,19 +121,27 @@ Full detail: [`docs/architecture.md`](docs/architecture.md) and the ADRs in
 
 ---
 
-## The agent interface — 13 MCP tools
+## The agent interface — 14 MCP tools
 
 Per-agent bearer token authenticates and **becomes the git commit author**. Roles are
 enforced *before* the engine is touched.
 
 **Read (any role):** `read` · `list` · `search` · `context_pack` · `history` · `diff` ·
 `get_revision` · `link` · `graph_query`
-**Write (WRITE role):** `write` · `delete` · `move` · `promote`
+**Write (WRITE role):** `write` · `delete` · `move` · `promote` · `remember`
 
 - `search` runs hybrid retrieval (BM25 + vectors, RRF-fused, plus any reranker) with `mode`
   (`keyword`/`semantic`/`hybrid`) and filters; `context_pack` goes one step further — it assembles
   the top hits into a single **token-budgeted, deduped, cited** context block (each block carries the
   note's latest commit + author), the one-call "recall my memory about X" primitive for an agent.
+- **Typed memory + two retrieval paths.** A note's frontmatter `type` (policy/preference/fact/
+  episode) classifies it; `status` (`active`/`provisional`/`revoked`), `superseded_by` and `expires_at`
+  give it a lifecycle (recall hides revoked/provisional/superseded/expired by default). `context_pack`
+  with `enumerate=true` returns *every* note matching a `type`/`tags` filter **in full, unranked** —
+  the "rule book" (all active policies/preferences) loaded verbatim, vs. the ranked semantic recall.
+- `remember` is the **promotion gate**: it turns an observation into a durable typed memory note —
+  dedups by content, sets `status` by type (fact/policy enter `provisional`), and `supersedes` an
+  older memory by revoking + linking it — so an agent-written KB doesn't poison its own recall.
 - `write` / `delete` / `move` take an optional `expectedRevision` for optimistic concurrency —
   a mismatch returns a structured `conflict` (with current content), not a protocol error.
 - `move` rewrites all backlinks atomically.
@@ -199,7 +207,7 @@ Principles:
 ## The UI interface — local App API
 
 Loopback HTTP/JSON, validated against [`contract/openapi.yaml`](contract/openapi.yaml) (the
-versioned single source of truth for every client — currently **0.13.0**):
+versioned single source of truth for every client — currently **0.14.0**):
 
 - **Health:** `/health` · `/ready`
 - **Content:** `/api/v1/` `tree` · `file` (GET/PUT/DELETE) · `file/move` · `file/restore` ·
@@ -401,7 +409,7 @@ a working, dependency-free reference you can crib from.)
 | **Conflict surfaced, not auto-merged** | ✅ | ❌ | ❌ | ❌ | n/a | ❌ |
 | **Hybrid search (BM25 + vectors)** | ✅ RRF | ⚠️ vector-first | ⚠️ | ✅ | ⚠️ plugins | ⚠️ vector-only |
 | **Runs fully local, no Python/server** | ✅ single JVM, in-proc embeddings | ⚠️ | ⚠️ | ⚠️ | ✅ | ⚠️ |
-| **Agent protocol** | ✅ MCP (13 tools) | SDK | SDK | SDK | ❌ | ❌ (DIY) |
+| **Agent protocol** | ✅ MCP (14 tools) | SDK | SDK | SDK | ❌ | ❌ (DIY) |
 | **Multi-host replication** | ✅ git transport | ⚠️ hosted | ⚠️ | ⚠️ hosted | ⚠️ sync apps | ⚠️ |
 | **Lock-in** | None (git clone) | High | Medium | High | None | High |
 
@@ -450,7 +458,7 @@ conflict surface/resolve, `clone` bootstrap) → per-source filesystem auto-sync
 debounced; `autoSync` toggle via PATCH).
 Full suite green;
 CI gates every change; packaged as self-contained app-images **and** GraalVM `native-image` single
-binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.13.0**
+binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.14.0**
 (versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0017) for the decision record.
 
 Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption).
