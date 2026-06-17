@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.13.0
+  version: 0.14.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -225,6 +225,9 @@ paths:
       description: >
         `q` is optional when a filter (e.g. tags) is present — a filter-only query browses by tag/prefix
         and returns every note carrying it. With neither a query nor a filter the request is a 400.
+        Memory typing/lifecycle: results exclude `status: revoked|provisional`, `superseded_by`, and
+        past-`expires_at` notes by default (set `includeAll=true` to see them); notes without those
+        reserved frontmatter keys are unaffected. Filter by memory class with `type`.
       operationId: search
       parameters:
         - { name: q, in: query, required: false, schema: { type: string }, description: "Query text; optional when a filter is given." }
@@ -232,6 +235,9 @@ paths:
         - { name: limit, in: query, required: false, schema: { type: integer, default: 10 } }
         - { name: tags, in: query, required: false, schema: { type: array, items: { type: string } } }
         - { name: pathPrefix, in: query, required: false, schema: { type: string } }
+        - { name: type, in: query, required: false, schema: { type: string }, description: "Memory typing: match only notes with this frontmatter `type` (policy/preference/fact/episode/…)." }
+        - { name: status, in: query, required: false, schema: { type: string }, description: "Match only notes with this frontmatter `status` (overrides the default lifecycle hiding for it)." }
+        - { name: includeAll, in: query, required: false, schema: { type: boolean, default: false }, description: "Bypass the default lifecycle hiding (revoked/provisional/superseded/expired memories)." }
       responses:
         "200":
           description: Search results

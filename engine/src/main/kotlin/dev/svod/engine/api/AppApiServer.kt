@@ -85,7 +85,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.13.0",
+        val apiVersion: String = "0.14.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
@@ -237,6 +237,9 @@ class AppApiServer(
                 val filters = SearchFilters(
                     tags = call.request.queryParameters.getAll("tags") ?: emptyList(),
                     pathPrefix = call.request.queryParameters["pathPrefix"],
+                    type = call.request.queryParameters["type"]?.takeIf { it.isNotBlank() },
+                    status = call.request.queryParameters["status"]?.takeIf { it.isNotBlank() },
+                    includeAll = call.request.queryParameters["includeAll"]?.equals("true", ignoreCase = true) == true,
                 )
                 // `q` is optional when a filter is present: a filter-only query browses by tag/prefix
                 // (every note carrying the tag). With neither a query nor a filter there's nothing to do.
