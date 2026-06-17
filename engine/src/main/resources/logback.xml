@@ -37,6 +37,8 @@
     <logger name="io.netty" level="WARN"/>
     <logger name="org.apache.lucene" level="WARN"/>
     <logger name="dev.svod" level="INFO"/>
+    <!-- External-source auto-sync: DEBUG so FS events / sync runs are visible (low volume). -->
+    <logger name="dev.svod.engine.sources" level="DEBUG"/>
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>

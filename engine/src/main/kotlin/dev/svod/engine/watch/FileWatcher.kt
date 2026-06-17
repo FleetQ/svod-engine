@@ -35,28 +35,38 @@ class FileWatcher(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val trigger = Channel<Unit>(Channel.CONFLATED)
+    private val pending = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var watcher: DirectoryWatcher? = null
 
     fun start(): FileWatcher {
         watcher = DirectoryWatcher.builder()
             .path(root)
-            .listener { event -> if (!isIgnored(event.path())) trigger.trySend(Unit) }
+            .listener { event ->
+                val p = event.path()
+                if (!isIgnored(p)) {
+                    runCatching { pending.add(root.relativize(p).toString().replace('\\', '/')) }
+                    trigger.trySend(Unit)
+                }
+            }
             .build()
         watcher!!.watchAsync()
         scope.launch {
             for (signal in trigger) {
                 delay(debounceMs) // coalesce a burst of edits into one ingest
-                ingest()
+                val paths = HashSet(pending).also { pending.removeAll(it) }
+                // Path-scoped: only the files that actually changed — engine writes are already
+                // committed (cheap no-op), and we never pay a full-tree walk on the write-actor.
+                if (paths.isNotEmpty()) applyIngest(engine.ingestExternalChanges(paths))
             }
         }
         return this
     }
 
-    /** Force a debounce-free ingest (used by tests / explicit refresh). */
-    suspend fun ingestNow() = ingest()
+    /** Force a debounce-free FULL ingest (used by tests / explicit refresh). */
+    suspend fun ingestNow() = applyIngest(engine.ingestExternalChanges())
 
-    private suspend fun ingest() {
-        val commit = engine.ingestExternalChanges() ?: return
+    private suspend fun applyIngest(commit: String?) {
+        if (commit == null) return
         index.onCommit(commit)
         eventBus.publish(EventTypes.FILE_CHANGED) { put("source", "watcher"); put("commit", commit) }
         eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", commit); put("author", "external") }

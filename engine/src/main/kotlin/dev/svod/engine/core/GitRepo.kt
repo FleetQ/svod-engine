@@ -2,7 +2,11 @@ package dev.svod.engine.core
 
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.diff.DiffFormatter
+import org.eclipse.jgit.dircache.DirCacheEditor
+import org.eclipse.jgit.dircache.DirCacheEntry
+import org.eclipse.jgit.lib.CommitBuilder
 import org.eclipse.jgit.lib.Constants
+import org.eclipse.jgit.lib.FileMode
 import org.eclipse.jgit.lib.ObjectId
 import org.eclipse.jgit.lib.PersonIdent
 import org.eclipse.jgit.lib.Repository
@@ -13,6 +17,7 @@ import org.eclipse.jgit.treewalk.TreeWalk
 import org.eclipse.jgit.treewalk.filter.PathFilter
 import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.nio.file.Path
 
 /**
@@ -66,6 +71,77 @@ class GitRepo private constructor(
             .setSign(false)
             .call()
         return commit.name
+    }
+
+    /**
+     * Commit exactly [paths] (additions, modifications, and deletions OF those paths). Returns the
+     * new commit id, or the current HEAD when [paths] introduced nothing to commit.
+     *
+     * Unlike [commitAll], the cost is O(changed paths), NOT O(working tree). The high-level
+     * `git add` / `git status` (what [commitAll] uses) both run a `FileTreeIterator` that **stats
+     * every tracked file** regardless of any path filter — ~37s on a 70k-file vault, paid by every
+     * write/delete/sync. Here we edit the index (DirCache) in memory: read only the changed files,
+     * splice their blobs into the existing index, write the tree, and move HEAD — no working-tree
+     * walk at all. `.gitignore` is irrelevant because callers only pass real vault paths (the same
+     * paths they just wrote); `.svod/` and temp files are never among them.
+     */
+    fun commitPaths(paths: Collection<String>, message: String, author: Author): String? {
+        val distinct = paths.toSet()
+        if (distinct.isEmpty()) return headId()
+        val workTree = repo.workTree.toPath()
+        val head: ObjectId? = repo.resolve(Constants.HEAD)
+        val dirCache = repo.lockDirCache()
+        var locked = true
+        try {
+            val editor = dirCache.editor()
+            val commitId = repo.newObjectInserter().use { inserter ->
+                var changed = false
+                for (p in distinct) {
+                    val f = workTree.resolve(p)
+                    if (Files.isRegularFile(f)) {
+                        val bytes = Files.readAllBytes(f)
+                        val blob = inserter.insert(Constants.OBJ_BLOB, bytes)
+                        if (dirCache.getEntry(p)?.objectId != blob) {
+                            val mtime = Files.getLastModifiedTime(f).toInstant()
+                            editor.add(object : DirCacheEditor.PathEdit(p) {
+                                override fun apply(ent: DirCacheEntry) {
+                                    ent.fileMode = FileMode.REGULAR_FILE
+                                    ent.setObjectId(blob)
+                                    ent.setLength(bytes.size.toLong())
+                                    ent.setLastModified(mtime)
+                                }
+                            })
+                            changed = true
+                        }
+                    } else if (dirCache.getEntry(p) != null) {
+                        editor.add(DirCacheEditor.DeletePath(p)); changed = true
+                    }
+                }
+                if (!changed) return@use null
+                editor.finish()
+                val treeId = dirCache.writeTree(inserter)
+                val cb = CommitBuilder().apply {
+                    setTreeId(treeId)
+                    if (head != null) setParentId(head)
+                    setAuthor(PersonIdent(author.name, author.email))
+                    setCommitter(committerIdent(author))
+                    setMessage(message)
+                }
+                inserter.insert(cb).also { inserter.flush() }
+            }
+            if (commitId == null) return headId()
+            dirCache.write()                                    // serialize entries to the .lock file …
+            if (!dirCache.commit()) throw IllegalStateException("could not write index for: $message") // … then rename it onto .git/index
+            locked = false
+            val ru = repo.updateRef(Constants.HEAD)
+            ru.setNewObjectId(commitId)
+            head?.let { ru.setExpectedOldObjectId(it) }
+            ru.setRefLogMessage("commit: $message", false)
+            ru.update()
+            return commitId.name
+        } finally {
+            if (locked) runCatching { dirCache.unlock() }
+        }
     }
 
     /** True if the working tree differs from the index/HEAD in any tracked way. */

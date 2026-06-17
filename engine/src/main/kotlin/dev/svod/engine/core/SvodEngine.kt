@@ -243,6 +243,21 @@ class SvodEngine private constructor(
         if (after != null && after != before) after else null
     }.also { commit -> if (commit != null) commitListener?.invoke(commit) }
 
+    /**
+     * Path-scoped ingest for the [dev.svod.engine.watch.FileWatcher], which knows exactly which paths
+     * its FS events touched. Committing only those paths is O(changes), not O(working tree) — and a
+     * change the engine itself just made is already committed, so it is a cheap no-op here (no
+     * full-tree `add .`/`status` walk, which is ~tens of seconds on a large vault and was blocking the
+     * write-actor on every engine write). The full-scan [ingestExternalChanges] above stays for
+     * post-sync ingest (a merge can touch arbitrary paths the caller doesn't enumerate).
+     */
+    suspend fun ingestExternalChanges(paths: Collection<String>, author: Author = Author.EXTERNAL): String? = actor.submit {
+        cleanOrphanTmp()
+        val before = git.headId()
+        val after = git.commitPaths(paths.toList(), "external: ingest working-tree changes", author)
+        if (after != null && after != before) after else null
+    }.also { commit -> if (commit != null) commitListener?.invoke(commit) }
+
     override fun close() {
         try { actor.close() } finally {
             try { git.close() } finally { lock.close() }
@@ -265,7 +280,7 @@ class SvodEngine private constructor(
         }
         val bytes = content.toByteArray(UTF_8)
         AtomicFile.write(target, bytes, crash)
-        val commit = git.commitAll("write: ${vp.value}", author) ?: git.headId()!!
+        val commit = git.commitPaths(listOf(vp.value), "write: ${vp.value}", author) ?: git.headId()!!
         return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)
     }
 
@@ -279,7 +294,7 @@ class SvodEngine private constructor(
             return WriteOutcome.Conflict(vp.value, expected, current, null)
         }
         AtomicFile.write(target, bytes, crash)
-        val commit = git.commitAll("write: ${vp.value}", author) ?: git.headId()!!
+        val commit = git.commitPaths(listOf(vp.value), "write: ${vp.value}", author) ?: git.headId()!!
         return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)
     }
 
@@ -313,7 +328,7 @@ class SvodEngine private constructor(
             written.add(vp.value)
         }
         // One commit for the whole batch (the win); no commit when nothing was written.
-        val commit = if (written.isNotEmpty()) (git.commitAll(message, author) ?: git.headId()) else git.headId()
+        val commit = if (written.isNotEmpty()) (git.commitPaths(written, message, author) ?: git.headId()) else git.headId()
         return BatchResult(written.sorted(), unchanged.sorted(), skipped.sorted(), commit, conflicts.sorted())
     }
 
@@ -330,7 +345,7 @@ class SvodEngine private constructor(
         Files.move(target, trashTarget, StandardCopyOption.ATOMIC_MOVE)
         cleanupEmptyParents(target.parent)
         val trashRel = root.relativize(trashTarget).toString().replace('\\', '/')
-        val commit = git.commitAll("delete: ${vp.value} -> $trashRel", author) ?: git.headId()!!
+        val commit = git.commitPaths(listOf(vp.value, trashRel), "delete: ${vp.value} -> $trashRel", author) ?: git.headId()!!
         return WriteOutcome.Success(trashRel, current, commit)
     }
 
@@ -350,7 +365,7 @@ class SvodEngine private constructor(
         Files.createDirectories(to.parent)
         Files.move(from, to, StandardCopyOption.ATOMIC_MOVE)
         cleanupEmptyParents(from.parent)
-        val commit = git.commitAll("move: ${fromP.value} -> ${toP.value}", author) ?: git.headId()!!
+        val commit = git.commitPaths(listOf(fromP.value, toP.value), "move: ${fromP.value} -> ${toP.value}", author) ?: git.headId()!!
         return WriteOutcome.Success(toP.value, current, commit)
     }
 
@@ -391,7 +406,7 @@ class SvodEngine private constructor(
         } else {
             "move: ${fromP.value} -> ${toP.value} (+${rewritten.size} backlinks)"
         }
-        val commit = git.commitAll(message, author) ?: git.headId()!!
+        val commit = git.commitPaths(listOf(fromP.value, toP.value) + rewritten, message, author) ?: git.headId()!!
         return TransactionalMove(WriteOutcome.Success(toP.value, current, commit), rewritten.sorted())
     }
 
@@ -421,7 +436,7 @@ class SvodEngine private constructor(
         Files.createDirectories(dest.parent)
         Files.move(src, dest, StandardCopyOption.ATOMIC_MOVE)
         val bytes = Files.readAllBytes(dest)
-        val commit = git.commitAll("restore: $trashRelPath -> ${vp.value}", author) ?: git.headId()!!
+        val commit = git.commitPaths(listOf(trashRelPath, vp.value), "restore: $trashRelPath -> ${vp.value}", author) ?: git.headId()!!
         return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)
     }
 

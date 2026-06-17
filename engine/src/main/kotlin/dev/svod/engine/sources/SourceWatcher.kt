@@ -81,7 +81,12 @@ class SourceWatcher(
         return try {
             val w = DirectoryWatcher.builder()
                 .path(watchRoot)
-                .listener { event -> if (relevant(event.path())) trigger.trySend(Unit) }
+                .listener { event ->
+                    if (relevant(event.path())) {
+                        log.debug("fs event for source '{}': {} {}", sourceId, event.eventType(), event.path())
+                        trigger.trySend(Unit)
+                    }
+                }
                 .build()
             watcher = w
             isAlive = true
@@ -130,6 +135,7 @@ class SourceWatcher(
     private suspend fun syncOnce() {
         // Reload the freshest registration each time (config may have changed; gone ⇒ nothing to do).
         val source = store.get(sourceId) ?: return
+        log.debug("auto-sync starting for source '{}'", sourceId)
         val r = try {
             SourceSync(engine, store).sync(source)
         } catch (e: CancellationException) {
@@ -137,6 +143,7 @@ class SourceWatcher(
         } catch (e: Exception) {
             log.warn("auto-sync of source '{}' failed: {}", sourceId, e.message); return
         }
+        log.debug("auto-sync done for source '{}': +{} ~{} !{} -{}", sourceId, r.created.size, r.updated.size, r.conflicts.size, r.deleted.size)
         eventBus.publish(EventTypes.SOURCE_SYNCED) {
             put("vault", vaultId); put("sourceId", sourceId)
             put("created", r.created.size); put("updated", r.updated.size)

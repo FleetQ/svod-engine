@@ -3,6 +3,31 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.6.3 — 2026-06-17 (App API contract 0.14.0)
+
+### Fixed — O(vault) git operations made every write multi-second on large vaults
+On a large vault (~10k+ tracked files) external-source auto-sync appeared not to run at all. The
+watcher, debounce and worker were fine (confirmed by DEBUG logs) — the cost was **two O(working-tree)
+git operations** on the single write-actor, each walking/statting *every* tracked file (~3–4 ms/file,
+i.e. tens of seconds), so every change blocked the actor and the synced file only appeared much later.
+Two fixes, both making the cost **O(changed paths)** instead of O(working tree):
+
+- **Path-scoped commits.** Writes committed via `git add .` + a full `git status()`. New
+  `GitRepo.commitPaths(paths, …)` edits the index (DirCache) directly — reads only the changed files,
+  splices their blobs, writes the tree, moves HEAD — no working-tree walk. All path-aware write paths
+  (single write, batch/source-sync, delete, move, move-with-backlinks, restore) use it; `.gitignore`
+  handling and no-op detection are unchanged. Full-tree `commitAll` is kept only where semantically
+  required (post-sync merge ingest, crash recovery, vault init).
+- **Path-scoped external-change ingest.** The vault `FileWatcher` ran a full-tree `commitAll` on
+  *every* change — including the engine's own writes — finding nothing new to commit (so no duplicate
+  commit) but still burning the full-tree walk on the actor, blocking the next read/write. It now
+  ingests only the paths its FS events actually touched (`ingestExternalChanges(paths)`), so an
+  engine-written path is a cheap no-op and a genuine external edit still commits.
+- **Measured on the live vault: steady-state auto-sync dropped from ~8–37 s to ~0.55 s (median);** a
+  burst and a series of spaced edits converge in <1 s.
+- Added DEBUG logging for external-source auto-sync (`fs event` / `auto-sync starting|done`) under the
+  `dev.svod.engine.sources` logger, so event delivery and sync runs are visible in the log.
+
 ## v1.6.2 — 2026-06-17 (App API contract 0.14.0)
 
 ### Fixed — external-source auto-sync reliability under load

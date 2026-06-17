@@ -7,6 +7,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.io.path.exists
+import kotlin.io.path.writeText
 
 private val ALICE = Author("alice", "alice@svod.test")
 
@@ -75,6 +76,23 @@ class EngineBasicTest {
             val e = fx.open()
             assertTrue(e.delete("nope.md", expectedRevision = null, author = ALICE) is WriteOutcome.NotFound)
             assertTrue(e.move("nope.md", "x.md", expectedRevision = null, author = ALICE) is WriteOutcome.NotFound)
+        }
+    }
+
+    @Test
+    fun `an engine write commits only its own path, not unrelated working-tree drift`() = runBlocking {
+        // Locks in the path-scoped commit (the fix for O(tree) commits on large vaults): a write must
+        // stage only its own path, never sweep the whole working tree. The old `add .` would have
+        // committed `drift.md` too — and walked every tracked file, which was ~37s on a 70k-file vault.
+        VaultFixture.create().use { fx ->
+            val e = fx.open()
+            e.write("a.md", "first\n", expectedRevision = null, author = ALICE)
+            // Untracked drift appears in the working tree, NOT via the engine.
+            fx.root.resolve("drift.md").writeText("untracked\n")
+            val w = e.write("b.md", "second\n", expectedRevision = null, author = ALICE)
+            assertTrue(w is WriteOutcome.Success, "expected Success, got $w")
+            assertTrue(e.history("b.md").isNotEmpty(), "the written path must be committed")
+            assertTrue(e.history("drift.md").isEmpty(), "unrelated working-tree drift must NOT be swept into the commit")
         }
     }
 

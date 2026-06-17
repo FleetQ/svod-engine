@@ -10,7 +10,9 @@ import dev.svod.engine.index.SearchQuery
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
@@ -61,4 +63,31 @@ class FileWatcherTest {
             assertEquals(headAfterWrite, rig.engine.head(), "no duplicate external commit")
         }
     }
+
+    @Test
+    fun `path-scoped ingest of an already-committed engine path is a no-op`() = runBlocking {
+        // This is the hot path: the watcher fires for the engine's OWN write and resolves it to a
+        // path-scoped ingest of that path. It must be a cheap no-op (no duplicate commit) — and,
+        // unlike the old full-tree commitAll ingest, it never walks the whole working tree.
+        Rig(Files.createTempDirectory("svod-watch-")).use { rig ->
+            rig.engine.write("via-engine.md", "# Engine\nwritten through the engine", expectedRevision = null, author = Author("ui", "ui@svod.local"))
+            val head = rig.engine.head()
+            assertNull(rig.engine.ingestExternalChanges(listOf("via-engine.md")), "already-committed path → nothing to ingest")
+            assertEquals(head, rig.engine.head(), "no duplicate commit")
+        }
+    }
+
+    @Test
+    fun `the watcher ingests a genuine external edit via FS events (path-scoped)`() = runBlocking {
+        Rig(Files.createTempDirectory("svod-watch-")).use { rig ->
+            rig.watcher.start()
+            Files.writeString(rig.root.resolve("ext-fsevent.md"), "# Ext\nvia a real fs event")
+            val read = eventually(8_000) { rig.engine.read("ext-fsevent.md") }
+            assertNotNull(read, "an external edit must be ingested through the FS-event path")
+            assertEquals("via a real fs event", read.text.lines().last())
+        }
+    }
+
+    private suspend fun <T> eventually(timeoutMs: Long, block: suspend () -> T?): T? =
+        withTimeoutOrNull(timeoutMs) { var r = block(); while (r == null) { delay(100); r = block() }; r }
 }
