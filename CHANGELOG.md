@@ -3,6 +3,35 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.6.0 — 2026-06-17 (App API contract 0.14.0)
+
+### Added — memory-system primitives (borrowed from "RAG → Memory Systems")
+- **Memory typing** — a reserved frontmatter `type` (`policy|preference|fact|episode|note`, free-form)
+  is indexed and filterable (`GET /search?type=`, MCP `search`/`context_pack` `type`), so the vault is
+  no longer one undifferentiated corpus.
+- **Lifecycle hiding** — frontmatter `status` (`active|provisional|revoked`), `superseded_by`, and
+  `expires_at` are honored as retrieval filters: recall excludes revoked / provisional / superseded /
+  past-expiry memories by default (`includeAll=true` to see them, or filter `status=` explicitly).
+  Notes without these keys are **completely unaffected** (backward compatible).
+- **Path A enumeration** — `context_pack` with `enumerate=true` returns *every* note matching a
+  `type`/`tags` filter **in full, unranked, deterministic** (capped at 500), ignoring the token budget:
+  the "rule book" (all active policies/preferences) loaded verbatim every turn, vs. ranked semantic
+  recall (Path B).
+- **`remember` MCP tool (promotion gate)** — turns an observation into a durable typed memory note:
+  classify + scope (to the vault), dedup by normalized content hash (`memory/<type>/<hash>.md`), set
+  `status` by type (fact/policy → `provisional`, preference/episode → `active`), and optionally
+  `supersedes` a prior memory (revoke + link). Keeps an agent-written KB from poisoning its own recall.
+  MCP tool count 13 → **14**.
+
+### Changed
+- App API **contract 0.14.0** (additive): `/search` gains `type`, `status`, `includeAll` query params
+  and documents the reserved frontmatter keys + default lifecycle visibility.
+
+### Not adopted / deferred
+Episodic distillation (consolidation/summarization) deferred. Did **not** adopt the article's SQL
+backend, multi-tenant row scoping (vault = scope), or its linear 0.4/0.6 fusion (Svod's RRF+reranker
+stands). All new behavior is frontmatter conventions + Lucene filters — no datastore change.
+
 ## v1.5.0 — 2026-06-16 (App API contract 0.13.0)
 
 ### Added — per-source filesystem auto-sync
