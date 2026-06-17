@@ -208,14 +208,18 @@ class SvodMcpServer(
         server.addTool("search", "Hybrid search (keyword/semantic/hybrid) with filters.", schema(mapOf("query" to "string", "mode" to "string", "limit" to "integer"), listOf("query"))) { req ->
             val (t, d) = routed(req); d ?: t!!.search(agent, req.toSearchQuery()).toCallToolResult()
         }
-        server.addTool("context_pack", "Assemble a token-budgeted, cited context block from hybrid search — agent-memory recall in one call.", schema(mapOf("query" to "string", "mode" to "string", "tokenBudget" to "integer"), listOf("query"))) { req ->
+        server.addTool("context_pack", "Assemble a cited context block. Default: token-budgeted hybrid recall. enumerate=true: return EVERY note matching the filters (type/tags) in full, unranked — the 'rule book' (all active policies/preferences) every turn.", schema(mapOf("query" to "string", "mode" to "string", "tokenBudget" to "integer", "type" to "string", "status" to "string", "enumerate" to "boolean"), emptyList())) { req ->
             val (t, d) = routed(req)
             d ?: run {
                 // Pull a generous candidate pool, then trim to the token budget.
                 val base = req.toSearchQuery()
                 val q = base.copy(limit = maxOf(base.limit, 50))
-                t!!.contextPack(agent, q, req.int("tokenBudget", 2000)).toCallToolResult()
+                t!!.contextPack(agent, q, req.int("tokenBudget", 2000), req.bool("enumerate", false)).toCallToolResult()
             }
+        }
+        server.addTool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Dedups by content; fact/policy enter 'provisional'. Use 'supersedes' to revoke+replace a prior memory.", schema(mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string"), listOf("content"))) { req ->
+            val (t, d) = routed(req)
+            d ?: t!!.remember(agent, req.str("content") ?: "", req.str("type"), req.str("subject"), req.double("confidence"), req.str("source"), req.str("status"), req.str("into"), req.str("supersedes")).toCallToolResult()
         }
         server.addTool("list", "List note paths (optionally filtered by prefix).", schema(mapOf("pathPrefix" to "string"), emptyList())) { req ->
             val (t, d) = routed(req); d ?: t!!.list(agent, req.str("pathPrefix")).toCallToolResult()
@@ -254,6 +258,12 @@ private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.str(key: St
 private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.int(key: String, default: Int): Int =
     runCatching { arguments?.get(key)?.jsonPrimitive?.int }.getOrNull() ?: default
 
+private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.bool(key: String, default: Boolean): Boolean =
+    runCatching { arguments?.get(key)?.jsonPrimitive?.content?.toBooleanStrictOrNull() }.getOrNull() ?: default
+
+private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.double(key: String): Double? =
+    runCatching { arguments?.get(key)?.jsonPrimitive?.content?.toDouble() }.getOrNull()
+
 private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.toSearchQuery(): SearchQuery {
     val text = str("query") ?: ""
     val mode = when (str("mode")?.lowercase()) {
@@ -263,11 +273,18 @@ private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.toSearchQue
     }
     val limit = int("limit", 10)
     val filtersObj = arguments?.get("filters") as? JsonObject
-    val filters = if (filtersObj == null) SearchFilters() else SearchFilters(
-        tags = (filtersObj["tags"] as? kotlinx.serialization.json.JsonArray)?.map { it.jsonPrimitive.content } ?: emptyList(),
-        pathPrefix = filtersObj["pathPrefix"]?.jsonPrimitive?.content?.takeIf { it.isNotEmpty() },
-        createdFrom = runCatching { filtersObj["createdFrom"]?.jsonPrimitive?.long }.getOrNull(),
-        createdTo = runCatching { filtersObj["createdTo"]?.jsonPrimitive?.long }.getOrNull(),
+    // Memory typing/lifecycle filters may be given under `filters` or as top-level args (convenient
+    // for context_pack enumerate, e.g. {type:"policy", enumerate:true}).
+    fun fld(key: String): String? =
+        filtersObj?.get(key)?.jsonPrimitive?.content?.takeIf { it.isNotEmpty() } ?: str(key)
+    val filters = SearchFilters(
+        tags = (filtersObj?.get("tags") as? kotlinx.serialization.json.JsonArray)?.map { it.jsonPrimitive.content } ?: emptyList(),
+        pathPrefix = fld("pathPrefix"),
+        createdFrom = runCatching { filtersObj?.get("createdFrom")?.jsonPrimitive?.long }.getOrNull(),
+        createdTo = runCatching { filtersObj?.get("createdTo")?.jsonPrimitive?.long }.getOrNull(),
+        type = fld("type"),
+        status = fld("status"),
+        includeAll = bool("includeAll", false) || (filtersObj?.get("includeAll")?.jsonPrimitive?.content?.toBooleanStrictOrNull() == true),
     )
     return SearchQuery(text, filters, mode, limit)
 }

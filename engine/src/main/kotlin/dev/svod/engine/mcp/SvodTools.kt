@@ -116,24 +116,46 @@ class SvodTools(
      * Token cost is a char/4 heuristic — no tokenizer dependency. At least the top block is always
      * returned, even if it alone exceeds the budget. Degrades with search (keyword-only if semantic is down).
      */
-    suspend fun contextPack(agent: AgentIdentity, query: SearchQuery, tokenBudget: Int): ToolResult =
+    /**
+     * Assemble a cited context block. Two modes:
+     *  - **Path B** (default, ranked): hybrid search, dedup-per-note, token-budgeted.
+     *  - **Path A** ([enumerate]=true): the "rule book" — EVERY note matching the query's filters
+     *    (type/tag/prefix + the default lifecycle hiding), in full, unranked, deterministic by path,
+     *    ignoring the token budget (capped at [ENUMERATE_CAP] notes for safety). Use with a `type`
+     *    or `tags` filter to load all active policies/preferences verbatim every turn.
+     */
+    suspend fun contextPack(agent: AgentIdentity, query: SearchQuery, tokenBudget: Int, enumerate: Boolean = false): ToolResult =
         guarded(agent, "context_pack", write = false) {
-            val result = index.search(query)
-            val seenPaths = HashSet<String>()
             val blocks = ArrayList<PackBlock>()
             var total = 0
-            for (h in result.hits) {
-                if (!seenPaths.add(h.path)) continue // one block per note (dedup + source diversity)
-                val content = engine.read(h.path)?.text ?: h.snippet
-                val est = estimateTokens(content)
-                if (blocks.isNotEmpty() && total + est > tokenBudget) continue // keep ≥1 block, else respect budget
-                val prov = engine.history(h.path, 1).firstOrNull()
-                blocks.add(PackBlock(h.path, h.heading, content, h.score, prov?.commit, prov?.authorName, est))
-                total += est
-                if (total >= tokenBudget) break
+            val mode: String
+            if (enumerate) {
+                mode = "enumerate"
+                val paths = index.enumerate(query.filters, ENUMERATE_CAP)
+                for (p in paths) {
+                    val content = engine.read(p)?.text ?: continue
+                    val est = estimateTokens(content)
+                    val prov = engine.history(p, 1).firstOrNull()
+                    blocks.add(PackBlock(p, "", content, 0.0, prov?.commit, prov?.authorName, est))
+                    total += est
+                }
+            } else {
+                val result = index.search(query)
+                mode = result.mode.name
+                val seenPaths = HashSet<String>()
+                for (h in result.hits) {
+                    if (!seenPaths.add(h.path)) continue // one block per note (dedup + source diversity)
+                    val content = engine.read(h.path)?.text ?: h.snippet
+                    val est = estimateTokens(content)
+                    if (blocks.isNotEmpty() && total + est > tokenBudget) continue // keep ≥1 block, else respect budget
+                    val prov = engine.history(h.path, 1).firstOrNull()
+                    blocks.add(PackBlock(h.path, h.heading, content, h.score, prov?.commit, prov?.authorName, est))
+                    total += est
+                    if (total >= tokenBudget) break
+                }
             }
             ToolResult.ok {
-                put("query", query.text); put("mode", result.mode.name)
+                put("query", query.text); put("mode", mode)
                 put("tokenBudget", tokenBudget); put("estimatedTokens", total)
                 putJsonArray("blocks") {
                     blocks.forEach { b ->
@@ -189,6 +211,98 @@ class SvodTools(
                 ToolResult.badRequest(e.message ?: "invalid promotion")
             }
         }
+
+    /**
+     * Promotion gate: turn an observation into a durable, typed memory note. Mirrors the
+     * classify→dedup→verify→write flow: scope is the vault; dedup is by normalized content hash
+     * (identical content+type ⇒ no second note); status defaults by type (fact/policy enter
+     * `provisional` — kept out of recall until confirmed — preference/episode/note enter `active`);
+     * a `supersedes` target is revoked and linked. Writes through the engine (secret-scanned,
+     * committed, indexed, conflict-guarded). Keeps an agent-written KB from poisoning itself.
+     */
+    suspend fun remember(
+        agent: AgentIdentity, content: String, type: String?, subject: String?, confidence: Double?,
+        source: String?, status: String?, into: String?, supersedes: String?,
+    ): ToolResult = guarded(agent, "remember", write = true) {
+        if (content.isBlank()) return@guarded ToolResult.badRequest("content must not be blank")
+        val t = type?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "fact"
+        val st = status?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: defaultStatusFor(t)
+        val dir = (into ?: "memory").trim('/').ifEmpty { "memory" }
+        val hash = dev.svod.engine.index.sha256Hex("$t\n${content.trim()}").take(12)
+        val path = "$dir/$t/$hash.md"
+
+        // Dedup: same content+type already stored (same deterministic path, same body) ⇒ no-op write.
+        val existing = engine.read(path)
+        if (existing != null && bodyOf(existing.text).trim() == content.trim()) {
+            audit.record(agent.agentId, "remember", "deduped", path)
+            return@guarded ToolResult.ok { put("status", "deduped"); put("path", path); put("type", t); put("memoryStatus", existing.let { statusOf(it.text) ?: st }) }
+        }
+
+        // Supersession: revoke the prior memory and link it forward (a normal conflict-guarded write).
+        var superseded: String? = null
+        if (!supersedes.isNullOrBlank()) {
+            engine.read(supersedes)?.let { old ->
+                val o = engine.write(supersedes, revoke(old.text, path), old.revision, agent.author)
+                if (o is WriteOutcome.Success) superseded = supersedes
+            }
+        }
+
+        val note = buildMemoryNote(t, st, subject, confidence, source, content.trim())
+        when (val outcome = engine.write(path, note, existing?.revision, agent.author)) {
+            is WriteOutcome.Success -> {
+                audit.record(agent.agentId, "remember", "ok", path, revision = outcome.revision, detail = outcome.commit)
+                eventBus.publish(EventTypes.AGENT_ACTIVITY) { put("agentId", agent.agentId); put("tool", "remember"); put("path", path); put("commit", outcome.commit) }
+                eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", outcome.commit); put("path", path); put("author", agent.author.name) }
+                ToolResult.ok {
+                    put("status", "written"); put("path", path); put("type", t); put("memoryStatus", st)
+                    put("revision", outcome.revision); put("commit", outcome.commit)
+                    superseded?.let { put("superseded", it) }
+                }
+            }
+            else -> outcomeResult("remember", agent, outcome, path)
+        }
+    }
+
+    private fun defaultStatusFor(type: String): String = when (type) {
+        "fact", "policy" -> "provisional" // durable but kept out of recall until confirmed
+        else -> "active"                  // preference / episode / note
+    }
+
+    /** Strip a leading YAML frontmatter block, returning the body. */
+    private fun bodyOf(text: String): String =
+        dev.svod.engine.index.MarkdownChunker.parse(text).body
+
+    private fun statusOf(text: String): String? =
+        dev.svod.engine.index.MarkdownChunker.parse(text).status
+
+    /** Re-serialize [oldText] with status=revoked + superseded_by=[newPath], preserving its body. */
+    private fun revoke(oldText: String, newPath: String): String {
+        val parsed = dev.svod.engine.index.MarkdownChunker.parse(oldText)
+        val fm = LinkedHashMap<String, Any?>(parsed.frontmatter)
+        fm["status"] = "revoked"
+        fm["superseded_by"] = newPath
+        return frontmatterFences(fm) + parsed.body.trimStart('\n')
+    }
+
+    private fun buildMemoryNote(type: String, status: String, subject: String?, confidence: Double?, source: String?, content: String): String {
+        val fm = LinkedHashMap<String, Any?>()
+        fm["type"] = type
+        fm["status"] = status
+        subject?.takeIf { it.isNotBlank() }?.let { fm["subject"] = it }
+        confidence?.let { fm["confidence"] = it }
+        source?.takeIf { it.isNotBlank() }?.let { fm["source"] = it }
+        fm["created"] = java.time.Instant.now().toString()
+        return frontmatterFences(fm) + content + "\n"
+    }
+
+    private fun frontmatterFences(fm: Map<String, Any?>): String {
+        val opts = org.yaml.snakeyaml.DumperOptions().apply {
+            defaultFlowStyle = org.yaml.snakeyaml.DumperOptions.FlowStyle.BLOCK
+            isAllowUnicode = true
+        }
+        val yaml = org.yaml.snakeyaml.Yaml(opts).dump(fm).trimEnd('\n')
+        return "---\n$yaml\n---\n"
+    }
 
     // ---- internals ----
 
@@ -255,5 +369,10 @@ class SvodTools(
         val graph = LinkGraph.build(notes)
         synchronized(graphLock) { cachedHead = head; cachedGraph = graph }
         return graph
+    }
+
+    private companion object {
+        /** Safety cap on Path-A enumeration (logged via the result size if hit); avoids pathological packs. */
+        const val ENUMERATE_CAP = 500
     }
 }
