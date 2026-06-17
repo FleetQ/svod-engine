@@ -45,7 +45,7 @@ class McpTlsTest {
                 val client = Client(Implementation("tls-test-client", "1.0.0"))
                 client.connect(StreamableHttpClientTransport(client = http, url = "https://127.0.0.1:${server.port}/mcp"))
                 try {
-                    assertEquals(13, client.listTools().tools.size, "tools listed over HTTPS")
+                    assertEquals(14, client.listTools().tools.size, "tools listed over HTTPS")
                     val r = client.callTool("write", mapOf("path" to "tls/note.md", "content" to "# Over TLS"))
                     val text = (r.content.firstOrNull { it is TextContent } as TextContent).text!!
                     assertTrue(text.contains("\"status\":\"ok\""), "write over TLS: $text")

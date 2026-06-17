@@ -46,6 +46,9 @@ class AppApiContractTest {
             validate("$ap/file/history", Request.Method.GET, 200, fx.get("$ap/file/history?path=${ApiFixture.enc("vault/a.md")}").body())
             validate("$ap/file/links", Request.Method.GET, 200, fx.get("$ap/file/links?path=${ApiFixture.enc("vault/a.md")}").body())
             validate("$ap/search", Request.Method.GET, 200, fx.get("$ap/search?q=hello").body())
+            // memory typing/lifecycle search params conform too
+            validate("$ap/search", Request.Method.GET, 200, fx.get("$ap/search?type=policy&includeAll=true").body())
+            validate("$ap/search", Request.Method.GET, 200, fx.get("$ap/search?q=hello&status=active").body())
             validate("$ap/graph", Request.Method.GET, 200, fx.get("$ap/graph").body())
             validate("$ap/tags", Request.Method.GET, 200, fx.get("$ap/tags").body())
             validate("$ap/settings", Request.Method.GET, 200, fx.get("$ap/settings").body())
