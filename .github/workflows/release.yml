@@ -43,7 +43,7 @@ jobs:
           jpackage --type app-image --name SvodEngine \
             --input build/install/svod-engine/lib \
             --main-jar "$MAIN_JAR" --main-class dev.svod.engine.MainKt \
-            --app-version 1.6.3 --java-options "-Dfile.encoding=UTF-8" \
+            --app-version 1.6.4 --java-options "-Dfile.encoding=UTF-8" \
             --dest out
 
       - name: Archive app-image (unix)
@@ -72,8 +72,13 @@ jobs:
 
       # Native-image links via the host C toolchain; on Windows that means MSVC. setup-graalvm does not
       # provision it, so without this the link stage fails with "Failed to find 'vcvarsall.bat'".
+      # continue-on-error: this action breaks whenever the GitHub Windows runner ships a new Visual
+      # Studio (e.g. VS 18 moved vcvarsall.bat to a path it doesn't probe). The native binary is
+      # best-effort anyway — a failure here must NOT sink the whole Windows job and drop the reliable
+      # app-image .zip (which is built earlier and is what actually ships).
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
+        continue-on-error: true
         uses: ilammy/msvc-dev-cmd@v1
 
       # --- Best-effort artifact: native-image single binary (BM25 / Ollama; not onnx-local) ---

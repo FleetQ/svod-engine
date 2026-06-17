@@ -3,6 +3,16 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.6.4 — 2026-06-17 (App API contract 0.14.0)
+
+### Fixed — Windows release no longer drops all its assets when MSVC setup breaks
+- The release's Windows job died at `Set up MSVC` (`ilammy/msvc-dev-cmd`) after the GitHub runner
+  shipped a new Visual Studio (VS 18 moved `vcvarsall.bat` to a path the action doesn't probe),
+  which failed the whole job and dropped *both* Windows assets — including the app-image `.zip`
+  that had already built. Marked the MSVC step `continue-on-error` (the native binary was always
+  best-effort): the reliable Windows app-image now ships even when the native build can't link.
+  Engine code unchanged from v1.6.3; this is a CI/release-workflow fix only.
+
 ## v1.6.3 — 2026-06-17 (App API contract 0.14.0)
 
 ### Fixed — O(vault) git operations made every write multi-second on large vaults
