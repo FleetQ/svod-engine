@@ -106,4 +106,47 @@ class SourceWatcherTest {
             assertEquals(1, syncs.get(), "atomic save must coalesce into exactly one sync, not a flood")
         }
     }
+
+    @Test
+    fun `a series of spaced edits all converge to the final content - no lost updates`(): Unit = runBlocking {
+        // The exact scenario that regressed: repeated edits to one file, each separated by a pause
+        // longer than the debounce. Every edit must flow through; the final state must materialize and
+        // the watcher must never stall (the old design cancelled in-flight syncs on watch restart).
+        Rig().use { rig ->
+            val src = rig.register(autoSync = true)
+            rig.manager.start()
+            assertTrue(eventually { if (rig.manager.isWatching("v", src.id)) true else null } == true)
+
+            repeat(5) { i ->
+                Files.writeString(rig.sourceDir.resolve("doc.md"), "rev ${i + 1}\n")
+                delay(600)
+            }
+            val read = eventually { rig.engine.read("doc.md")?.takeIf { "rev 5" in it.text } }
+            assertNotNull(read, "the final revision of a spaced edit series must converge")
+        }
+    }
+
+    @Test
+    fun `a burst of rapid edits coalesces to at most two syncs and lands the final content`() = runBlocking {
+        Rig().use { rig ->
+            val src = rig.register(autoSync = true)
+            rig.manager.start()
+            assertTrue(eventually { if (rig.manager.isWatching("v", src.id)) true else null } == true)
+
+            val syncs = AtomicInteger(0)
+            val collector: Job = rig.scope.launch {
+                rig.bus.events.collect { if (it.type == EventTypes.SOURCE_SYNCED) syncs.incrementAndGet() }
+            }
+            delay(200)
+
+            // 10 rapid writes to one file, faster than the debounce window.
+            repeat(10) { i -> Files.writeString(rig.sourceDir.resolve("burst.md"), "n=${i + 1}\n"); delay(20) }
+
+            val read = eventually { rig.engine.read("burst.md")?.takeIf { "n=10" in it.text } }
+            assertNotNull(read, "the final write of a burst must land")
+            delay(1_000)
+            collector.cancel()
+            assertTrue(syncs.get() in 1..2, "a rapid burst must coalesce to 1-2 syncs, got ${syncs.get()}")
+        }
+    }
 }

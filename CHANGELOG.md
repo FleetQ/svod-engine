@@ -3,6 +3,23 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.6.2 — 2026-06-17 (App API contract 0.14.0)
+
+### Fixed — external-source auto-sync reliability under load
+- **Auto-sync no longer stalls or cancels itself.** The per-source sync worker is now **decoupled from
+  the watch lifecycle**. Previously the sync coroutine ran on the watcher's own scope, so when the
+  native FSEvents watch died under load (its future completes) the 30s supervisor tore the whole
+  watcher down and **cancelled the in-flight sync** (`WARN ... auto-sync ... failed: Job was
+  cancelled`), and while dead it missed events — a series of edits could never converge.
+- **Self-healing watch + trailing debounce (single-pending).** The DirectoryWatcher now re-arms
+  itself (with backoff, plus a catch-up sync) without touching the worker; a running sync is **never
+  cancelled** by a restart. The worker coalesces a burst into one sync `debounceMs` after the *last*
+  event, and an edit arriving during a sync schedules exactly one follow-up — so every burst yields a
+  completed sync, never a cancel-chain.
+- **Expected cancellation is no longer logged as an error** — `CancellationException` is propagated
+  (DEBUG), and the manager no longer tears a watcher down for a transient `!isAlive`. Real IO/scan
+  failures still WARN. No API/contract change.
+
 ## v1.6.1 — 2026-06-17 (App API contract 0.14.0)
 
 ### Changed — external-source auto-sync latency

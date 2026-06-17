@@ -9,28 +9,39 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedReceiveChannelException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Watches one [ExternalSource]'s filesystem path and re-syncs it into the vault shortly after edits
- * settle. Built on the native FSEvents-backed [DirectoryWatcher] (low latency, recursive). Events are
- * debounced into a single [SourceSync] run, so a burst of saves — including an editor's atomic
- * temp-file-then-rename — collapses into one sync of the final state. Noisy temp/dot files don't
- * trigger a sync (and [SourceSync] never pulls them into the vault anyway).
+ * settle. Built on the native FSEvents-backed [DirectoryWatcher] (low latency, recursive).
+ *
+ * Design (post-v1.6.2): the **sync worker is decoupled from the watch**. The DirectoryWatcher only
+ * feeds a [trigger] channel; a single long-lived worker coroutine drains it with a *trailing*
+ * debounce (one sync fires [debounceMs] after the LAST event, so a burst — including an editor's
+ * atomic temp+rename — collapses into one sync of the final state). A running sync is **never
+ * cancelled**: events arriving while a sync is in flight set a single pending signal (CONFLATED
+ * channel), which schedules exactly one follow-up sync afterwards. The watch can die and self-heal
+ * (re-arm with backoff) without touching the worker — so a restart can never abort an in-flight sync
+ * the way the old watcher-lifecycle-bound scope did ("Job was cancelled").
  *
  * The sync goes through [SourceSync] unchanged (writes via the engine's serialized write-actor), so
  * it can never race an editor/agent write and the external-wins-unless-locally-edited semantics
  * (conflict-preserve, prune soft-delete, secret-scan skip) hold exactly as for a manual sync.
  *
  * A directory source watches its own tree; a single-file source watches the parent directory and
- * filters to that file. If the watched tree disappears the watcher's future completes and [isAlive]
- * flips to false — the owning [SourceWatchManager] restarts it once the path returns.
+ * filters to that file. [isAlive] reflects whether the underlying watch is currently armed (it may
+ * blip false for a moment during self-heal); the owning [SourceWatchManager] no longer tears the
+ * whole watcher down on a transient `!isAlive` — only when the source stops being desired.
  */
 class SourceWatcher(
     private val vaultId: String,
@@ -45,7 +56,9 @@ class SourceWatcher(
     private val log = LoggerFactory.getLogger(SourceWatcher::class.java)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val trigger = Channel<Unit>(Channel.CONFLATED)
-    private var watcher: DirectoryWatcher? = null
+
+    @Volatile private var watcher: DirectoryWatcher? = null
+    @Volatile private var closed = false
 
     private val target: Path = Paths.get(sourcePath).normalize()
     private val isFile = Files.isRegularFile(target)
@@ -55,9 +68,16 @@ class SourceWatcher(
     var isAlive: Boolean = false
         private set
 
-    /** Begin watching. Returns this on success, or null if the path could not be watched (e.g. it
-     *  vanished between the manager's check and here) — the manager will retry. */
+    /** Begin watching. Returns this on success, or null if the watch could not be armed at all (e.g.
+     *  the path vanished between the manager's check and here) — the manager will retry. */
     fun start(): SourceWatcher? {
+        if (!arm()) { runCatching { close() }; return null }
+        scope.launch { runWorker() } // long-lived; survives watch self-heal, only stops on close()
+        return this
+    }
+
+    /** Arm (or re-arm) the underlying DirectoryWatcher. Self-heals on completion unless [closed]. */
+    private fun arm(): Boolean {
         return try {
             val w = DirectoryWatcher.builder()
                 .path(watchRoot)
@@ -67,19 +87,43 @@ class SourceWatcher(
             isAlive = true
             w.watchAsync().whenComplete { _, ex ->
                 isAlive = false
-                if (ex != null) log.warn("source watcher for '{}' ({}) stopped: {}", sourceId, watchRoot, ex.message)
-            }
-            scope.launch {
-                for (signal in trigger) {
-                    delay(debounceMs) // coalesce a burst (incl. atomic save temp+rename) into one sync
-                    syncOnce()
+                if (!closed) {
+                    log.debug("source watch '{}' ({}) ended ({}) — self-healing", sourceId, watchRoot, ex?.message ?: "completed")
+                    scope.launch { rearm() }
                 }
             }
-            this
+            true
         } catch (e: Exception) {
-            log.warn("could not start source watcher for '{}' at {}: {}", sourceId, watchRoot, e.message)
-            runCatching { close() }
-            null
+            log.warn("could not arm source watcher for '{}' at {}: {}", sourceId, watchRoot, e.message)
+            false
+        }
+    }
+
+    /** Re-arm after the watch died, with backoff, while the path exists. A successful re-arm queues a
+     *  catch-up sync so any change missed during the gap still lands. Does NOT cancel the worker. */
+    private suspend fun rearm() {
+        var backoff = 200L
+        while (scope.isActive && !closed) {
+            if (!Files.exists(watchRoot)) { delay(backoff); backoff = (backoff * 2).coerceAtMost(5_000); continue }
+            runCatching { watcher?.close() }
+            if (arm()) { trigger.trySend(Unit); return } // catch up on anything missed while dead
+            delay(backoff); backoff = (backoff * 2).coerceAtMost(5_000)
+        }
+    }
+
+    /** Drains [trigger] with a trailing debounce: sync fires [debounceMs] after the last event; a new
+     *  event during the wait extends the window; an event during a sync schedules exactly one more. */
+    private suspend fun runWorker() {
+        try {
+            while (true) {
+                trigger.receive() // block until the first event (throws when the channel closes → exit)
+                while (withTimeoutOrNull(debounceMs) { trigger.receive() } != null) { /* extend the quiet window */ }
+                syncOnce()
+            }
+        } catch (e: ClosedReceiveChannelException) {
+            // channel closed by close() → worker exits
+        } catch (e: CancellationException) {
+            // scope cancelled by close() → worker exits
         }
     }
 
@@ -88,6 +132,8 @@ class SourceWatcher(
         val source = store.get(sourceId) ?: return
         val r = try {
             SourceSync(engine, store).sync(source)
+        } catch (e: CancellationException) {
+            throw e // expected only on close(); propagate cancellation, never log it as a failure
         } catch (e: Exception) {
             log.warn("auto-sync of source '{}' failed: {}", sourceId, e.message); return
         }
@@ -107,6 +153,7 @@ class SourceWatcher(
     }
 
     override fun close() {
+        closed = true
         isAlive = false
         runCatching { watcher?.close() }
         trigger.close()
