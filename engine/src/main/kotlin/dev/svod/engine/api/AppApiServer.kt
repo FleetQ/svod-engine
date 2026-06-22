@@ -73,6 +73,8 @@ class AppApiServer(
     private val embedderControl: EmbedderControl? = null,
     /** Runtime vault creation; null ⇒ POST /vaults returns 501. */
     private val vaultCreator: VaultCreator? = null,
+    /** Runtime vault removal; null ⇒ DELETE /vaults/{id} returns 501. */
+    private val vaultRemover: VaultRemover? = null,
 ) {
     /** Back-compat single-vault constructor (one engine/index, optional conflicts + sync status). */
     constructor(
@@ -84,11 +86,12 @@ class AppApiServer(
         conflicts: ConflictStore? = null,
         syncStatus: () -> SyncStatusDto? = { null },
         vaultCreator: VaultCreator? = null,
-    ) : this(SingleVaultRouter(svod, index, conflicts, syncStatus), eventBus, config, readiness, vaultCreator = vaultCreator)
+        vaultRemover: VaultRemover? = null,
+    ) : this(SingleVaultRouter(svod, index, conflicts, syncStatus), eventBus, config, readiness, vaultCreator = vaultCreator, vaultRemover = vaultRemover)
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.15.0",
+        val apiVersion: String = "0.16.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
@@ -151,6 +154,20 @@ class AppApiServer(
                     call.respond(HttpStatusCode.Conflict, ErrorDto("conflict", e.message ?: "vault already exists"))
                 } catch (e: VaultCreator.NotWritable) {
                     call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("not_writable", e.message ?: "vault path not writable"))
+                }
+            }
+            delete("/api/v1/vaults/{id}") {
+                val remover = vaultRemover ?: return@delete call.notImplemented("vault deletion")
+                val id = call.parameters["id"] ?: return@delete call.badRequest("missing vault id")
+                val deleteFiles = call.request.queryParameters["deleteFiles"]?.toBooleanStrictOrNull() ?: false
+                try {
+                    // The engine does the logical removal (lock/handles released) before responding; the
+                    // caller disposes of `path` (e.g. moves it to the OS Trash) unless deleteFiles=true.
+                    call.respond(remover.delete(id, deleteFiles))
+                } catch (e: VaultRemover.UnknownVault) {
+                    call.notFound(e.message ?: "unknown vault")
+                } catch (e: VaultRemover.Conflict) {
+                    call.respond(HttpStatusCode.Conflict, ErrorDto("conflict", e.message ?: "vault cannot be deleted"))
                 }
             }
 

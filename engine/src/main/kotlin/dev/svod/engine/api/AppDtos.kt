@@ -257,6 +257,14 @@ data class VaultsDto(val vaults: List<VaultInfoDto>)
 @Serializable
 data class CreateVaultRequest(val id: String, val name: String? = null, val path: String? = null)
 
+/**
+ * Result of DELETE /api/v1/vaults/{id}. [path] is the vault's on-disk directory that was removed
+ * (filesDeleted=true) or that the caller should now dispose of, e.g. move to the OS Trash
+ * (filesDeleted=false).
+ */
+@Serializable
+data class DeleteVaultResultDto(val id: String, val path: String, val filesDeleted: Boolean)
+
 @Serializable
 data class WriteStatsDto(val count: Long, val avgMs: Double, val maxMs: Double, val lastMs: Double)
 

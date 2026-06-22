@@ -35,6 +35,23 @@ interface VaultCreator {
     suspend fun create(req: CreateVaultRequest): VaultView
 }
 
+/**
+ * Runtime removal of a vault (DELETE /api/v1/vaults/{id}). The engine does the LOGICAL removal —
+ * release the vault's lock + git/index handles, unregister it from the running engine, and drop it
+ * from the persistent config — and, only when asked, also hard-deletes the directory. When it does
+ * not delete the files it returns the directory path so the caller can dispose of it (e.g. move it
+ * to the OS Trash). Null wiring ⇒ the endpoint returns 501.
+ */
+interface VaultRemover {
+    /** No vault with this id ⇒ 404. */
+    class UnknownVault(message: String) : Exception(message)
+    /** Refusing to delete the default vault, or the last remaining vault ⇒ 409. */
+    class Conflict(message: String) : Exception(message)
+
+    /** Release locks/handles, unregister, drop from config, optionally hard-delete the dir; return the result. */
+    suspend fun delete(id: String, deleteFiles: Boolean): DeleteVaultResultDto
+}
+
 interface VaultRouter {
     fun ids(): List<String>
     fun defaultId(): String

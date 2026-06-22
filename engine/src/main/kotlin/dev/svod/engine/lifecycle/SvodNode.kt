@@ -157,6 +157,7 @@ class SvodNode private constructor(
                     readiness = { ready.get() },
                     embedderControl = embedderControl,
                     vaultCreator = vaultCreator,
+                    vaultRemover = vaultCreator,
                     backup = backup,
                     syncConfig = { vc ->
                         val b = backup.configOf(vc.id)

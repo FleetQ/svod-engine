@@ -123,6 +123,12 @@ class MultiVaultTest {
             HttpResponse.BodyHandlers.ofString(),
         )
 
+    private fun delete(port: Int, path: String): HttpResponse<String> =
+        http.send(
+            HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port$path")).DELETE().build(),
+            HttpResponse.BodyHandlers.ofString(),
+        )
+
     @Test
     fun `cross-vault rename rewrites qualified backlinks in the other vault`() {
         val personal = Files.createTempDirectory("svod-personal-")
@@ -266,6 +272,108 @@ class MultiVaultTest {
         val node = SvodNode.start(twoVaultConfig(personal, work))
         try {
             assertEquals(400, post(node.appApiPort, "/api/v1/vaults", """{"id":"Bad ID!"}""").statusCode())
+        } finally {
+            node.shutdown()
+        }
+    }
+
+    @Test
+    fun `delete vault unregisters it, drops it from config, survives restart, and leaves the dir on disk`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val work = Files.createTempDirectory("svod-work-")
+        val cfgFile = Files.createTempFile("svod-config-", ".json")
+        val cfg = twoVaultConfig(personal, work)
+        Files.writeString(cfgFile, SvodConfig.toJson(cfg))
+
+        val node = SvodNode.start(cfg, configPath = cfgFile)
+        val port = node.appApiPort
+        try {
+            // a write so the work vault genuinely has content + handles to release before deletion
+            assertEquals(200, put(port, "/api/v1/file?path=w.md&vault=work", """{"content":"# work"}""").statusCode())
+
+            val deleted = delete(port, "/api/v1/vaults/work")
+            assertEquals(200, deleted.statusCode(), deleted.body())
+            // 200 body is DeleteVaultResult { id, path (the on-disk dir), filesDeleted=false }
+            assertTrue(deleted.body().contains("\"id\":\"work\""), deleted.body())
+            assertTrue(deleted.body().contains(work.toString()), "removed dir path returned: ${deleted.body()}")
+            assertTrue(deleted.body().contains("\"filesDeleted\":false"), deleted.body())
+
+            // unregistered: GET /vaults no longer lists it, and ?vault=work stops routing (404)
+            assertFalse(get(port, "/api/v1/vaults").body().contains("\"id\":\"work\""))
+            assertEquals(404, get(port, "/api/v1/file?path=${enc("w.md")}&vault=work").statusCode())
+
+            // deleteFiles=false ⇒ the directory is left in place for the caller to dispose of
+            assertTrue(Files.isDirectory(work), "vault dir left on disk when deleteFiles=false")
+        } finally {
+            node.shutdown()
+        }
+
+        // a fresh node loads the persisted config: the removed vault is gone for good
+        val node2 = SvodNode.start(SvodConfig.load(cfgFile), configPath = cfgFile)
+        try {
+            assertFalse(get(node2.appApiPort, "/api/v1/vaults").body().contains("\"id\":\"work\""),
+                "deleted vault must not reappear after a restart")
+            assertTrue(get(node2.appApiPort, "/api/v1/vaults").body().contains("\"id\":\"personal\""),
+                "the surviving default vault must still load")
+        } finally {
+            node2.shutdown()
+        }
+    }
+
+    @Test
+    fun `delete vault with deleteFiles=true also removes the directory from disk`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val work = Files.createTempDirectory("svod-work-")
+        val node = SvodNode.start(twoVaultConfig(personal, work))
+        try {
+            assertTrue(Files.isDirectory(work))
+            val r = delete(node.appApiPort, "/api/v1/vaults/work?deleteFiles=true")
+            assertEquals(200, r.statusCode(), r.body())
+            assertTrue(r.body().contains("\"filesDeleted\":true"), r.body())
+            assertFalse(Files.exists(work), "vault dir hard-deleted when deleteFiles=true")
+        } finally {
+            node.shutdown()
+        }
+    }
+
+    @Test
+    fun `delete the default vault returns 409`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val work = Files.createTempDirectory("svod-work-")
+        val node = SvodNode.start(twoVaultConfig(personal, work)) // default = personal
+        try {
+            assertEquals(409, delete(node.appApiPort, "/api/v1/vaults/personal").statusCode())
+        } finally {
+            node.shutdown()
+        }
+    }
+
+    @Test
+    fun `delete the last remaining vault returns 409`() {
+        val only = Files.createTempDirectory("svod-only-")
+        val node = SvodNode.start(
+            SvodConfig(
+                vaults = listOf(SvodConfig.VaultSettings("solo", only.toString())),
+                appApiPort = 0,
+                mcpPort = 0,
+                embedder = SvodConfig.EmbedderSettings(provider = "none"),
+                agents = listOf(SvodConfig.AgentSettings("t", "scribe", "WRITE")),
+            )
+        )
+        try {
+            assertEquals(409, delete(node.appApiPort, "/api/v1/vaults/solo").statusCode())
+        } finally {
+            node.shutdown()
+        }
+    }
+
+    @Test
+    fun `delete an unknown vault returns 404`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val work = Files.createTempDirectory("svod-work-")
+        val node = SvodNode.start(twoVaultConfig(personal, work))
+        try {
+            assertEquals(404, delete(node.appApiPort, "/api/v1/vaults/ghost").statusCode())
         } finally {
             node.shutdown()
         }

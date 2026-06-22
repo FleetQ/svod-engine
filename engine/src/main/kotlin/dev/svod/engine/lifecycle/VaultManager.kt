@@ -29,6 +29,18 @@ class VaultManager(
         byId = LinkedHashMap(byId).apply { put(vc.id, vc) }
     }
 
+    /**
+     * Hot-remove a vault (DELETE /api/v1/vaults/{id}); returns the detached context so the caller can
+     * close() it (releasing its lock + handles), or null if no such vault is registered. After this
+     * returns, GET /vaults no longer lists it and `?vault=<id>` resolves to null (a 404).
+     */
+    @Synchronized
+    fun unregister(id: String): VaultContext? {
+        val vc = byId[id] ?: return null
+        byId = LinkedHashMap(byId).apply { remove(id) }
+        return vc
+    }
+
     override fun ids(): List<String> = byId.keys.toList()
     override fun defaultId(): String = defaultId
     override fun resolve(id: String?): VaultView? = byId[id ?: defaultId]
