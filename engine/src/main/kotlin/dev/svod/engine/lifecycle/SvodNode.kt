@@ -139,7 +139,11 @@ class SvodNode private constructor(
                 )
 
                 val ecView = config.toEmbedderConfig()
-                val embedderControl = EmbedderController(vaults, configPath, config)
+                // One shared, mutable config holder so the runtime controllers (embedder, vault
+                // creation) persist edits onto each other's state instead of clobbering.
+                val configStore = ConfigStore(config, configPath)
+                val embedderControl = EmbedderController(vaults, configStore)
+                val vaultCreator = VaultController(vaults, configStore, workScope, eventBus, hostId)
                 val api = AppApiServer(
                     vaults = vaults,
                     eventBus = eventBus,
@@ -152,6 +156,7 @@ class SvodNode private constructor(
                     ),
                     readiness = { ready.get() },
                     embedderControl = embedderControl,
+                    vaultCreator = vaultCreator,
                     backup = backup,
                     syncConfig = { vc ->
                         val b = backup.configOf(vc.id)

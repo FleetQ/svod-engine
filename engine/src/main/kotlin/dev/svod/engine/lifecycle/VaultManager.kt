@@ -9,13 +9,25 @@ import dev.svod.engine.api.VaultView
  * of a null id yields the default vault; an unknown id yields null (a 404 at the API).
  */
 class VaultManager(
-    private val byId: Map<String, VaultContext>,
+    initial: Map<String, VaultContext>,
     private val defaultId: String,
 ) : VaultRouter, AutoCloseable {
+
+    // Read by every request, mutated only by a rare runtime register(): a volatile snapshot swapped
+    // under @Synchronized keeps reads lock-free and preserves listing order (a fresh LinkedHashMap).
+    @Volatile
+    private var byId: Map<String, VaultContext> = LinkedHashMap(initial)
 
     fun context(id: String?): VaultContext? = byId[id ?: defaultId]
     fun default(): VaultContext = byId.getValue(defaultId)
     fun contexts(): List<VaultContext> = byId.values.toList()
+
+    /** Hot-add a freshly opened vault (POST /api/v1/vaults). The caller has verified its id is new. */
+    @Synchronized
+    fun register(vc: VaultContext) {
+        require(vc.id !in byId) { "vault already registered: ${vc.id}" }
+        byId = LinkedHashMap(byId).apply { put(vc.id, vc) }
+    }
 
     override fun ids(): List<String> = byId.keys.toList()
     override fun defaultId(): String = defaultId

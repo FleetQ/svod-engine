@@ -253,6 +253,10 @@ data class VaultInfoDto(val id: String, val name: String, val default: Boolean, 
 @Serializable
 data class VaultsDto(val vaults: List<VaultInfoDto>)
 
+/** Request to create a new vault at runtime (POST /api/v1/vaults). name/path are derived when null. */
+@Serializable
+data class CreateVaultRequest(val id: String, val name: String? = null, val path: String? = null)
+
 @Serializable
 data class WriteStatsDto(val count: Long, val avgMs: Double, val maxMs: Double, val lastMs: Double)
 

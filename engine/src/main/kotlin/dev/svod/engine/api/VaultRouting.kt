@@ -18,6 +18,23 @@ interface VaultView {
     fun syncStatus(): SyncStatusDto?
 }
 
+/**
+ * Runtime creation of a brand-new vault (POST /api/v1/vaults). Production wires the lifecycle
+ * implementation; when it is null the endpoint returns 501. Failures map to an HTTP status via the
+ * typed exceptions below so the server stays decoupled from the lifecycle layer.
+ */
+interface VaultCreator {
+    /** Bad id (pattern) or an unusable path shape ⇒ 400. */
+    class InvalidRequest(message: String) : Exception(message)
+    /** Duplicate vault id, or the target directory exists and is non-empty ⇒ 409. */
+    class Conflict(message: String) : Exception(message)
+    /** The target path can't be created or isn't writable ⇒ 422. */
+    class NotWritable(message: String) : Exception(message)
+
+    /** Create the vault (dir + git + seed commit), persist it, hot-add it; return its view for the 201 body. */
+    suspend fun create(req: CreateVaultRequest): VaultView
+}
+
 interface VaultRouter {
     fun ids(): List<String>
     fun defaultId(): String

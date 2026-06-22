@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.14.0
+  version: 0.15.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -351,6 +351,39 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Vaults" }
+    post:
+      tags: [meta]
+      summary: >
+        Create a brand-new vault at runtime. The engine creates the target directory (refusing a
+        non-empty existing one), `git init`s it with an initial seed commit, registers it in the
+        persistent engine config (survives a restart), and hot-adds it to the running engine — it
+        appears in GET /api/v1/vaults and routes via `?vault=<id>` immediately, no restart. The new
+        vault starts solo (no sync, no backup). The 201 body is a Vault row identical in shape to a
+        GET /api/v1/vaults item.
+      operationId: createVault
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateVaultRequest" }
+      responses:
+        "201":
+          description: The created vault
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Vault" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: Duplicate vault id, or the target directory exists and is non-empty.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: The target path could not be created or is not writable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
 
   /api/v1/import:
     post:
@@ -1100,20 +1133,40 @@ components:
               theirs: { type: string, nullable: true }
               ts: { type: integer, format: int64, description: When the conflict was recorded (epoch millis). }
 
+    Vault:
+      type: object
+      required: [id, name, default]
+      description: One vault row (also the POST /api/v1/vaults 201 body).
+      properties:
+        id: { type: string }
+        name: { type: string }
+        default: { type: boolean }
+        sync: { $ref: "#/components/schemas/SyncStatus" }
+
     Vaults:
       type: object
       required: [vaults]
       properties:
         vaults:
           type: array
-          items:
-            type: object
-            required: [id, name, default]
-            properties:
-              id: { type: string }
-              name: { type: string }
-              default: { type: boolean }
-              sync: { $ref: "#/components/schemas/SyncStatus" }
+          items: { $ref: "#/components/schemas/Vault" }
+
+    CreateVaultRequest:
+      type: object
+      required: [id]
+      description: Create a new vault. Only `id` is required; `name` and `path` are derived when omitted.
+      properties:
+        id:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9_-]*$"
+          description: Unique vault id/slug.
+        name: { type: string, nullable: true, description: "Display name; defaults to id when omitted." }
+        path:
+          type: string
+          nullable: true
+          description: >
+            Absolute filesystem path for the new vault's git repo. When omitted the engine derives a
+            default location (a sibling of an existing vault, + id).
 
     ImportRequest:
       type: object

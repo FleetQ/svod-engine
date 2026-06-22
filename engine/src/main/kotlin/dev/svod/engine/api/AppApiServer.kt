@@ -71,6 +71,8 @@ class AppApiServer(
     private val reconcileSourceWatchers: (VaultView) -> Unit = { },
     /** Runtime embedder control; null ⇒ PUT /embedder & POST /embedder/test return 501. */
     private val embedderControl: EmbedderControl? = null,
+    /** Runtime vault creation; null ⇒ POST /vaults returns 501. */
+    private val vaultCreator: VaultCreator? = null,
 ) {
     /** Back-compat single-vault constructor (one engine/index, optional conflicts + sync status). */
     constructor(
@@ -81,11 +83,12 @@ class AppApiServer(
         readiness: () -> Boolean = { true },
         conflicts: ConflictStore? = null,
         syncStatus: () -> SyncStatusDto? = { null },
-    ) : this(SingleVaultRouter(svod, index, conflicts, syncStatus), eventBus, config, readiness)
+        vaultCreator: VaultCreator? = null,
+    ) : this(SingleVaultRouter(svod, index, conflicts, syncStatus), eventBus, config, readiness, vaultCreator = vaultCreator)
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.14.0",
+        val apiVersion: String = "0.15.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
@@ -134,6 +137,21 @@ class AppApiServer(
 
             get("/api/v1/vaults") {
                 call.respond(VaultsDto(vaults.all().map { VaultInfoDto(it.id, it.name, it.id == vaults.defaultId(), vaultStatus(it)) }))
+            }
+            post("/api/v1/vaults") {
+                val creator = vaultCreator ?: return@post call.notImplemented("vault creation")
+                val req = call.receive<CreateVaultRequest>()
+                try {
+                    val v = creator.create(req)
+                    // Same row shape as a GET /vaults item (default flag + sync status computed identically).
+                    call.respond(HttpStatusCode.Created, VaultInfoDto(v.id, v.name, v.id == vaults.defaultId(), vaultStatus(v)))
+                } catch (e: VaultCreator.InvalidRequest) {
+                    call.respond(HttpStatusCode.BadRequest, ErrorDto("bad_request", e.message ?: "invalid vault request"))
+                } catch (e: VaultCreator.Conflict) {
+                    call.respond(HttpStatusCode.Conflict, ErrorDto("conflict", e.message ?: "vault already exists"))
+                } catch (e: VaultCreator.NotWritable) {
+                    call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("not_writable", e.message ?: "vault path not writable"))
+                }
             }
 
             get("/api/v1/tree") {

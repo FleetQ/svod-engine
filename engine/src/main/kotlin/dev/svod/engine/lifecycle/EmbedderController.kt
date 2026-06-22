@@ -12,37 +12,31 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
-import java.nio.file.Files
-import java.nio.file.Path
 import java.time.Duration
 
 /**
  * Runtime embedder control for the App API. The embedder is a global engine setting (one provider
- * for every vault), so [apply] rebuilds the embedder for ALL vaults and persists the change to the
- * config file (when a path is known). API keys are accepted only as `Secrets` references — a raw key
- * over the wire is rejected ([EmbedderControl.InvalidSpec] ⇒ 422).
+ * for every vault), so [apply] rebuilds the embedder for ALL vaults and persists the change through
+ * the shared [ConfigStore] (which writes the config file when a path is known). API keys are accepted
+ * only as `Secrets` references — a raw key over the wire is rejected ([EmbedderControl.InvalidSpec] ⇒ 422).
  */
 class EmbedderController(
     private val vaults: VaultManager,
-    private val configPath: Path?,
-    initialConfig: SvodConfig,
+    private val configStore: ConfigStore,
 ) : EmbedderControl {
-
-    @Volatile
-    private var config = initialConfig
 
     private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
     private val json = Json { ignoreUnknownKeys = true }
 
     override fun descriptor(vaultId: String): EmbedderControl.EmbedderDescriptor {
-        val ec = config.toEmbedderConfig()
+        val ec = configStore.config.toEmbedderConfig()
         val dim = vaults.context(vaultId)?.index?.indexedDim() ?: 0
         return EmbedderControl.EmbedderDescriptor(ec.providerName, ec.modelName, ec.endpointOrNull, dim)
     }
 
     override fun apply(vaultId: String, spec: EmbedderControl.EmbedderSpec): EmbedderControl.EmbedderDescriptor {
-        val merged = merge(config.embedder, spec)
-        val updated = config.copy(embedder = merged)
+        val merged = merge(configStore.config.embedder, spec)
+        val updated = configStore.config.copy(embedder = merged)
         val errors = updated.validate()
         if (errors.isNotEmpty()) throw EmbedderControl.InvalidSpec(errors.joinToString("; "))
 
@@ -52,14 +46,14 @@ class EmbedderController(
             val embedder = Embedders.create(ec, vc.engine.root)
             vc.index.setEmbedder(embedder)
         }
-        config = updated
-        configPath?.let { Files.writeString(it, SvodConfig.toJson(updated)) }
+        // Persist via the shared store (preserves any vault added concurrently by VaultController).
+        configStore.update { it.copy(embedder = merged) }
         return descriptor(vaultId)
     }
 
     override fun test(vaultId: String, spec: EmbedderControl.EmbedderSpec): EmbedderControl.ProbeResult {
         return try {
-            val ec = config.copy(embedder = merge(config.embedder, spec)).toEmbedderConfig()
+            val ec = configStore.config.copy(embedder = merge(configStore.config.embedder, spec)).toEmbedderConfig()
             val root = (vaults.context(vaultId) ?: vaults.default()).engine.root
             val embedder = Embedders.create(ec, root)
             val dim = embedder.dim
@@ -78,7 +72,7 @@ class EmbedderController(
     override fun models(vaultId: String, spec: EmbedderControl.EmbedderSpec): EmbedderControl.ModelsResult {
         // merge() validates (unknown provider / raw API key ⇒ InvalidSpec ⇒ 422) and resolves the
         // effective endpoint/apiKeyRef from config when the spec omits them.
-        val ec = config.copy(embedder = merge(config.embedder, spec)).toEmbedderConfig()
+        val ec = configStore.config.copy(embedder = merge(configStore.config.embedder, spec)).toEmbedderConfig()
         val options = try {
             when (ec.provider) {
                 EmbedderProvider.NONE -> emptyList()

@@ -186,4 +186,88 @@ class MultiVaultTest {
         // legacy single-vault config still validates clean (back-compat)
         assertTrue(SvodConfig(vaultPath = "/tmp/legacy").validate().isEmpty())
     }
+
+    @Test
+    fun `create vault hot-adds it, routes by vault param, and survives a restart`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val work = Files.createTempDirectory("svod-work-")
+        val freshDir = Files.createTempDirectory("svod-fresh-parent-").resolve("fresh")
+        val cfgFile = Files.createTempFile("svod-config-", ".json")
+        val cfg = twoVaultConfig(personal, work)
+        Files.writeString(cfgFile, SvodConfig.toJson(cfg))
+
+        val node = SvodNode.start(cfg, configPath = cfgFile)
+        val port = node.appApiPort
+        try {
+            val created = post(port, "/api/v1/vaults", """{"id":"fresh","path":"$freshDir"}""")
+            assertEquals(201, created.statusCode(), created.body())
+            // 201 body is a Vault row: {id,name,default=false,sync}
+            assertTrue(created.body().contains("\"id\":\"fresh\""), created.body())
+            assertTrue(created.body().contains("\"name\":\"fresh\""), created.body())
+            assertTrue(created.body().contains("\"default\":false"), created.body())
+
+            // the dir + git repo exist on disk
+            assertTrue(Files.isDirectory(freshDir), "vault dir created")
+            assertTrue(Files.isDirectory(freshDir.resolve(".git")), "git repo initialised")
+
+            // GET /vaults now lists it alongside the originals
+            assertTrue(get(port, "/api/v1/vaults").body().contains("\"id\":\"fresh\""))
+
+            // ?vault=fresh routes: a write then read in the new vault works
+            assertEquals(200, put(port, "/api/v1/file?path=hello.md&vault=fresh", """{"content":"# fresh"}""").statusCode())
+            assertTrue(get(port, "/api/v1/file?path=${enc("hello.md")}&vault=fresh").body().contains("# fresh"))
+        } finally {
+            node.shutdown()
+        }
+
+        // a fresh node loads the persisted vault from the config file (no longer in the startup `cfg` object)
+        val node2 = SvodNode.start(SvodConfig.load(cfgFile), configPath = cfgFile)
+        try {
+            assertTrue(get(node2.appApiPort, "/api/v1/vaults").body().contains("\"id\":\"fresh\""),
+                "created vault must survive a node restart")
+            assertTrue(get(node2.appApiPort, "/api/v1/file?path=${enc("hello.md")}&vault=fresh").body().contains("# fresh"),
+                "the write into the created vault must survive a restart")
+        } finally {
+            node2.shutdown()
+        }
+    }
+
+    @Test
+    fun `create vault with an existing id returns 409`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val work = Files.createTempDirectory("svod-work-")
+        val node = SvodNode.start(twoVaultConfig(personal, work))
+        try {
+            assertEquals(409, post(node.appApiPort, "/api/v1/vaults", """{"id":"work"}""").statusCode())
+        } finally {
+            node.shutdown()
+        }
+    }
+
+    @Test
+    fun `create vault into a non-empty directory returns 409`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val work = Files.createTempDirectory("svod-work-")
+        val occupied = Files.createTempDirectory("svod-occupied-")
+        Files.writeString(occupied.resolve("existing.txt"), "x")
+        val node = SvodNode.start(twoVaultConfig(personal, work))
+        try {
+            val r = post(node.appApiPort, "/api/v1/vaults", """{"id":"fresh","path":"$occupied"}""")
+            assertEquals(409, r.statusCode(), r.body())
+        } finally {
+            node.shutdown()
+        }
+    }
+
+    @Test
+    fun `create vault with an invalid id returns 400`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val work = Files.createTempDirectory("svod-work-")
+        val node = SvodNode.start(twoVaultConfig(personal, work))
+        try {
+            assertEquals(400, post(node.appApiPort, "/api/v1/vaults", """{"id":"Bad ID!"}""").statusCode())
+        } finally {
+            node.shutdown()
+        }
+    }
 }
