@@ -351,3 +351,45 @@ data class BackupAckDto(val ok: Boolean, val head: String? = null, val noChange:
 /** Ack for POST /api/v1/sync/now. [conflicts] = merge conflicts surfaced (then visible via /conflicts). */
 @Serializable
 data class SyncAckDto(val ok: Boolean, val head: String? = null, val conflicts: Int? = null)
+
+// ---- Agent management (GET/POST/PUT/DELETE /api/v1/agents) ----
+
+@Serializable
+data class AgentDto(
+    val agentId: String,
+    val name: String? = null,
+    val role: String,
+    val vaults: List<String> = emptyList(),
+    /** The Secrets ref used to resolve this agent's bearer token (env:/file:/keychain:). Never the raw value. */
+    val tokenRef: String,
+    val prompt: String? = null,
+)
+
+@Serializable
+data class AgentsDto(
+    val agents: List<AgentDto>,
+    val mcpPort: Int,
+    /** MCP endpoint URL (http://<host>:<mcpPort>). Use for wiring agent clients. */
+    val mcpUrl: String,
+)
+
+@Serializable
+data class CreateAgentRequest(
+    val agentId: String,
+    val name: String? = null,
+    val role: String,
+    val vaults: List<String> = emptyList(),
+    /** Secrets ref for the bearer token (env:/file:/keychain:) — raw tokens are rejected (422). */
+    val tokenRef: String,
+    val prompt: String? = null,
+)
+
+@Serializable
+data class UpdateAgentRequest(
+    val name: String? = null,
+    val role: String? = null,
+    val vaults: List<String>? = null,
+    /** Secrets ref for the bearer token (env:/file:/keychain:) — raw tokens are rejected (422). */
+    val tokenRef: String? = null,
+    val prompt: String? = null,
+)

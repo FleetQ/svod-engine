@@ -75,6 +75,8 @@ class AppApiServer(
     private val vaultCreator: VaultCreator? = null,
     /** Runtime vault removal; null ⇒ DELETE /vaults/{id} returns 501. */
     private val vaultRemover: VaultRemover? = null,
+    /** Runtime agent management; null ⇒ /agents endpoints return 501. */
+    private val agentAdmin: AgentAdmin? = null,
 ) {
     /** Back-compat single-vault constructor (one engine/index, optional conflicts + sync status). */
     constructor(
@@ -91,7 +93,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.16.0",
+        val apiVersion: String = "0.17.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
@@ -168,6 +170,51 @@ class AppApiServer(
                     call.notFound(e.message ?: "unknown vault")
                 } catch (e: VaultRemover.Conflict) {
                     call.respond(HttpStatusCode.Conflict, ErrorDto("conflict", e.message ?: "vault cannot be deleted"))
+                }
+            }
+
+            get("/api/v1/agents") {
+                val admin = agentAdmin ?: return@get call.notImplemented("agent management")
+                val view = admin.list()
+                val effectiveHost = if (config.host == "0.0.0.0") "127.0.0.1" else config.host
+                val mcpUrl = "http://$effectiveHost:${view.mcpPort}"
+                call.respond(AgentsDto(view.agents.map { it.toDto() }, view.mcpPort, mcpUrl))
+            }
+            post("/api/v1/agents") {
+                val admin = agentAdmin ?: return@post call.notImplemented("agent management")
+                val req = call.receive<CreateAgentRequest>()
+                try {
+                    call.respond(HttpStatusCode.Created, admin.create(req).toDto())
+                } catch (e: AgentAdmin.InvalidRequest) {
+                    call.badRequest(e.message ?: "invalid agent request")
+                } catch (e: AgentAdmin.Conflict) {
+                    call.respond(HttpStatusCode.Conflict, ErrorDto("conflict", e.message ?: "agent already exists"))
+                } catch (e: AgentAdmin.NotARef) {
+                    call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("not_a_ref", e.message ?: "tokenRef must be a Secrets ref"))
+                }
+            }
+            put("/api/v1/agents/{id}") {
+                val admin = agentAdmin ?: return@put call.notImplemented("agent management")
+                val id = call.parameters["id"] ?: return@put call.badRequest("missing agent id")
+                val req = call.receive<UpdateAgentRequest>()
+                try {
+                    call.respond(admin.update(id, req).toDto())
+                } catch (e: AgentAdmin.UnknownAgent) {
+                    call.notFound(e.message ?: "unknown agent")
+                } catch (e: AgentAdmin.InvalidRequest) {
+                    call.badRequest(e.message ?: "invalid agent request")
+                } catch (e: AgentAdmin.NotARef) {
+                    call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("not_a_ref", e.message ?: "tokenRef must be a Secrets ref"))
+                }
+            }
+            delete("/api/v1/agents/{id}") {
+                val admin = agentAdmin ?: return@delete call.notImplemented("agent management")
+                val id = call.parameters["id"] ?: return@delete call.badRequest("missing agent id")
+                try {
+                    admin.delete(id)
+                    call.respond(kotlinx.serialization.json.buildJsonObject { put("agentId", id) })
+                } catch (e: AgentAdmin.UnknownAgent) {
+                    call.notFound(e.message ?: "unknown agent")
                 }
             }
 
@@ -684,6 +731,8 @@ class AppApiServer(
             embedding = EmbeddingStatusDto(s.state.name.lowercase(), s.done, s.total, provider, s.model, s.error, s.ratePerSec, s.etaSeconds),
         )
     }
+
+    private fun AgentSpecView.toDto() = AgentDto(agentId, name, role, vaults, tokenRef, prompt)
 
     private fun EmbedderRequestDto.toSpec() = EmbedderControl.EmbedderSpec(provider, model, endpoint, apiKeyRef, maxThreads)
 

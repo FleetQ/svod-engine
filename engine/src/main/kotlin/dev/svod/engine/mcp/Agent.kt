@@ -45,18 +45,26 @@ class AgentRegistry(agents: List<AgentSpec>) {
         val vaults: List<String> = emptyList(),
     )
 
-    private val byToken: Map<String, AgentIdentity> = agents.associate { spec ->
-        spec.token to AgentIdentity(spec.agentId, spec.role, Author(spec.name, spec.email), spec.vaults)
-    }
-    private val agentIds: Map<String, AgentIdentity> = agents.associate { spec ->
-        spec.agentId to AgentIdentity(spec.agentId, spec.role, Author(spec.name, spec.email), spec.vaults)
+    @Volatile private var byToken: Map<String, AgentIdentity> = buildByToken(agents)
+    @Volatile private var agentIds: Map<String, AgentIdentity> = buildByAgentId(agents)
+
+    /**
+     * Swap in a new agent set without restarting. Build the new maps fully first, then assign them
+     * atomically so readers never see a partially-updated state.
+     */
+    fun reload(agents: List<AgentSpec>) {
+        val newByToken = buildByToken(agents)
+        val newByAgentId = buildByAgentId(agents)
+        byToken = newByToken
+        agentIds = newByAgentId
     }
 
     /** Resolve a bearer token to an agent, or null if unknown. Constant-time over tokens. */
     fun authenticate(token: String?): AgentIdentity? {
         if (token.isNullOrEmpty()) return null
+        val map = byToken // read volatile field once
         var match: AgentIdentity? = null
-        for ((known, identity) in byToken) {
+        for ((known, identity) in map) {
             if (constantTimeEquals(known, token)) match = identity
         }
         return match
@@ -69,5 +77,13 @@ class AgentRegistry(agents: List<AgentSpec>) {
         var diff = ab.size xor bb.size
         for (i in bb.indices) diff = diff or (ab.getOrElse(i) { 0 }.toInt() xor bb[i].toInt())
         return diff == 0
+    }
+
+    private companion object {
+        fun buildByToken(agents: List<AgentSpec>): Map<String, AgentIdentity> =
+            agents.associate { it.token to AgentIdentity(it.agentId, it.role, Author(it.name, it.email), it.vaults) }
+
+        fun buildByAgentId(agents: List<AgentSpec>): Map<String, AgentIdentity> =
+            agents.associate { it.agentId to AgentIdentity(it.agentId, it.role, Author(it.name, it.email), it.vaults) }
     }
 }

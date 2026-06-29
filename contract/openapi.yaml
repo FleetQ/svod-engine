@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.16.0
+  version: 0.17.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -424,6 +424,106 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /api/v1/agents:
+    get:
+      tags: [meta]
+      summary: List all configured MCP agents (LLM access).
+      operationId: listAgents
+      responses:
+        "200":
+          description: Agents
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Agents" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+    post:
+      tags: [meta]
+      summary: >
+        Create a new MCP agent at runtime. The agent is persisted in the engine config and hot-added
+        to the running registry (no restart needed). The tokenRef must be a Secrets ref
+        (env:/file:/keychain:) — raw token values are rejected (422).
+      operationId: createAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAgentRequest" }
+      responses:
+        "201":
+          description: The created agent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Agent" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "409":
+          description: Duplicate agentId.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "422":
+          description: tokenRef is a raw value, not a Secrets ref.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /api/v1/agents/{id}:
+    put:
+      tags: [meta]
+      summary: >
+        Update an existing agent's name, role, vaults, tokenRef, or prompt. Only provided fields
+        are changed; omitted fields keep their current values.
+      operationId: updateAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The agentId to update.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateAgentRequest" }
+      responses:
+        "200":
+          description: The updated agent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Agent" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422":
+          description: tokenRef is a raw value, not a Secrets ref.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+    delete:
+      tags: [meta]
+      summary: >
+        Remove an agent at runtime. The registry is updated immediately (no restart). Zero agents
+        is a valid state.
+      operationId: deleteAgent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The agentId to remove.
+      responses:
+        "200":
+          description: The agent was removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agentId]
+                properties:
+                  agentId: { type: string }
+        "404": { $ref: "#/components/responses/NotFound" }
         "501": { $ref: "#/components/responses/NotImplemented" }
 
   /api/v1/import:
@@ -1223,6 +1323,71 @@ components:
         filesDeleted:
           type: boolean
           description: True when the engine recursively deleted the directory from disk (deleteFiles=true).
+
+    Agent:
+      type: object
+      required: [agentId, role, vaults, tokenRef]
+      description: One MCP agent (also the POST/PUT /api/v1/agents body).
+      properties:
+        agentId: { type: string }
+        name: { type: string, nullable: true }
+        role: { type: string, description: "READ_ONLY | WRITE" }
+        vaults:
+          type: array
+          items: { type: string }
+          description: Vault ids this agent may access. Empty = default vault only.
+        tokenRef:
+          type: string
+          description: "Secrets ref for the bearer token (env:/file:/keychain:) — never the raw value."
+        prompt: { type: string, nullable: true, description: Optional system prompt (config-only metadata). }
+
+    Agents:
+      type: object
+      required: [agents, mcpPort, mcpUrl]
+      properties:
+        agents:
+          type: array
+          items: { $ref: "#/components/schemas/Agent" }
+        mcpPort: { type: integer, description: The MCP endpoint port. }
+        mcpUrl: { type: string, description: "Full MCP endpoint URL (http://<host>:<mcpPort>)." }
+
+    CreateAgentRequest:
+      type: object
+      required: [agentId, role, tokenRef]
+      description: Create a new MCP agent.
+      properties:
+        agentId:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9_-]*$"
+          description: Unique agent id/slug.
+        name: { type: string, nullable: true, description: "Display name; defaults to agentId when omitted." }
+        role:
+          type: string
+          description: "READ_ONLY | WRITE (case-insensitive)."
+        vaults:
+          type: array
+          items: { type: string }
+          description: Vault ids to grant access to. Empty = default vault only.
+        tokenRef:
+          type: string
+          description: "Secrets ref for the bearer token (env:/file:/keychain:) — raw tokens are rejected (422)."
+        prompt: { type: string, nullable: true, description: Optional system prompt (config-only metadata). }
+
+    UpdateAgentRequest:
+      type: object
+      description: Partial update of an agent; omitted fields are left unchanged.
+      properties:
+        name: { type: string, nullable: true }
+        role: { type: string, nullable: true, description: "READ_ONLY | WRITE (case-insensitive)." }
+        vaults:
+          type: array
+          nullable: true
+          items: { type: string }
+        tokenRef:
+          type: string
+          nullable: true
+          description: "Secrets ref for the bearer token (env:/file:/keychain:) — raw tokens are rejected (422)."
+        prompt: { type: string, nullable: true }
 
     ImportRequest:
       type: object

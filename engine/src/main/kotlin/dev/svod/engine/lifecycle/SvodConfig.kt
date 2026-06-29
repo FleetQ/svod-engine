@@ -165,6 +165,8 @@ data class SvodConfig(
         val email: String? = null,
         /** Vault ids this agent may access. Empty ⇒ the default vault only. */
         val vaults: List<String> = emptyList(),
+        /** Optional system prompt surfaced to the UI (config-only metadata; not threaded into AgentSpec). */
+        val prompt: String? = null,
     )
 
     /** Optional TLS for the MCP endpoint (remote agents reach MCP over HTTPS). Passwords are secret refs. */

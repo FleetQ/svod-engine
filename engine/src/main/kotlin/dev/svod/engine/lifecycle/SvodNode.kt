@@ -144,6 +144,7 @@ class SvodNode private constructor(
                 val configStore = ConfigStore(config, configPath)
                 val embedderControl = EmbedderController(vaults, configStore)
                 val vaultCreator = VaultController(vaults, configStore, workScope, eventBus, hostId)
+                val agentController = AgentController(configStore, registry, config.host)
                 val api = AppApiServer(
                     vaults = vaults,
                     eventBus = eventBus,
@@ -158,6 +159,7 @@ class SvodNode private constructor(
                     embedderControl = embedderControl,
                     vaultCreator = vaultCreator,
                     vaultRemover = vaultCreator,
+                    agentAdmin = agentController,
                     backup = backup,
                     syncConfig = { vc ->
                         val b = backup.configOf(vc.id)
