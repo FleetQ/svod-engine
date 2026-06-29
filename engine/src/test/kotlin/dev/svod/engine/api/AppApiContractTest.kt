@@ -263,6 +263,7 @@ class AppApiContractTest {
             "/api/v1/file/history", "/api/v1/file/diff", "/api/v1/file/revision", "/api/v1/file/links",
             "/api/v1/search", "/api/v1/graph", "/api/v1/tags", "/api/v1/settings", "/api/v1/index/status",
             "/api/v1/vaults", "/api/v1/vaults/{id}", "/api/v1/agents", "/api/v1/agents/{id}",
+            "/api/v1/update/check", "/api/v1/update/apply",
             "/api/v1/metrics", "/api/v1/conflicts", "/api/v1/conflicts/resolve",
             "/api/v1/import", "/api/v1/events",
             "/api/v1/sync/config", "/api/v1/sync/now", "/api/v1/backup/now",

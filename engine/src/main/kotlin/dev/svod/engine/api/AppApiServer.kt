@@ -77,6 +77,8 @@ class AppApiServer(
     private val vaultRemover: VaultRemover? = null,
     /** Runtime agent management; null ⇒ /agents endpoints return 501. */
     private val agentAdmin: AgentAdmin? = null,
+    /** Runtime self-update; null ⇒ /update endpoints return 501. */
+    private val updateAdmin: UpdateAdmin? = null,
 ) {
     /** Back-compat single-vault constructor (one engine/index, optional conflicts + sync status). */
     constructor(
@@ -93,7 +95,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.17.0",
+        val apiVersion: String = "0.18.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
@@ -215,6 +217,21 @@ class AppApiServer(
                     call.respond(kotlinx.serialization.json.buildJsonObject { put("agentId", id) })
                 } catch (e: AgentAdmin.UnknownAgent) {
                     call.notFound(e.message ?: "unknown agent")
+                }
+            }
+
+            get("/api/v1/update/check") {
+                val admin = updateAdmin ?: return@get call.notImplemented("update")
+                call.respond(admin.check())
+            }
+            post("/api/v1/update/apply") {
+                val admin = updateAdmin ?: return@post call.notImplemented("update")
+                try {
+                    call.respond(HttpStatusCode.Accepted, admin.apply())
+                } catch (e: UpdateAdmin.NotApplicable) {
+                    call.respond(HttpStatusCode.Conflict, ErrorDto("conflict", e.message ?: ""))
+                } catch (e: UpdateAdmin.NotSupported) {
+                    call.notImplemented("update")
                 }
             }
 

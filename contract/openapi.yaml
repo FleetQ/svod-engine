@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.17.0
+  version: 0.18.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -524,6 +524,33 @@ paths:
                 properties:
                   agentId: { type: string }
         "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /api/v1/update/check:
+    get:
+      summary: Check for a newer engine release.
+      operationId: updateCheck
+      tags: [update]
+      responses:
+        "200":
+          description: Current version + latest release info (if reachable).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpdateCheck" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /api/v1/update/apply:
+    post:
+      summary: Spawn the self-update script in the background.
+      operationId: updateApply
+      tags: [update]
+      responses:
+        "202":
+          description: Script spawned; engine will restart once the update completes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UpdateApply" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "501": { $ref: "#/components/responses/NotImplemented" }
 
   /api/v1/import:
@@ -1624,6 +1651,28 @@ components:
         ok: { type: boolean }
         head: { type: string, nullable: true }
         conflicts: { type: integer, nullable: true, description: Merge conflicts surfaced (see GET /conflicts). }
+
+    UpdateCheck:
+      type: object
+      required: [currentVersion, updateAvailable, compatible]
+      properties:
+        currentVersion: { type: string }
+        currentContract: { type: string, nullable: true }
+        latestVersion: { type: string, nullable: true }
+        updateAvailable: { type: boolean }
+        compatible: { type: boolean }
+        assetName: { type: string, nullable: true }
+        assetUrl: { type: string, nullable: true }
+        sha256: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+        publishedAt: { type: string, nullable: true }
+
+    UpdateApply:
+      type: object
+      required: [started]
+      properties:
+        started: { type: boolean }
+        candidateVersion: { type: string, nullable: true }
 
     Event:
       type: object

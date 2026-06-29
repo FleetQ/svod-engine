@@ -374,6 +374,23 @@ data class AgentsDto(
 )
 
 @Serializable
+data class UpdateCheckDto(
+    val currentVersion: String,
+    val currentContract: String? = null,
+    val latestVersion: String? = null,
+    val updateAvailable: Boolean = false,
+    val compatible: Boolean = false,
+    val assetName: String? = null,
+    val assetUrl: String? = null,
+    val sha256: String? = null,
+    val notes: String? = null,
+    val publishedAt: String? = null,
+)
+
+@Serializable
+data class UpdateApplyDto(val started: Boolean, val candidateVersion: String? = null)
+
+@Serializable
 data class CreateAgentRequest(
     val agentId: String,
     val name: String? = null,
