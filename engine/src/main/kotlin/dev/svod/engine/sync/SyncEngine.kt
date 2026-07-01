@@ -65,6 +65,22 @@ class SyncEngine(
     private fun record(status: Status, head: String?, syncedAt: String? = lastResult?.lastSyncedAt): Result =
         Result(status, head, conflicts.all().size, syncedAt).also { lastResult = it }
 
+    /** Head last mirrored to the browsable `main` branch; skip re-pushing an unchanged head. */
+    @Volatile
+    private var lastMirroredHead: String? = null
+
+    /**
+     * Keep a browsable `main` branch tracking [head] on [remote] (force-push) so the vault shows up
+     * in GitHub's web UI / GitFox, which list only heads+tags — never the `refs/svod/sync/…` ref the
+     * vault actually rides on. Only pushes when [head] changed since the last mirror, so an idle
+     * in-sync cycle doesn't re-push every tick. Best-effort/cosmetic — a failure is swallowed and
+     * simply retried next cycle; the canonical sync ref remains the source of truth.
+     */
+    private fun mirror(remote: String, head: String?) {
+        if (head == null || head == lastMirroredHead) return
+        if (git.mirrorToBrowsableBranch(remote, branch)) lastMirroredHead = head
+    }
+
     /** Run one reconcile cycle against [remote] (a URL or a Secrets ref). Never throws. */
     suspend fun sync(remote: String): Result = mutex.withLock { runCycle(remote) }
 
@@ -90,9 +106,10 @@ class SyncEngine(
 
             val needsPush: Boolean = when {
                 remoteHead == null -> true                              // first push: create the canonical ref
-                local == remoteHead -> return record(Status.inSync, local, Instant.now().toString())
+                local == remoteHead -> { mirror(resolved, local); return record(Status.inSync, local, Instant.now().toString()) }
                 git.isAncestor(local, remoteHead) -> {                  // remote ahead → fast-forward
                     if (!engine.fastForwardTo(remoteHead, expectedHead = local)) continue // local moved → re-plan
+                    mirror(resolved, remoteHead)
                     return record(Status.inSync, remoteHead, Instant.now().toString())
                 }
                 git.isAncestor(remoteHead, local) -> true               // local ahead → push
@@ -109,6 +126,7 @@ class SyncEngine(
             if (needsPush) when (git.pushSync(resolved, branch, vaultId)) {
                 SyncGit.PushResult.OK -> {
                     val head = engine.head()
+                    mirror(resolved, head)
                     eventBus.publish(EventTypes.INDEX_UPDATED) { put("vault", vaultId); put("syncHead", head ?: "") }
                     return record(Status.inSync, head, Instant.now().toString())
                 }

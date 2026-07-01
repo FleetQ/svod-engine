@@ -80,6 +80,19 @@ class SyncGit(root: Path) : AutoCloseable {
         PushResult.ERROR
     }
 
+    /**
+     * Best-effort mirror of the local [branch] to a browsable branch `refs/heads/main` on [remote],
+     * force-updated. GitHub's web UI and desktop git clients (GitFox, etc.) list only heads + tags —
+     * never the svod sync/backup refs (`refs/svod/sync/…`, `refs/svod/backup/…`) a vault actually
+     * rides on — so without this a fully backed-up vault looks empty in the browser. Purely cosmetic
+     * visibility: a failure is swallowed so it can never wedge or fail a cycle (the svod ref is truth).
+     */
+    fun mirrorToBrowsableBranch(remote: String, branch: String): Boolean = try {
+        push(remote, "+refs/heads/$branch:refs/heads/main")
+    } catch (_: Exception) {
+        false
+    }
+
     /** Push [refspec] to [remote]; true if every update was OK/UP_TO_DATE (not rejected). */
     fun push(remote: String, refspec: String): Boolean {
         val results = git.push().setRemote(remote).setRefSpecs(RefSpec(refspec)).call()

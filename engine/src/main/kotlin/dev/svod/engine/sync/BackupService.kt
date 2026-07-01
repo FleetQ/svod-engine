@@ -181,6 +181,9 @@ class BackupService(bindings: List<Binding>) {
                         } catch (_: Exception) {
                             false
                         }
+                        // Also expose the head on a browsable `main` branch (GitHub/GitFox list only
+                        // heads+tags, not refs/svod/*); best-effort, never turns a good backup into an error.
+                        if (ok) git.mirrorToBrowsableBranch(remote, branch)
                         if (ok) b.recordSuccess(head, Instant.now().toString())
                         VaultBackup(vaultId, ok, head, cfg.remote, if (ok) "ok" else "error")
                     }
