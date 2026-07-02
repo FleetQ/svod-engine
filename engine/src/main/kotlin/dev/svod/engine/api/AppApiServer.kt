@@ -95,7 +95,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.18.0",
+        val apiVersion: String = "0.19.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
@@ -653,6 +653,21 @@ class AppApiServer(
                 call.respond(result.toDto())
             }
 
+            post("/api/v1/sources/{id}/resolve") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val id = call.parameters["id"] ?: return@post call.badRequest("missing source id")
+                val store = dev.svod.engine.sources.ExternalSourceStore(vc.engine.root)
+                val source = store.get(id) ?: return@post call.notFound("source '$id'")
+                val req = call.receive<SourceResolveRequest>()
+                val strategy = when (req.strategy) {
+                    "takeExternal" -> dev.svod.engine.sources.ResolveStrategy.TAKE_EXTERNAL
+                    "keepVault" -> dev.svod.engine.sources.ResolveStrategy.KEEP_VAULT
+                    else -> return@post call.badRequest("strategy must be takeExternal or keepVault")
+                }
+                val result = dev.svod.engine.sources.SourceSync(vc.engine, store).resolve(source, req.path, strategy)
+                if (result.error != null) call.badRequest(result.error) else call.respond(result.toDto())
+            }
+
             webSocket("/api/v1/events") {
                 eventBus.events.collect { e -> send(Frame.Text(encodeEvent(e))) }
             }
@@ -776,7 +791,7 @@ class AppApiServer(
     private fun WriteOutcome.Conflict.toConflictDto() = ConflictBodyDto(path, expected, current, currentContent)
 
     private fun dev.svod.engine.sources.ExternalSource.toDto(watching: Boolean = false) =
-        ExternalSourceDto(id, path, into, followSymlinks, prune, autoSync, watching, lastSyncedAt)
+        ExternalSourceDto(id, path, into, followSymlinks, prune, autoSync, watching, lastSyncedAt, conflicts)
 
     private fun dev.svod.engine.sources.SourceSyncResult.toDto() =
         SourceSyncResultDto(id, created, updated, unchanged, conflicts, orphaned, deleted, skipped, error)

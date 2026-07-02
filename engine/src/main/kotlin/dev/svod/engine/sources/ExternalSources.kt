@@ -35,6 +35,9 @@ data class ExternalSource(
      *  API (it is runtime, not persisted). */
     val autoSync: Boolean = false,
     val lastSyncedAt: String? = null,
+    /** Vault paths whose local edits blocked the external update at the LAST sync — the silent-
+     *  divergence set. Persisted so the UI can surface them; cleared per-path by `resolve`. */
+    val conflicts: List<String> = emptyList(),
 ) {
     companion object {
         /** Deterministic id: a slug of the basename + a short hash of the absolute path (collision-safe). */
@@ -48,6 +51,9 @@ data class ExternalSource(
         }
     }
 }
+
+/** How to resolve a conflicted (locally edited) synced path. */
+enum class ResolveStrategy { TAKE_EXTERNAL, KEEP_VAULT }
 
 /** Per-source outcome of a sync. `conflicts` = vault copy locally edited since last sync (left as-is). */
 @Serializable
@@ -64,10 +70,20 @@ data class SourceSyncResult(
 )
 
 /**
+ * The per-path sync baseline: the blob id last seen on the external side and the vault revision
+ * last written/accepted. After a clean sync the two are equal; they diverge only when a conflict
+ * is resolved as keep-vault — which is exactly what lets a kept local edit stay quiet while a
+ * LATER external change still surfaces (instead of silently clobbering the kept edit).
+ */
+@Serializable
+data class SyncedState(val ext: String, val vault: String)
+
+/**
  * Persistence for external-source registrations + per-source sync manifests, under the gitignored
  * `<root>/.svod/`. The registration list is `sources.json`; each source's last-synced state (vault
- * path → git blob id) is `source-manifests/<id>.json`. The manifest is how a re-sync tells "external
- * changed, vault untouched" (→ update) from "vault locally edited" (→ conflict).
+ * path → [SyncedState]) is `source-manifests/<id>.json`. The manifest is how a re-sync tells
+ * "external changed, vault untouched" (→ update) from "vault locally edited" (→ conflict).
+ * Legacy manifests (path → single blob id) load as `SyncedState(v, v)`.
  */
 class ExternalSourceStore(root: Path) {
     private val dir: Path = root.resolve(".svod")
@@ -102,19 +118,26 @@ class ExternalSourceStore(root: Path) {
         true
     }
 
-    fun loadManifest(id: String): Map<String, String> = synchronized(lock) {
+    fun loadManifest(id: String): Map<String, SyncedState> = synchronized(lock) {
         val mf = manifestDir.resolve("$id.json")
-        if (!Files.isRegularFile(mf)) emptyMap()
-        else json.decodeFromString(MANIFEST, Files.readString(mf))
+        if (!Files.isRegularFile(mf)) return emptyMap()
+        val raw = Files.readString(mf)
+        try {
+            json.decodeFromString(MANIFEST, raw)
+        } catch (_: Exception) {
+            // Legacy format: path → single blob id (both sides were the same by construction).
+            json.decodeFromString(LEGACY_MANIFEST, raw).mapValues { (_, v) -> SyncedState(v, v) }
+        }
     }
 
-    fun saveManifest(id: String, manifest: Map<String, String>): Unit = synchronized(lock) {
+    fun saveManifest(id: String, manifest: Map<String, SyncedState>): Unit = synchronized(lock) {
         Files.createDirectories(manifestDir)
         Files.writeString(manifestDir.resolve("$id.json"), json.encodeToString(MANIFEST, manifest))
     }
 
     private companion object {
         val SOURCES = ListSerializer(ExternalSource.serializer())
-        val MANIFEST = MapSerializer(String.serializer(), String.serializer())
+        val MANIFEST = MapSerializer(String.serializer(), SyncedState.serializer())
+        val LEGACY_MANIFEST = MapSerializer(String.serializer(), String.serializer())
     }
 }

@@ -67,6 +67,87 @@ class SourceSyncTest {
     }
 
     @Test
+    fun `conflicts persist on the source and resolve clears them`() = runBlocking {
+        val ext = Files.createTempDirectory("ext-")
+        Files.writeString(ext.resolve("doc.md"), "# Doc\nexternal v1\n")
+
+        engineOn().use { engine ->
+            val store = ExternalSourceStore(engine.root)
+            val sync = SourceSync(engine, store)
+            val src = store.put(newSource(ext, into = "proj"))
+            sync.sync(src)
+
+            // local (agent) edit → conflict, persisted on the registration
+            val rev = engine.read("proj/doc.md")!!.revision
+            engine.write("proj/doc.md", "# Doc\nagent edit\n", rev, Author("agent", "a@x"))
+            sync.sync(store.get(src.id)!!)
+            assertEquals(listOf("proj/doc.md"), store.get(src.id)!!.conflicts, "conflict persisted on the source")
+
+            // takeExternal → vault copy overwritten, conflict cleared, next sync clean
+            val r = sync.resolve(store.get(src.id)!!, "proj/doc.md", ResolveStrategy.TAKE_EXTERNAL)
+            assertTrue(r.error == null)
+            assertEquals("# Doc\nexternal v1\n", engine.read("proj/doc.md")!!.text)
+            assertTrue(store.get(src.id)!!.conflicts.isEmpty(), "conflict cleared")
+            assertTrue(sync.sync(store.get(src.id)!!).conflicts.isEmpty())
+        }
+    }
+
+    @Test
+    fun `keepVault accepts the local edit and never lets the OLD external clobber it`() = runBlocking {
+        val ext = Files.createTempDirectory("ext-")
+        Files.writeString(ext.resolve("doc.md"), "# Doc\nexternal v1\n")
+
+        engineOn().use { engine ->
+            val store = ExternalSourceStore(engine.root)
+            val sync = SourceSync(engine, store)
+            val src = store.put(newSource(ext))
+            sync.sync(src)
+
+            val rev = engine.read("doc.md")!!.revision
+            engine.write("doc.md", "# Doc\nkept local edit\n", rev, Author("agent", "a@x"))
+            sync.sync(store.get(src.id)!!)
+
+            val r = sync.resolve(store.get(src.id)!!, "doc.md", ResolveStrategy.KEEP_VAULT)
+            assertTrue(r.error == null)
+            assertTrue(store.get(src.id)!!.conflicts.isEmpty())
+
+            // external UNCHANGED → the kept edit stays quiet (no conflict, no clobber)
+            val quiet = sync.sync(store.get(src.id)!!)
+            assertTrue(quiet.conflicts.isEmpty() && quiet.updated.isEmpty(), "kept divergence is quiet")
+            assertEquals("# Doc\nkept local edit\n", engine.read("doc.md")!!.text)
+
+            // external CHANGES later → surfaces as a conflict again (not a silent overwrite)
+            Files.writeString(ext.resolve("doc.md"), "# Doc\nexternal v2\n")
+            val again = sync.sync(store.get(src.id)!!)
+            assertEquals(listOf("doc.md"), again.conflicts, "new external change re-surfaces")
+            assertEquals("# Doc\nkept local edit\n", engine.read("doc.md")!!.text, "kept edit still intact")
+        }
+    }
+
+    @Test
+    fun `legacy single-blob manifests load as a clean two-sided baseline`() = runBlocking {
+        val ext = Files.createTempDirectory("ext-")
+        Files.writeString(ext.resolve("a.md"), "# A\nv1\n")
+
+        engineOn().use { engine ->
+            val store = ExternalSourceStore(engine.root)
+            val sync = SourceSync(engine, store)
+            val src = store.put(newSource(ext))
+            sync.sync(src)
+
+            // Rewrite the manifest in the LEGACY format (path → blob id string).
+            val mf = engine.root.resolve(".svod/source-manifests/${src.id}.json")
+            val blob = store.loadManifest(src.id)["a.md"]!!.ext
+            Files.writeString(mf, "{\"a.md\": \"$blob\"}")
+
+            assertEquals(SyncedState(blob, blob), store.loadManifest(src.id)["a.md"], "legacy value → both sides")
+            // and behavior is unchanged: an external edit still flows in
+            Files.writeString(ext.resolve("a.md"), "# A\nv2\n")
+            assertEquals(listOf("a.md"), sync.sync(store.get(src.id)!!).updated)
+        }
+    }
+
+    @Test
     fun `prune deletes a vanished file, but never a locally-edited one`() = runBlocking {
         val ext = Files.createTempDirectory("ext-")
         Files.writeString(ext.resolve("keep.md"), "# Keep\n")

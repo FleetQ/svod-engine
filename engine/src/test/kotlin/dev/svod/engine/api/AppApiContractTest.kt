@@ -209,6 +209,13 @@ class AppApiContractTest {
             assertEquals(200, syncAll.statusCode())
             validate("$ap/sources/sync", Request.Method.POST, 200, syncAll.body())
 
+            // resolve conforms (keepVault on a clean path is a harmless re-baseline)
+            val resolved = fx.post("$ap/sources/$id/resolve", """{"path":"projects/demo/note.md","strategy":"keepVault"}""")
+            assertEquals(200, resolved.statusCode())
+            validate("$ap/sources/{id}/resolve", Request.Method.POST, 200, resolved.body())
+            val badStrategy = fx.post("$ap/sources/$id/resolve", """{"path":"projects/demo/note.md","strategy":"merge"}""")
+            assertEquals(400, badStrategy.statusCode())
+
             // PATCH toggles a setting and conforms; the response carries autoSync + watching.
             val patched = fx.patch("$ap/sources/$id", """{"autoSync":true}""")
             assertEquals(200, patched.statusCode())
@@ -268,7 +275,7 @@ class AppApiContractTest {
             "/api/v1/import", "/api/v1/events",
             "/api/v1/sync/config", "/api/v1/sync/now", "/api/v1/backup/now",
             "/api/v1/settings/backup", "/api/v1/maintenance/reindex",
-            "/api/v1/sources", "/api/v1/sources/{id}", "/api/v1/sources/{id}/sync", "/api/v1/sources/sync",
+            "/api/v1/sources", "/api/v1/sources/{id}", "/api/v1/sources/{id}/sync", "/api/v1/sources/{id}/resolve", "/api/v1/sources/sync",
             "/api/v1/embedder", "/api/v1/embedder/test", "/api/v1/embedder/models",
             "/api/v1/index/reembed", "/api/v1/index/pause", "/api/v1/index/resume",
         )

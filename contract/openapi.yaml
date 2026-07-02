@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.18.0
+  version: 0.19.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -781,6 +781,41 @@ paths:
               schema: { $ref: "#/components/schemas/SourceSyncResult" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/sources/{id}/resolve:
+    post:
+      tags: [ops]
+      summary: Resolve one conflicted (locally edited) synced path
+      operationId: resolveSourceConflict
+      description: >
+        `takeExternal` overwrites the vault copy with the current external content (external wins
+        once). `keepVault` accepts the local edit as the new baseline — it stays quiet until either
+        side changes again; a later external change re-surfaces as a conflict rather than silently
+        clobbering the kept edit. Both clear the path from the source's `conflicts`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/VaultQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, strategy]
+              properties:
+                path: { type: string }
+                strategy: { type: string, enum: [takeExternal, keepVault] }
+      responses:
+        "200":
+          description: Resolution applied
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SourceSyncResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/sources/sync:
     post:
       tags: [ops]
@@ -1489,6 +1524,10 @@ components:
         autoSync: { type: boolean, description: Auto-sync on filesystem change is enabled. }
         watching: { type: boolean, description: "Live, read-only: a filesystem watcher is currently running for this source." }
         lastSyncedAt: { type: string, nullable: true, description: "ISO-8601 instant of the last successful sync, or null." }
+        conflicts:
+          type: array
+          items: { type: string }
+          description: Vault paths whose local edits blocked the external update at the last sync.
 
     SourceSyncResult:
       type: object

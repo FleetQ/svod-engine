@@ -232,7 +232,13 @@ data class ExternalSourceDto(
     /** Live, read-only: a filesystem watcher for this source is currently running. */
     val watching: Boolean = false,
     val lastSyncedAt: String? = null,
+    /** Vault paths whose local edits blocked the external update at the last sync. */
+    val conflicts: List<String> = emptyList(),
 )
+
+/** Resolve one conflicted synced path: `strategy` = "takeExternal" | "keepVault". */
+@Serializable
+data class SourceResolveRequest(val path: String, val strategy: String)
 
 @Serializable
 data class SourceSyncResultDto(

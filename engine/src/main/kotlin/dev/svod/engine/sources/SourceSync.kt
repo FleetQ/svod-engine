@@ -21,15 +21,18 @@ import java.util.EnumSet
  *
  *  - vault path absent → **create**.
  *  - vault content already equals the external content → **unchanged**.
- *  - they differ AND the vault copy still matches the last-synced manifest (i.e. only the external
- *    side changed) → **update** (the external edit flows in).
- *  - they differ AND the vault copy no longer matches the manifest (someone edited it in the vault
- *    since the last sync) → **conflict**: left exactly as-is, never clobbered.
+ *  - only the external side moved from the clean baseline (vault untouched) → **update**
+ *    (the external edit flows in).
+ *  - the vault copy was edited since the baseline → **conflict**: left exactly as-is, never
+ *    clobbered. Resolvable via [resolve]: take-external (overwrite once) or keep-vault
+ *    (accept the local edit as the new vault-side baseline — stays quiet until either side
+ *    moves again; a kept edit is never silently clobbered by the OLD external content, and a
+ *    NEW external change re-surfaces as a conflict rather than overwriting it).
  *  - a path that was synced before but is gone from the source now → **orphaned**: reported, left in
  *    the vault (deletions are not propagated in v1).
  *
  * Writes go through a single overwriting batch (one commit per sync); secret-scanner-blocked `.md`
- * entries are reported as `skipped`. The manifest (vault path → git blob id) is updated after.
+ * entries are reported as `skipped`. The manifest (vault path → [SyncedState]) is updated after.
  */
 class SourceSync(private val engine: SvodEngine, private val store: ExternalSourceStore) {
 
@@ -50,7 +53,7 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
         }
 
         val manifest = store.loadManifest(source.id)
-        val newManifest = HashMap<String, String>()
+        val newManifest = HashMap<String, SyncedState>()
         val unchanged = ArrayList<String>()
         val conflicts = ArrayList<String>()
         val toWrite = ArrayList<BatchEntry>()
@@ -64,11 +67,15 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
         for ((vaultPath, bytes) in files) {
             val extRev = engine.blobId(bytes)
             val cur = engine.read(vaultPath)   // revision is blobId(bytes), valid for binary too
+            val m = manifest[vaultPath]
             when {
-                cur == null -> { toWrite += entry(vaultPath, bytes); createCandidates += vaultPath; expected[vaultPath] = null; newManifest[vaultPath] = extRev }
-                cur.revision == extRev -> { unchanged += vaultPath; newManifest[vaultPath] = extRev }
-                manifest[vaultPath] == cur.revision -> { toWrite += entry(vaultPath, bytes); updateCandidates += vaultPath; expected[vaultPath] = cur.revision; newManifest[vaultPath] = extRev }
-                else -> { conflicts += vaultPath; manifest[vaultPath]?.let { newManifest[vaultPath] = it } }
+                cur == null -> { toWrite += entry(vaultPath, bytes); createCandidates += vaultPath; expected[vaultPath] = null; newManifest[vaultPath] = SyncedState(extRev, extRev) }
+                cur.revision == extRev -> { unchanged += vaultPath; newManifest[vaultPath] = SyncedState(extRev, extRev) }
+                // Resolved keep-vault divergence: neither side has moved since — stays quiet.
+                m != null && m.vault == cur.revision && m.ext == extRev -> { unchanged += vaultPath; newManifest[vaultPath] = m }
+                // Clean baseline, vault untouched, external moved → the external edit flows in.
+                m != null && m.vault == cur.revision && m.vault == m.ext -> { toWrite += entry(vaultPath, bytes); updateCandidates += vaultPath; expected[vaultPath] = cur.revision; newManifest[vaultPath] = SyncedState(extRev, extRev) }
+                else -> { conflicts += vaultPath; m?.let { newManifest[vaultPath] = it } }
             }
         }
         val gone = manifest.keys.filter { it !in files.keys }
@@ -98,7 +105,8 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
         val orphaned = ArrayList<String>()
         for (path in gone) {
             val cur = engine.read(path)
-            if (source.prune && cur != null && manifest[path] == cur.revision) {
+            val m = manifest[path]
+            if (source.prune && cur != null && m != null && m.vault == cur.revision && m.vault == m.ext) {
                 val outcome = engine.delete(path, cur.revision, author)
                 if (outcome is dev.svod.engine.core.WriteOutcome.Success) { deleted += path; newManifest.remove(path) }
                 else { orphaned += path; manifest[path]?.let { newManifest[path] = it } }
@@ -109,7 +117,7 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
         }
 
         store.saveManifest(source.id, newManifest)
-        store.put(source.copy(lastSyncedAt = Instant.now().toString()))
+        store.put(source.copy(lastSyncedAt = Instant.now().toString(), conflicts = conflicts.sorted()))
 
         return SourceSyncResult(
             id = source.id,
@@ -120,6 +128,69 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
             orphaned = orphaned.sorted(),
             deleted = deleted.sorted(),
             skipped = secretSkipped.sorted(),
+        )
+    }
+
+    /**
+     * Resolve one conflicted path.
+     *  - [ResolveStrategy.TAKE_EXTERNAL]: overwrite the vault copy with the current external
+     *    content (external wins once), re-baseline clean.
+     *  - [ResolveStrategy.KEEP_VAULT]: accept the local edit — baseline vault side at the current
+     *    revision and external side at the file's current content, so the pair stays quiet until
+     *    either side moves again.
+     * Both clear the path from the source's persisted conflict set.
+     */
+    suspend fun resolve(source: ExternalSource, vaultPath: String, strategy: ResolveStrategy): SourceSyncResult {
+        val prefix = source.into.trim('/').let { if (it.isEmpty()) "" else "$it/" }
+        if (prefix.isNotEmpty() && !vaultPath.startsWith(prefix))
+            return SourceSyncResult(source.id, error = "path is not under this source: $vaultPath")
+        val cur = engine.read(vaultPath)
+            ?: return SourceSyncResult(source.id, error = "note not found: $vaultPath")
+
+        val base = Paths.get(source.path).normalize()
+        val rel = vaultPath.removePrefix(prefix)
+        if (rel.isEmpty() || rel.split('/').any { it == ".." })
+            return SourceSyncResult(source.id, error = "invalid path: $vaultPath")
+        val extFile = if (Files.isRegularFile(base)) base else base.resolve(rel).normalize()
+        if (!extFile.startsWith(base))
+            return SourceSyncResult(source.id, error = "invalid path: $vaultPath")
+
+        val manifest = store.loadManifest(source.id).toMutableMap()
+        when (strategy) {
+            ResolveStrategy.KEEP_VAULT -> {
+                // Baseline the external side at what's on disk right now (fall back to the old
+                // baseline if the file is gone/unreadable — an orphan keeps its last-known state).
+                val extRev = try {
+                    if (Files.isRegularFile(extFile)) engine.blobId(Files.readAllBytes(extFile)) else null
+                } catch (_: IOException) { null }
+                manifest[vaultPath] = SyncedState(ext = extRev ?: manifest[vaultPath]?.ext ?: cur.revision, vault = cur.revision)
+            }
+            ResolveStrategy.TAKE_EXTERNAL -> {
+                if (!Files.isRegularFile(extFile))
+                    return SourceSyncResult(source.id, error = "external file not found: $extFile")
+                val bytes = try { Files.readAllBytes(extFile) } catch (e: IOException) {
+                    return SourceSyncResult(source.id, error = "could not read external file: ${e.message}")
+                }
+                val extRev = engine.blobId(bytes)
+                if (extRev != cur.revision) {
+                    val r = engine.writeBatch(listOf(entry(vaultPath, bytes)), author,
+                        "resolve ${source.id}: take external $vaultPath",
+                        overwrite = true, expected = hashMapOf<String, String?>(vaultPath to cur.revision))
+                    if (vaultPath in r.conflicts)
+                        return SourceSyncResult(source.id, conflicts = listOf(vaultPath), error = "note changed during resolve — retry")
+                    if (vaultPath in r.skipped)
+                        return SourceSyncResult(source.id, skipped = listOf(vaultPath), error = "write blocked by the secret scanner")
+                }
+                manifest[vaultPath] = SyncedState(extRev, extRev)
+            }
+        }
+        store.saveManifest(source.id, manifest)
+        val stored = store.get(source.id) ?: source
+        store.put(stored.copy(conflicts = stored.conflicts.filter { it != vaultPath }))
+        return SourceSyncResult(
+            id = source.id,
+            updated = if (strategy == ResolveStrategy.TAKE_EXTERNAL) listOf(vaultPath) else emptyList(),
+            unchanged = if (strategy == ResolveStrategy.KEEP_VAULT) listOf(vaultPath) else emptyList(),
         )
     }
 
