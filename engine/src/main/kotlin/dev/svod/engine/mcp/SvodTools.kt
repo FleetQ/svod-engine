@@ -183,6 +183,51 @@ class SvodTools(
             outcomeResult("write", agent, engine.write(path, content, expectedRevision, agent.author), path)
         }
 
+    /**
+     * Partial edit: replace an exact substring in place of resending the whole note (large
+     * notes make verbatim rewrites transcription-risky). `oldString` must occur EXACTLY once
+     * unless [replaceAll] — absence or ambiguity is a bad_request, never a guess. Concurrency:
+     * the write validates against [expectedRevision] when given, else against the revision
+     * read here — a concurrent writer in between still surfaces as a conflict, not a clobber.
+     */
+    suspend fun edit(
+        agent: AgentIdentity,
+        path: String,
+        oldString: String,
+        newString: String,
+        replaceAll: Boolean,
+        expectedRevision: String?,
+    ): ToolResult = guarded(agent, "edit", write = true) {
+        if (oldString.isEmpty()) return@guarded ToolResult.badRequest("oldString must be non-empty")
+        if (oldString == newString) return@guarded ToolResult.badRequest("oldString and newString are identical")
+        val cur = engine.read(path) ?: return@guarded ToolResult.notFound(path)
+        if (expectedRevision != null && expectedRevision != cur.revision) {
+            // Surface the standard conflict shape (expected/current/currentContent) via the
+            // engine's own guard rather than re-implementing it here.
+            return@guarded outcomeResult("edit", agent, engine.write(path, cur.text, expectedRevision, agent.author), path)
+        }
+        val count = countOccurrences(cur.text, oldString)
+        return@guarded when {
+            count == 0 ->
+                ToolResult.badRequest("oldString not found in $path — re-read the note; its content may have changed")
+            count > 1 && !replaceAll ->
+                ToolResult.badRequest("oldString occurs $count times in $path — add surrounding context to make it unique, or pass replaceAll=true")
+            else ->
+                outcomeResult("edit", agent, engine.write(path, cur.text.replace(oldString, newString), cur.revision, agent.author), path)
+        }
+    }
+
+    private fun countOccurrences(text: String, needle: String): Int {
+        var idx = 0
+        var n = 0
+        while (true) {
+            idx = text.indexOf(needle, idx)
+            if (idx < 0) return n
+            n++
+            idx += needle.length
+        }
+    }
+
     suspend fun delete(agent: AgentIdentity, path: String, expectedRevision: String?): ToolResult =
         guarded(agent, "delete", write = true) {
             outcomeResult("delete", agent, engine.delete(path, expectedRevision, agent.author), path)

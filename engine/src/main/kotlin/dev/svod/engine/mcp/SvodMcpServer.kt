@@ -196,6 +196,9 @@ class SvodMcpServer(
         server.addTool("write", "Create or update a note (optimistic via expectedRevision).", schema(mapOf("path" to "string", "content" to "string", "expectedRevision" to "string"), listOf("path", "content"))) { req ->
             val (t, d) = routed(req); d ?: t!!.write(agent, req.str("path")!!, req.str("content") ?: "", req.str("expectedRevision")).toCallToolResult()
         }
+        server.addTool("edit", "Partial edit: replace an exact substring in a note without resending the whole content. oldString must occur exactly once (add surrounding context to disambiguate) unless replaceAll=true.", schema(mapOf("path" to "string", "oldString" to "string", "newString" to "string", "replaceAll" to "boolean", "expectedRevision" to "string"), listOf("path", "oldString", "newString"))) { req ->
+            val (t, d) = routed(req); d ?: t!!.edit(agent, req.str("path")!!, req.str("oldString") ?: "", req.str("newString") ?: "", req.bool("replaceAll", false), req.str("expectedRevision")).toCallToolResult()
+        }
         server.addTool("delete", "Soft-delete a note to .trash/.", schema(mapOf("path" to "string", "expectedRevision" to "string"), listOf("path"))) { req ->
             val (t, d) = routed(req); d ?: t!!.delete(agent, req.str("path")!!, req.str("expectedRevision")).toCallToolResult()
         }

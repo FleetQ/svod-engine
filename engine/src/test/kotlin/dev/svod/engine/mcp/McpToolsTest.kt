@@ -61,6 +61,39 @@ class McpToolsTest {
     }
 
     @Test
+    fun `edit replaces a unique substring without resending the note`() = runBlocking {
+        McpFixture().use { fx ->
+            fx.tools.write(fx.write, "e.md", "# Doc\nstatus: draft\nbody stays intact", expectedRevision = null)
+
+            val r = fx.tools.edit(fx.write, "e.md", "status: draft", "status: final", replaceAll = false, expectedRevision = null)
+            assertEquals("ok", r.status)
+            assertEquals("# Doc\nstatus: final\nbody stays intact", fx.tools.read(fx.write, "e.md").str("content"))
+
+            // absent needle → bad_request, note untouched
+            val missing = fx.tools.edit(fx.write, "e.md", "no such text", "x", replaceAll = false, expectedRevision = null)
+            assertEquals("bad_request", missing.status)
+            assertTrue(missing.isError)
+
+            // ambiguous needle → bad_request unless replaceAll
+            fx.tools.write(fx.write, "amb.md", "aa bb aa", expectedRevision = null)
+            val ambiguous = fx.tools.edit(fx.write, "amb.md", "aa", "cc", replaceAll = false, expectedRevision = null)
+            assertEquals("bad_request", ambiguous.status)
+            val all = fx.tools.edit(fx.write, "amb.md", "aa", "cc", replaceAll = true, expectedRevision = null)
+            assertEquals("ok", all.status)
+            assertEquals("cc bb cc", fx.tools.read(fx.write, "amb.md").str("content"))
+
+            // read-only role is denied like every mutation
+            assertEquals("denied", fx.tools.edit(fx.read, "e.md", "final", "draft", replaceAll = false, expectedRevision = null).status)
+
+            // stale expectedRevision → standard conflict shape, content untouched
+            val cur = fx.tools.read(fx.write, "e.md").str("revision")!!
+            val stale = fx.tools.edit(fx.write, "e.md", "final", "draft", replaceAll = false, expectedRevision = "0".repeat(cur.length))
+            assertEquals("conflict", stale.status)
+            assertEquals("# Doc\nstatus: final\nbody stays intact", fx.tools.read(fx.write, "e.md").str("content"))
+        }
+    }
+
+    @Test
     fun `read-only agent is denied mutations and nothing is written`() = runBlocking {
         McpFixture().use { fx ->
             val w = fx.tools.write(fx.read, "notes/x.md", "nope", expectedRevision = null)
