@@ -64,6 +64,7 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
         // not a clobber (closes the classify→write race; create candidates expect "absent" = null).
         val expected = HashMap<String, String?>()
 
+        val pushed = ArrayList<String>()
         for ((vaultPath, bytes) in files) {
             val extRev = engine.blobId(bytes)
             val cur = engine.read(vaultPath)   // revision is blobId(bytes), valid for binary too
@@ -71,6 +72,12 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
             when {
                 cur == null -> { toWrite += entry(vaultPath, bytes); createCandidates += vaultPath; expected[vaultPath] = null; newManifest[vaultPath] = SyncedState(extRev, extRev) }
                 cur.revision == extRev -> { unchanged += vaultPath; newManifest[vaultPath] = SyncedState(extRev, extRev) }
+                // Two-way: vault edited while the external side hasn't moved since the baseline →
+                // the vault edit flows OUT to the external file. Both-moved still conflicts below.
+                source.writeBack && m != null && m.ext == extRev -> {
+                    if (writeExternal(base, prefix, vaultPath)) { pushed += vaultPath; newManifest[vaultPath] = SyncedState(cur.revision, cur.revision) }
+                    else { conflicts += vaultPath; newManifest[vaultPath] = m }
+                }
                 // Resolved keep-vault divergence: neither side has moved since — stays quiet.
                 m != null && m.vault == cur.revision && m.ext == extRev -> { unchanged += vaultPath; newManifest[vaultPath] = m }
                 // Clean baseline, vault untouched, external moved → the external edit flows in.
@@ -128,7 +135,30 @@ class SourceSync(private val engine: SvodEngine, private val store: ExternalSour
             orphaned = orphaned.sorted(),
             deleted = deleted.sorted(),
             skipped = secretSkipped.sorted(),
+            pushed = pushed.sorted(),
         )
+    }
+
+    /**
+     * Write the vault working-tree copy of [vaultPath] over the corresponding external file,
+     * atomically (temp file + move in the same directory, so a watcher never sees a torn write).
+     * Returns false when the target can't be resolved or written — the caller conflicts the path.
+     */
+    private fun writeExternal(base: Path, prefix: String, vaultPath: String): Boolean {
+        return try {
+            val rel = vaultPath.removePrefix(prefix)
+            val target = (if (Files.isRegularFile(base)) base else base.resolve(rel)).normalize()
+            if (!target.startsWith(base.parent ?: base)) return false
+            val srcFile = engine.root.resolve(vaultPath)
+            if (!Files.isRegularFile(srcFile) || !Files.isRegularFile(target)) return false
+            val tmp = Files.createTempFile(target.parent, ".svod-writeback-", ".tmp")
+            Files.write(tmp, Files.readAllBytes(srcFile))
+            Files.move(tmp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+            true
+        } catch (e: IOException) {
+            log.warn("write-back failed for {}: {}", vaultPath, e.message)
+            false
+        }
     }
 
     /**

@@ -211,6 +211,7 @@ data class RegisterSourceRequestDto(
     val followSymlinks: Boolean = false,
     val prune: Boolean = false,
     val autoSync: Boolean = false,
+    val writeBack: Boolean = false,
 )
 
 /** Partial update of a registered source; null fields are left unchanged. */
@@ -219,6 +220,7 @@ data class PatchSourceRequestDto(
     val autoSync: Boolean? = null,
     val followSymlinks: Boolean? = null,
     val prune: Boolean? = null,
+    val writeBack: Boolean? = null,
 )
 
 @Serializable
@@ -229,6 +231,8 @@ data class ExternalSourceDto(
     val followSymlinks: Boolean,
     val prune: Boolean,
     val autoSync: Boolean = false,
+    /** Two-way: vault edits to synced paths flow back to the external files (0.20.0). */
+    val writeBack: Boolean = false,
     /** Live, read-only: a filesystem watcher for this source is currently running. */
     val watching: Boolean = false,
     val lastSyncedAt: String? = null,
@@ -250,6 +254,8 @@ data class SourceSyncResultDto(
     val orphaned: List<String> = emptyList(),
     val deleted: List<String> = emptyList(),
     val skipped: List<String> = emptyList(),
+    /** Vault edits written back to the external files (writeBack sources, 0.20.0). */
+    val pushed: List<String> = emptyList(),
     val error: String? = null,
 )
 

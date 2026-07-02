@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.19.0
+  version: 0.20.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -1502,6 +1502,14 @@ components:
           description: >
             Auto-sync on filesystem change — a watcher re-syncs this source shortly (~1s) after its
             files settle. Off by default. Emits a `source.synced` event (see GET /api/v1/events).
+        writeBack:
+          type: boolean
+          default: false
+          description: >
+            Two-way (0.20.0) — a vault edit to an already-synced path is written back to the
+            external file shortly after the commit, provided the external side hasn't moved since
+            the baseline (else it surfaces as a conflict). Vault-created files are not materialized
+            externally; only tracked paths flow back.
 
     PatchSourceRequest:
       type: object
@@ -1510,6 +1518,7 @@ components:
         autoSync: { type: boolean, nullable: true, description: Toggle the auto-sync filesystem watcher. }
         followSymlinks: { type: boolean, nullable: true }
         prune: { type: boolean, nullable: true }
+        writeBack: { type: boolean, nullable: true, description: Toggle two-way write-back of vault edits (0.20.0). }
 
     ExternalSource:
       type: object
@@ -1522,6 +1531,7 @@ components:
         followSymlinks: { type: boolean }
         prune: { type: boolean }
         autoSync: { type: boolean, description: Auto-sync on filesystem change is enabled. }
+        writeBack: { type: boolean, description: Two-way write-back of vault edits is enabled (0.20.0). }
         watching: { type: boolean, description: "Live, read-only: a filesystem watcher is currently running for this source." }
         lastSyncedAt: { type: string, nullable: true, description: "ISO-8601 instant of the last successful sync, or null." }
         conflicts:
@@ -1547,6 +1557,10 @@ components:
         orphaned: { type: array, items: { type: string } }
         deleted: { type: array, items: { type: string } }
         skipped: { type: array, items: { type: string } }
+        pushed:
+          type: array
+          items: { type: string }
+          description: Vault edits written back to the external files (writeBack sources, 0.20.0).
         error: { type: string, nullable: true }
 
     ResolveConflictRequest:

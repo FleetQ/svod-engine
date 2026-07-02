@@ -95,7 +95,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.19.0",
+        val apiVersion: String = "0.20.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
@@ -606,6 +606,7 @@ class AppApiServer(
                     followSymlinks = req.followSymlinks,
                     prune = req.prune,
                     autoSync = req.autoSync,
+                    writeBack = req.writeBack,
                 )
                 val stored = store.put(source)
                 reconcileSourceWatchers(vc) // start/stop the watcher to match the new registration
@@ -623,6 +624,7 @@ class AppApiServer(
                     autoSync = req.autoSync ?: current.autoSync,
                     followSymlinks = req.followSymlinks ?: current.followSymlinks,
                     prune = req.prune ?: current.prune,
+                    writeBack = req.writeBack ?: current.writeBack,
                 ))
                 reconcileSourceWatchers(vc)
                 call.respond(updated.toDto(sourceWatching(vc, updated.id)))
@@ -791,10 +793,10 @@ class AppApiServer(
     private fun WriteOutcome.Conflict.toConflictDto() = ConflictBodyDto(path, expected, current, currentContent)
 
     private fun dev.svod.engine.sources.ExternalSource.toDto(watching: Boolean = false) =
-        ExternalSourceDto(id, path, into, followSymlinks, prune, autoSync, watching, lastSyncedAt, conflicts)
+        ExternalSourceDto(id, path, into, followSymlinks, prune, autoSync, writeBack, watching, lastSyncedAt, conflicts)
 
     private fun dev.svod.engine.sources.SourceSyncResult.toDto() =
-        SourceSyncResultDto(id, created, updated, unchanged, conflicts, orphaned, deleted, skipped, error)
+        SourceSyncResultDto(id, created, updated, unchanged, conflicts, orphaned, deleted, skipped, pushed, error)
 
     // Per-vault incremental link/tag index, owned by the server (one per vault, created on demand).
     // It catches up to HEAD by applying only the commit diff, so /file/links, /graph and /tags no

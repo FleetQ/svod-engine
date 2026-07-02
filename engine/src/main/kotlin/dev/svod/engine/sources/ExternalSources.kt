@@ -34,6 +34,10 @@ data class ExternalSource(
      *  Off by default. The live "is a watcher running right now" state is reported separately by the
      *  API (it is runtime, not persisted). */
     val autoSync: Boolean = false,
+    /** Two-way (0.20.0): a vault edit to an already-synced path is written BACK to the external
+     *  file, provided the external side hasn't moved since the baseline (else it's a conflict).
+     *  Vault-created files are NOT materialized externally — only tracked paths flow back. */
+    val writeBack: Boolean = false,
     val lastSyncedAt: String? = null,
     /** Vault paths whose local edits blocked the external update at the LAST sync — the silent-
      *  divergence set. Persisted so the UI can surface them; cleared per-path by `resolve`. */
@@ -66,6 +70,8 @@ data class SourceSyncResult(
     val orphaned: List<String> = emptyList(),
     val deleted: List<String> = emptyList(),
     val skipped: List<String> = emptyList(),
+    /** Vault edits written back to the external files (writeBack sources only, 0.20.0). */
+    val pushed: List<String> = emptyList(),
     val error: String? = null,
 )
 

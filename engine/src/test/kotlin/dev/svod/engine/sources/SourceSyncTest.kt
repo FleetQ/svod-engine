@@ -125,6 +125,72 @@ class SourceSyncTest {
     }
 
     @Test
+    fun `writeBack pushes a vault edit out to the external file`() = runBlocking {
+        val ext = Files.createTempDirectory("ext-")
+        Files.writeString(ext.resolve("doc.md"), "# Doc\nexternal v1\n")
+
+        engineOn().use { engine ->
+            val store = ExternalSourceStore(engine.root)
+            val sync = SourceSync(engine, store)
+            val src = store.put(newSource(ext, into = "proj").copy(writeBack = true))
+            sync.sync(src)
+
+            // vault (agent) edit → flows OUT to the external file, no conflict
+            val rev = engine.read("proj/doc.md")!!.revision
+            engine.write("proj/doc.md", "# Doc\nagent edit\n", rev, Author("agent", "a@x"))
+            val r = sync.sync(store.get(src.id)!!)
+            assertEquals(listOf("proj/doc.md"), r.pushed, "vault edit pushed")
+            assertTrue(r.conflicts.isEmpty())
+            assertEquals("# Doc\nagent edit\n", Files.readString(ext.resolve("doc.md")), "external file updated")
+
+            // next sync is fully quiet
+            val quiet = sync.sync(store.get(src.id)!!)
+            assertTrue(quiet.pushed.isEmpty() && quiet.conflicts.isEmpty() && quiet.updated.isEmpty())
+        }
+    }
+
+    @Test
+    fun `writeBack never clobbers an external file that also changed — both-moved is a conflict`() = runBlocking {
+        val ext = Files.createTempDirectory("ext-")
+        Files.writeString(ext.resolve("doc.md"), "# Doc\nexternal v1\n")
+
+        engineOn().use { engine ->
+            val store = ExternalSourceStore(engine.root)
+            val sync = SourceSync(engine, store)
+            val src = store.put(newSource(ext).copy(writeBack = true))
+            sync.sync(src)
+
+            val rev = engine.read("doc.md")!!.revision
+            engine.write("doc.md", "vault edit\n", rev, Author("agent", "a@x"))
+            Files.writeString(ext.resolve("doc.md"), "external v2\n")   // both sides moved
+
+            val r = sync.sync(store.get(src.id)!!)
+            assertEquals(listOf("doc.md"), r.conflicts, "both-moved is a conflict")
+            assertTrue(r.pushed.isEmpty())
+            assertEquals("external v2\n", Files.readString(ext.resolve("doc.md")), "external file untouched")
+            assertEquals("vault edit\n", engine.read("doc.md")!!.text, "vault copy untouched")
+        }
+    }
+
+    @Test
+    fun `writeBack does not materialize vault-created files externally`() = runBlocking {
+        val ext = Files.createTempDirectory("ext-")
+        Files.writeString(ext.resolve("doc.md"), "# Doc\n")
+
+        engineOn().use { engine ->
+            val store = ExternalSourceStore(engine.root)
+            val sync = SourceSync(engine, store)
+            val src = store.put(newSource(ext, into = "proj").copy(writeBack = true))
+            sync.sync(src)
+
+            engine.write("proj/new-note.md", "created in the vault\n", null, Author("agent", "a@x"))
+            val r = sync.sync(store.get(src.id)!!)
+            assertTrue(r.pushed.isEmpty())
+            assertTrue(!Files.exists(ext.resolve("new-note.md")), "vault-created file stays vault-only")
+        }
+    }
+
+    @Test
     fun `legacy single-blob manifests load as a clean two-sided baseline`() = runBlocking {
         val ext = Files.createTempDirectory("ext-")
         Files.writeString(ext.resolve("a.md"), "# A\nv1\n")
