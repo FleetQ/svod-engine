@@ -133,7 +133,10 @@ class SvodMcpServer(
             return null
         }
         val transport = transports[sessionId]
-        if (transport == null) call.respond(HttpStatusCode.NotFound, "Session not found")
+        if (transport == null) {
+            log.info("unknown MCP session {} ({} {}) → 404; live sessions: {}", sessionId, call.request.local.method.value, call.request.local.uri, transports.size)
+            call.respond(HttpStatusCode.NotFound, "Session not found")
+        }
         return transport
     }
 
@@ -141,7 +144,12 @@ class SvodMcpServer(
         val sessionId = call.request.header(SESSION_HEADER)
         if (sessionId != null) {
             val transport = transports[sessionId]
-            if (transport == null) call.respond(HttpStatusCode.NotFound, "Session not found")
+            if (transport == null) {
+                // A stale id after an engine restart is the expected cause (in-memory sessions);
+                // the client must re-initialize. Invisible in logs during the 2026-07-03 incident.
+                log.info("unknown MCP session {} (POST) → 404; live sessions: {}", sessionId, transports.size)
+                call.respond(HttpStatusCode.NotFound, "Session not found")
+            }
             return transport
         }
 
@@ -153,8 +161,14 @@ class SvodMcpServer(
         }
 
         val transport = StreamableHttpServerTransport(StreamableHttpServerTransport.Configuration(enableJsonResponse = true))
-        transport.setOnSessionInitialized { id -> transports[id] = transport }
-        transport.setOnSessionClosed { id -> transports.remove(id) }
+        transport.setOnSessionInitialized { id ->
+            transports[id] = transport
+            log.info("MCP session {} initialized for agent '{}'; live sessions: {}", id, agent.agentId, transports.size)
+        }
+        transport.setOnSessionClosed { id ->
+            transports.remove(id)
+            log.info("MCP session {} closed; live sessions: {}", id, transports.size)
+        }
 
         val server = buildServer(agent)
         server.onClose { transport.sessionId?.let { transports.remove(it) } }
@@ -247,6 +261,7 @@ class SvodMcpServer(
 
     companion object {
         private const val SESSION_HEADER = "mcp-session-id"
+        private val log = org.slf4j.LoggerFactory.getLogger(SvodMcpServer::class.java)
     }
 }
 
