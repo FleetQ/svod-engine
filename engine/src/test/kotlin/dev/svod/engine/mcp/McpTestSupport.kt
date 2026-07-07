@@ -23,7 +23,8 @@ class McpFixture(
     val index: IndexService = IndexService(root, root.resolve(".svod").resolve("index"), NoneEmbedder).start()
     val audit: AuditLog = AuditLog(root.resolve(".svod").resolve("audit").resolve("audit.log"))
     val registry: AgentRegistry = AgentRegistry(agents)
-    val tools: SvodTools = SvodTools(engine, index, audit, rateLimiter)
+    val eventBus: dev.svod.engine.events.EventBus = dev.svod.engine.events.EventBus()
+    val tools: SvodTools = SvodTools(engine, index, audit, rateLimiter, eventBus)
 
     init {
         engine.onCommit { index.onCommit(it) }

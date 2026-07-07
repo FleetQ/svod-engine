@@ -62,6 +62,8 @@ data class SearchHitDto(
     val tags: List<String>,
     /** Vault this hit belongs to (useful for federated `across=true` search). */
     val vault: String? = null,
+    /** Cheap ~4-chars/token estimate of this hit's snippet (same estimator as context_pack). Additive. */
+    val tokens: Int = 0,
 )
 
 @Serializable

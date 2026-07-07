@@ -82,4 +82,27 @@ class MarkdownChunkerTest {
         val doc = MarkdownChunker.parse("---\n: : : not yaml : :\n---\n# H\nbody")
         assertEquals(listOf("H"), doc.chunks.map { it.heading })
     }
+
+    @Test
+    fun `private frontmatter yields no chunks but keeps the raw body intact`() {
+        val raw = "---\nprivate: true\n---\n# Secret\ntop secret body"
+        val doc = MarkdownChunker.parse(raw)
+        assertTrue(doc.private, "private:true is detected")
+        assertEquals(emptyList(), doc.chunks, "a private note produces no indexable chunks")
+        assertTrue(doc.body.contains("top secret body"), "raw body is preserved (source of truth untouched)")
+    }
+
+    @Test
+    fun `private spans are stripped from chunks but not from the raw body`() {
+        val doc = MarkdownChunker.parse("# H\nvisible before <private>SECRET_SPAN</private> visible after")
+        assertTrue(doc.chunks.none { it.text.contains("SECRET_SPAN") }, "span content never enters a chunk")
+        assertTrue(doc.chunks.any { it.text.contains("visible before") && it.text.contains("visible after") }, "surrounding text stays")
+        assertTrue(doc.body.contains("SECRET_SPAN"), "the raw body keeps the span (committed bytes unchanged)")
+    }
+
+    @Test
+    fun `stripPrivateSpans removes multiline and multiple spans, case-insensitively`() {
+        val stripped = MarkdownChunker.stripPrivateSpans("a<private>x\ny</private>b<PRIVATE>z</PRIVATE>c")
+        assertEquals("abc", stripped)
+    }
 }

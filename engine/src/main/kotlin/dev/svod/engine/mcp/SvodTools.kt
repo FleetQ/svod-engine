@@ -133,7 +133,9 @@ class SvodTools(
                 mode = "enumerate"
                 val paths = index.enumerate(query.filters, ENUMERATE_CAP)
                 for (p in paths) {
-                    val content = engine.read(p)?.text ?: continue
+                    // Re-read is the full note, so strip `<private>` spans here too (index-only stripping
+                    // wouldn't cover this path). `private: true` notes never reach enumerate (not indexed).
+                    val content = engine.read(p)?.text?.let(dev.svod.engine.index.MarkdownChunker::stripPrivateSpans) ?: continue
                     val est = estimateTokens(content)
                     val prov = engine.history(p, 1).firstOrNull()
                     blocks.add(PackBlock(p, "", content, 0.0, prov?.commit, prov?.authorName, est))
@@ -145,7 +147,8 @@ class SvodTools(
                 val seenPaths = HashSet<String>()
                 for (h in result.hits) {
                     if (!seenPaths.add(h.path)) continue // one block per note (dedup + source diversity)
-                    val content = engine.read(h.path)?.text ?: h.snippet
+                    // Full-note re-read ⇒ strip `<private>` spans (the index snippet is already stripped).
+                    val content = engine.read(h.path)?.text?.let(dev.svod.engine.index.MarkdownChunker::stripPrivateSpans) ?: h.snippet
                     val est = estimateTokens(content)
                     if (blocks.isNotEmpty() && total + est > tokenBudget) continue // keep ≥1 block, else respect budget
                     val prov = engine.history(h.path, 1).firstOrNull()
@@ -173,8 +176,8 @@ class SvodTools(
         val score: Double, val commit: String?, val author: String?, val tokens: Int,
     )
 
-    /** Cheap token estimate (~4 chars/token); avoids a tokenizer dependency, consistent with chunking. */
-    private fun estimateTokens(text: String): Int = Math.ceil(text.length / 4.0).toInt()
+    /** Cheap token estimate (~4 chars/token); the App API search DTO shares the same estimator. */
+    private fun estimateTokens(text: String): Int = dev.svod.engine.index.estimateTokens(text)
 
     // ---- mutating tools (WRITE role) ----
 
@@ -297,7 +300,7 @@ class SvodTools(
             is WriteOutcome.Success -> {
                 audit.record(agent.agentId, "remember", "ok", path, revision = outcome.revision, detail = outcome.commit)
                 eventBus.publish(EventTypes.AGENT_ACTIVITY) { put("agentId", agent.agentId); put("tool", "remember"); put("path", path); put("commit", outcome.commit) }
-                eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", outcome.commit); put("path", path); put("author", agent.author.name) }
+                eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", outcome.commit); put("path", path); put("author", agent.author.name); put("agentId", agent.agentId) }
                 ToolResult.ok {
                     put("status", "written"); put("path", path); put("type", t); put("memoryStatus", st)
                     put("revision", outcome.revision); put("commit", outcome.commit)
@@ -377,7 +380,7 @@ class SvodTools(
                     put("agentId", agent.agentId); put("tool", tool); put("path", outcome.path); put("commit", outcome.commit)
                 }
                 eventBus.publish(EventTypes.COMMIT_CREATED) {
-                    put("commit", outcome.commit); put("path", outcome.path); put("author", agent.author.name)
+                    put("commit", outcome.commit); put("path", outcome.path); put("author", agent.author.name); put("agentId", agent.agentId)
                 }
                 ToolResult.ok { put("path", outcome.path); put("revision", outcome.revision); put("commit", outcome.commit) }
             }

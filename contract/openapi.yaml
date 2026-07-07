@@ -1155,6 +1155,7 @@ components:
         matchedSemantic: { type: boolean }
         tags: { type: array, items: { type: string } }
         vault: { type: string, nullable: true, description: Vault id of this hit (set on federated across=true search). }
+        tokens: { type: integer, description: "Cheap ~4-chars/token estimate of this hit's snippet (same estimator as context_pack). Additive; older clients ignore it." }
 
     Graph:
       type: object

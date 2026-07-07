@@ -69,6 +69,7 @@ class VaultContext private constructor(
                     batchSize = ec.batchSize,
                     reranker = dev.svod.engine.index.Rerankers.create(rc),
                     rerankTopK = rc.topK,
+                    includeMessyInRecall = config.includeMessyInRecall,
                 )
                 // Wire progress BEFORE start() so the very first background-embedding ticks are seen.
                 index.onSynced = { head -> eventBus.publish(EventTypes.INDEX_UPDATED) { put("vault", vs.id); put("head", head) } }

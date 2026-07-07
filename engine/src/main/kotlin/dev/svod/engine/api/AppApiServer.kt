@@ -350,14 +350,14 @@ class AppApiServer(
                     val hits = ArrayList<SearchHitDto>()
                     for (v in vaults.all()) {
                         val r = v.index.search(SearchQuery(q, filters, mode, limit))
-                        r.hits.forEach { hits.add(SearchHitDto(it.path, it.heading, it.snippet, it.score, it.matchedKeyword, it.matchedSemantic, it.tags, v.id)) }
+                        r.hits.forEach { hits.add(SearchHitDto(it.path, it.heading, it.snippet, it.score, it.matchedKeyword, it.matchedSemantic, it.tags, v.id, dev.svod.engine.index.estimateTokens(it.snippet))) }
                     }
                     hits.sortByDescending { it.score }
                     call.respond(SearchResultDto(mode.name, hits.take(limit)))
                 } else {
                     val result = vc.index.search(SearchQuery(q, filters, mode, limit))
                     call.respond(SearchResultDto(result.mode.name, result.hits.map {
-                        SearchHitDto(it.path, it.heading, it.snippet, it.score, it.matchedKeyword, it.matchedSemantic, it.tags, vc.id)
+                        SearchHitDto(it.path, it.heading, it.snippet, it.score, it.matchedKeyword, it.matchedSemantic, it.tags, vc.id, dev.svod.engine.index.estimateTokens(it.snippet))
                     }))
                 }
             }

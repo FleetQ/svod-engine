@@ -19,6 +19,15 @@ class SvodConfigTest {
     }
 
     @Test
+    fun `includeMessyInRecall defaults off and round-trips through JSON`() {
+        assertEquals(false, base().includeMessyInRecall)
+        val on = base().copy(includeMessyInRecall = true)
+        val reloaded = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .decodeFromString(SvodConfig.serializer(), SvodConfig.toJson(on))
+        assertTrue(reloaded.includeMessyInRecall, "toggle persists across serialize/deserialize")
+    }
+
+    @Test
     fun `bad port, non-loopback host, bad provider and duplicate tokens are rejected`() {
         val cfg = base().copy(
             host = "0.0.0.0",

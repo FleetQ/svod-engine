@@ -53,6 +53,8 @@ data class SvodConfig(
     val sourceSync: SourceSyncSettings = SourceSyncSettings(),
     /** Indexing behavior (startup blocking gate). */
     val indexing: IndexingSettings = IndexingSettings(),
+    /** When false (default), `messy/` drafts are quarantined out of default recall (search + context_pack). */
+    val includeMessyInRecall: Boolean = false,
 ) {
     /**
      * [blockStartup]=false (default) binds the App API immediately and builds the semantic index in

@@ -191,7 +191,7 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
      * excluded from recall. Notes that don't carry these frontmatter fields never match an
      * exclusion, so ordinary notes are unaffected. [nowEpoch] is the expiry cutoff (now).
      */
-    fun buildFilter(filters: SearchFilters, nowEpoch: Long = System.currentTimeMillis() / 1000): Query? {
+    fun buildFilter(filters: SearchFilters, includeMessy: Boolean = false, nowEpoch: Long = System.currentTimeMillis() / 1000): Query? {
         val b = BooleanQuery.Builder()
         var positives = 0
         for (tag in filters.tags) { b.add(TermQuery(Term("tag", tag)), BooleanClause.Occur.FILTER); positives++ }
@@ -211,6 +211,11 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
         if (!filters.includeAll) {
             b.add(TermQuery(Term("superseded", "true")), BooleanClause.Occur.MUST_NOT); negatives++
             b.add(LongPoint.newRangeQuery("expiresAt", Long.MIN_VALUE, nowEpoch), BooleanClause.Occur.MUST_NOT); negatives++
+        }
+        // `messy/` quarantine: drafts are hidden from default recall unless includeAll, the
+        // `includeMessyInRecall` config toggle, or the caller explicitly browses into `messy/`.
+        if (!filters.includeAll && !includeMessy && filters.pathPrefix?.startsWith("messy/") != true) {
+            b.add(PrefixQuery(Term("path", "messy/")), BooleanClause.Occur.MUST_NOT); negatives++
         }
         if (positives == 0 && negatives == 0) return null
         // Lucene: a clause set with only MUST_NOT matches nothing — anchor with match-all.

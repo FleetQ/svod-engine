@@ -57,6 +57,8 @@ class IndexService(
     reranker: Reranker = NoneReranker,
     /** How many top fused candidates the reranker re-scores per query (the rest keep fused order). */
     private val rerankTopK: Int = 50,
+    /** When true, `messy/` drafts are NOT quarantined from default recall (config toggle snapshot). */
+    private val includeMessyInRecall: Boolean = false,
 ) : AutoCloseable {
 
     /** The active embedder. Swappable at runtime via [setEmbedder] (provider change). */
@@ -453,14 +455,14 @@ class IndexService(
      * note's full content. This is the "load the rule book in full" path, not relevance ranking.
      */
     fun enumerate(filters: SearchFilters, limit: Int = 500): List<String> =
-        index.enumeratePaths(index.buildFilter(filters), limit)
+        index.enumeratePaths(index.buildFilter(filters, includeMessy = includeMessyInRecall), limit)
 
     fun search(q: SearchQuery): SearchResult {
         val start = System.nanoTime()
         // Blank text AND no user-facing filter ⇒ nothing to search (the lifecycle defaults alone must
         // not turn an empty query into a match-all browse). The App API already 400s this case.
         if (q.text.isBlank() && q.filters.isEmpty) return SearchResult(emptyList(), q.mode, 0)
-        val filter = index.buildFilter(q.filters)
+        val filter = index.buildFilter(q.filters, includeMessy = includeMessyInRecall)
         val cand = maxOf(q.limit * 5, 50)
 
         // A filter-only query (blank text, e.g. "browse by tag") matches every doc passing the filter,
@@ -648,6 +650,7 @@ class IndexService(
         val bytes = reader.readBlob(commit, path) ?: return null
         val blob = reader.blobId(commit, path) ?: return null
         val doc = MarkdownChunker.parse(String(bytes, Charsets.UTF_8))
+        if (doc.private) return null // `private: true` ⇒ keep out of the index entirely (git blob untouched)
         if (doc.chunks.isEmpty()) return null
         val emb = embedder
 
@@ -691,6 +694,7 @@ class IndexService(
         val bytes = reader.readBlob(commit, path) ?: return null
         val blob = reader.blobId(commit, path) ?: return null
         val doc = MarkdownChunker.parse(String(bytes, Charsets.UTF_8))
+        if (doc.private) return null // `private: true` ⇒ never embed (mirrors prepare(); caller deletes the path)
         if (doc.chunks.isEmpty()) return null
         val reusable = if (force) emptyMap() else index.existingVectors(path)
         val toEmbed = doc.chunks.filter { it.contentHash !in reusable }

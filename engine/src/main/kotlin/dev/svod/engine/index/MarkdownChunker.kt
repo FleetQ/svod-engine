@@ -21,7 +21,11 @@ data class ParsedDoc(
     val status: String?,
     val supersededBy: String?,
     val expiresAt: Long?,
+    /** `private: true` frontmatter — the whole note is kept out of the index (FTS + embeddings). */
+    val private: Boolean,
+    /** RAW body, private spans intact — used for re-serialization/dedup, NOT for indexing. */
     val body: String,
+    /** Index-facing chunks, with `<private>…</private>` spans stripped. Empty when [private]. */
     val chunks: List<Chunk>,
 )
 
@@ -48,6 +52,18 @@ object MarkdownChunker {
     private val FRONTMATTER = Regex("^\\uFEFF?---\\r?\\n(.*?)\\r?\\n---\\r?\\n?", RegexOption.DOT_MATCHES_ALL)
     private val HEADING = Regex("^(#{1,6})\\s+(.*)$")
 
+    /** `<private>…</private>` spans excluded from the index (leak guard); the committed bytes keep them. */
+    private val PRIVATE_SPAN = Regex("<private>.*?</private>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+
+    /** Remove `<private>…</private>` spans from [text]. Used before chunking AND by context_pack. */
+    fun stripPrivateSpans(text: String): String = PRIVATE_SPAN.replace(text, "")
+
+    private fun isPrivate(fm: Map<String, Any?>): Boolean = when (val v = fm["private"]) {
+        is Boolean -> v
+        is String -> v.trim().lowercase() in setOf("true", "yes", "1", "on")
+        else -> false
+    }
+
     /**
      * Max characters of body text per chunk. A long section (or heading-less note) is split into
      * several chunks so no single chunk overruns an embedder's context window — Ollama bge-m3 defaults
@@ -70,8 +86,12 @@ object MarkdownChunker {
         val status = (fm["status"] as? Any?)?.toString()?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
         val supersededBy = (fm["superseded_by"] ?: fm["supersededBy"])?.toString()?.trim()?.takeIf { it.isNotEmpty() }
         val expiresAt = firstEpoch(fm, "expires_at", "expiresAt", "expires")
+        val private = isPrivate(fm)
 
-        return ParsedDoc(fm, tags, title, created, modified, type, status, supersededBy, expiresAt, body, chunk(body))
+        // `.body` stays RAW (private spans intact) so re-serialization/dedup never mutate stored bytes;
+        // chunks are built from a private-stripped body and dropped entirely for a `private: true` note.
+        val chunks = if (private) emptyList() else chunk(stripPrivateSpans(body))
+        return ParsedDoc(fm, tags, title, created, modified, type, status, supersededBy, expiresAt, private, body, chunks)
     }
 
     private fun splitFrontmatter(raw: String): Pair<String?, String> {
