@@ -13,7 +13,7 @@ package dev.svod.engine.lifecycle
 object ApiCompatibility {
 
     /** The App API contract version this engine implements (matches contract/openapi.yaml). */
-    const val CURRENT_CONTRACT_VERSION = "0.20.0"
+    const val CURRENT_CONTRACT_VERSION = "0.21.0"
 
     data class SemVer(val major: Int, val minor: Int, val patch: Int) : Comparable<SemVer> {
         override fun compareTo(other: SemVer): Int =

@@ -95,7 +95,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.20.0",
+        val apiVersion: String = "0.21.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
