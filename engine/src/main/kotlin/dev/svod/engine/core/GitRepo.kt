@@ -16,9 +16,11 @@ import org.eclipse.jgit.treewalk.CanonicalTreeParser
 import org.eclipse.jgit.treewalk.TreeWalk
 import org.eclipse.jgit.treewalk.filter.PathFilter
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
 
 /**
  * Thin durability layer over jgit. The working tree is the live state; git is the
@@ -173,9 +175,54 @@ class GitRepo private constructor(
             .call().name
     }
 
-    /** History for a single path (most recent first), or vault-wide when [path] is null. */
+    /**
+     * History for a single path (most recent first), or vault-wide when [path] is null,
+     * capped at [max] commits.
+     *
+     * Uses native `git log -n <max>` rather than jgit's [Git.log]: jgit's path-filtered
+     * RevWalk re-diffs every commit's tree along the path and cannot use commit-graph /
+     * changed-path bloom filters, so on a large vault it walks the whole ancestry — a
+     * single call measured ~12.7s. Native git does the same path-scoped walk in <0.1s.
+     * Renames are NOT followed (no `--follow`), matching the previous jgit behaviour.
+     * Falls back to the jgit walk if the git subprocess can't be run.
+     */
     fun log(path: String?, max: Int): List<CommitInfo> {
         if (headId() == null) return emptyList()
+        return try {
+            nativeLog(path, max)
+        } catch (_: Exception) {
+            jgitLog(path, max)
+        }
+    }
+
+    private fun nativeLog(path: String?, max: Int): List<CommitInfo> {
+        // %x1f (unit sep) between fields, %x1e (record sep) between commits — bytes that
+        // never occur in commit metadata, so parsing survives multi-line messages.
+        val args = mutableListOf(
+            GIT_BIN, "log", "-n", max.toString(),
+            "--format=%H%x1f%an%x1f%ae%x1f%at%x1f%B%x1e",
+        )
+        if (path != null) { args += "--"; args += path }
+        val proc = ProcessBuilder(args)
+            .directory(repo.workTree)
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .apply { environment()["GIT_LITERAL_PATHSPECS"] = "1" } // literal path match, no glob magic
+            .start()
+        val out = proc.inputStream.use { it.readBytes().toString(StandardCharsets.UTF_8) }
+        if (!proc.waitFor(30, TimeUnit.SECONDS)) { proc.destroyForcibly(); throw IOException("git log timed out") }
+        if (proc.exitValue() != 0) throw IOException("git log exited ${proc.exitValue()}")
+        return out.split('')
+            .asSequence()
+            .map { it.trim('\n') }
+            .filter { it.isNotEmpty() }
+            .map { rec ->
+                val f = rec.split('')
+                CommitInfo(f[0], f[1], f[2], f[3].toLong(), f[4].trim())
+            }
+            .toList()
+    }
+
+    private fun jgitLog(path: String?, max: Int): List<CommitInfo> {
         val cmd = git.log().setMaxCount(max)
         if (path != null) cmd.addPath(path)
         return cmd.call().map { c ->
@@ -225,6 +272,9 @@ class GitRepo private constructor(
     }
 
     companion object {
+        /** macOS ships git at this stable path (Xcode CLT shim); avoids launchd PATH gaps. */
+        private const val GIT_BIN = "/usr/bin/git"
+
         fun openOrInit(root: Path, committer: Author? = null): GitRepo {
             val gitDir = root.resolve(".git").toFile()
             val existed = gitDir.isDirectory

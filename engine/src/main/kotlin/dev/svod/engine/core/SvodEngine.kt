@@ -136,7 +136,8 @@ class SvodEngine private constructor(
     suspend fun restore(trashRelPath: String, to: String? = null, author: Author): WriteOutcome =
         actor.submit { doRestore(trashRelPath, to, author) }.also(::notifyCommit)
 
-    suspend fun history(path: String, max: Int = 50): List<CommitInfo> =
+    /** Most-recent-first commits touching [path], capped at [max] (default 100). Renames are not followed. */
+    suspend fun history(path: String, max: Int = 100): List<CommitInfo> =
         actor.submit { git.log(VaultPath.of(path).value, max) }
 
     /** Content of [path] at a specific [revision] (commit id / ref), or null if absent there. */

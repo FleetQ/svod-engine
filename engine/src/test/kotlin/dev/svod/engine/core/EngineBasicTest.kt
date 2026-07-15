@@ -97,6 +97,26 @@ class EngineBasicTest {
     }
 
     @Test
+    fun `history is newest-first and max caps the result`() = runBlocking {
+        VaultFixture.create().use { fx ->
+            val e = fx.open()
+            var rev: String? = null
+            var lastCommit = ""
+            repeat(5) { i ->
+                val w = e.write("log.md", "v$i\n", expectedRevision = rev, author = ALICE) as WriteOutcome.Success
+                rev = w.revision
+                lastCommit = w.commit
+            }
+            val all = e.history("log.md")
+            assertEquals(5, all.size, "one commit per write")
+            assertEquals(lastCommit, all.first().commit, "newest write must be first (newest-first order)")
+            // max is pushed down to git (-n) and caps the returned commits, keeping the newest.
+            assertEquals(2, e.history("log.md", max = 2).size, "max must cap the result")
+            assertEquals(lastCommit, e.history("log.md", max = 1).single().commit, "max=1 returns just the newest")
+        }
+    }
+
+    @Test
     fun `path traversal and reserved paths are rejected`() = runBlocking {
         VaultFixture.create().use { fx ->
             val e = fx.open()

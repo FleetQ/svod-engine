@@ -293,7 +293,7 @@ class AppApiServer(
             get("/api/v1/file/history") {
                 val vc = vault() ?: return@get call.notFound("vault")
                 val path = call.path() ?: return@get call.badRequest("missing path")
-                val max = call.request.queryParameters["max"]?.toIntOrNull() ?: 50
+                val max = call.request.queryParameters["max"]?.toIntOrNull() ?: 100
                 call.respond(HistoryDto(vc.engine.history(path, max).map { CommitInfoDto(it.commit, it.authorName, it.authorEmail, it.epochSeconds, it.message) }))
             }
             get("/api/v1/file/diff") {
