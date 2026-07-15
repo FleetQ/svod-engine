@@ -11,6 +11,11 @@ import dev.svod.engine.index.IndexService
 import dev.svod.engine.index.SearchFilters
 import dev.svod.engine.index.SearchMode
 import dev.svod.engine.index.SearchQuery
+import dev.svod.engine.memory.MemoryStore
+import dev.svod.engine.memory.Proposal
+import dev.svod.engine.memory.SESSIONS_PREFIX
+import dev.svod.engine.memory.SessionMeta
+import dev.svod.engine.memory.SessionNotes
 import dev.svod.engine.sync.ConflictStore
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
@@ -95,7 +100,7 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.21.0",
+        val apiVersion: String = "0.22.0",
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
@@ -670,6 +675,91 @@ class AppApiServer(
                 if (result.error != null) call.badRequest(result.error) else call.respond(result.toDto())
             }
 
+            // ---- Recall memory: session capture + suggestions inbox (proposals) + dashboard ----
+
+            post("/api/v1/memory/capture") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val req = call.receive<CaptureRequestDto>()
+                // Idempotent on sessionId: a re-capture returns the existing note, never a duplicate.
+                val existing = sessionMetas(vc).firstOrNull { it.sessionId == req.sessionId }
+                if (existing != null) {
+                    val rev = vc.engine.read(existing.path)?.revision ?: ""
+                    return@post call.respond(CaptureResultDto(existing.path, rev, deduped = true))
+                }
+                val path = SessionNotes.pathFor(req.endedAt, req.project, req.sessionId)
+                val note = SessionNotes.buildNote(req.project, req.sessionId, req.startedAt, req.endedAt, req.transcript)
+                // writeBytes (not write) — raw transcripts routinely contain secrets; the capture store
+                // keeps them verbatim and quarantines them from recall, so the write-path secret scanner
+                // is deliberately bypassed here (it would otherwise Block a transcript carrying a token).
+                when (val o = vc.engine.writeBytes(path, note.toByteArray(Charsets.UTF_8), null, config.uiAuthor)) {
+                    is WriteOutcome.Success -> {
+                        publishCommit(vc, o, "memory.capture")
+                        call.respond(CaptureResultDto(o.path, o.revision, deduped = false))
+                    }
+                    is WriteOutcome.Conflict -> { publishConflict(vc, o.path); call.respond(HttpStatusCode.Conflict, o.toConflictDto()) }
+                    is WriteOutcome.NotFound -> call.notFound(o.path)
+                    is WriteOutcome.Blocked -> call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("blocked", o.findings.joinToString(", ")))
+                }
+            }
+
+            get("/api/v1/memory/sessions") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                val distilledFilter = call.request.queryParameters["distilled"]?.toBooleanStrictOrNull()
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull()
+                var metas = sessionMetas(vc).sortedByDescending { it.endedAt }
+                if (distilledFilter != null) metas = metas.filter { it.distilled == distilledFilter }
+                if (limit != null) metas = metas.take(limit)
+                call.respond(metas.map { SessionDto(it.path, it.project, it.sessionId, it.startedAt, it.endedAt, it.bytes, it.distilled) })
+            }
+
+            post("/api/v1/memory/sessions/mark-distilled") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val req = call.receive<MarkDistilledRequestDto>()
+                var updated = 0
+                for (p in req.paths) {
+                    val fc = vc.engine.read(p) ?: continue
+                    val next = SessionNotes.withDistilled(fc.text)
+                    if (next == fc.text) continue
+                    if (vc.engine.writeBytes(p, next.toByteArray(Charsets.UTF_8), fc.revision, config.uiAuthor) is WriteOutcome.Success) updated++
+                }
+                MemoryStore(vc.engine.root).recordDistill(req.noteRefs, System.currentTimeMillis())
+                call.respond(MarkDistilledResultDto(updated))
+            }
+
+            get("/api/v1/memory/proposals") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                val status = call.request.queryParameters["status"]?.takeIf { it.isNotBlank() } ?: "open"
+                call.respond(MemoryStore(vc.engine.root).proposals().filter { it.status == status }.map { it.toDto() })
+            }
+
+            post("/api/v1/memory/proposals") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val req = call.receive<CreateProposalRequestDto>()
+                val p = MemoryStore(vc.engine.root).appendProposal(
+                    req.kind, req.title, req.scope, req.confidence, req.rationale, req.sourceSessions, System.currentTimeMillis(),
+                )
+                call.respond(CreateProposalResultDto(p.id))
+            }
+
+            post("/api/v1/memory/proposals/{id}") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val id = call.parameters["id"] ?: return@post call.badRequest("missing proposal id")
+                val req = call.receive<ProposalActionRequestDto>()
+                val status = when (req.action) {
+                    "accept" -> "accepted"; "reject" -> "rejected"
+                    else -> return@post call.badRequest("action must be accept or reject")
+                }
+                // Status transition ONLY — accept does NOT create a skill/tool (suggestions over automation).
+                val updated = MemoryStore(vc.engine.root).updateProposal(id, status, req.note)
+                    ?: return@post call.notFound("proposal '$id'")
+                call.respond(updated.toDto())
+            }
+
+            get("/api/v1/memory/dashboard") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                call.respond(memoryDashboard(vc))
+            }
+
             webSocket("/api/v1/events") {
                 eventBus.events.collect { e -> send(Frame.Text(encodeEvent(e))) }
             }
@@ -767,6 +857,33 @@ class AppApiServer(
     }
 
     private fun AgentSpecView.toDto() = AgentDto(agentId, name, role, vaults, tokenRef, prompt)
+
+    /** All captured session notes' frontmatter for [vc] (bypasses the index — reads notes directly). */
+    private suspend fun sessionMetas(vc: VaultView): List<SessionMeta> =
+        vc.engine.list().filter { it.startsWith(SESSIONS_PREFIX) && it.endsWith(".md") }
+            .mapNotNull { p -> vc.engine.read(p)?.let { SessionNotes.parseMeta(p, it.text) } }
+
+    private fun Proposal.toDto() = ProposalDto(id, kind, title, scope, confidence, rationale, sourceSessions, createdAt, status, note)
+
+    private suspend fun memoryDashboard(vc: VaultView): MemoryDashboardDto {
+        val store = MemoryStore(vc.engine.root)
+        val sessions = sessionMetas(vc)
+        val capturedBytes = sessions.sumOf { it.bytes }
+        // distilledBytes = current size of the curated notes the distiller wrote (note sizes only —
+        // no generative call). compressionRatio guards divide-by-zero with max(1, distilledBytes).
+        val noteRefs = store.distilledNoteRefs()
+        val distilledBytes = noteRefs.sumOf { vc.engine.read(it)?.text?.toByteArray(Charsets.UTF_8)?.size?.toLong() ?: 0L }
+        return MemoryDashboardDto(
+            sessionsCaptured = sessions.size,
+            sessionsDistilled = sessions.count { it.distilled },
+            notesWritten = noteRefs.size,
+            capturedBytes = capturedBytes,
+            distilledBytes = distilledBytes,
+            compressionRatio = capturedBytes.toDouble() / maxOf(1L, distilledBytes),
+            lastDistillAt = store.lastDistillAt(),
+            openProposals = store.proposals().count { it.status == "open" },
+        )
+    }
 
     private fun EmbedderRequestDto.toSpec() = EmbedderControl.EmbedderSpec(provider, model, endpoint, apiKeyRef, maxThreads)
 

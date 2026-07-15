@@ -49,6 +49,42 @@ class RecallGuardsTest {
     }
 
     @Test
+    fun `captured session transcripts never appear in recall on any path`() = runBlocking {
+        McpFixture().use { fx ->
+            // A raw session transcript in the recall quarantine, carrying a unique needle...
+            fx.engine.write(
+                "messy/sessions/1700-proj-abcd1234.md",
+                "---\ntype: session\nsessionId: abcd1234\n---\n# T\nSESSION_NEEDLE_XYZ raw transcript",
+                null, fx.write.author,
+            )
+            // ...and a normal note carrying the same needle, so recall has real content to find.
+            fx.engine.write("notes/pub.md", "# Pub\nSESSION_NEEDLE_XYZ appears in a real note", null, fx.write.author)
+            fx.index.waitIdle()
+
+            // Default recall (context_pack): the real note is recalled, the transcript never is.
+            val ranked = fx.tools.contextPack(fx.write, SearchQuery("SESSION_NEEDLE_XYZ"), tokenBudget = 10_000)
+            val paths = ranked.data["blocks"]!!.jsonArray.map { it.jsonObject["path"]!!.jsonPrimitive.content }.toSet()
+            assertTrue("notes/pub.md" in paths, "the real note is recalled")
+            assertTrue(paths.none { it.startsWith("messy/sessions/") }, "session transcripts are never recalled (default)")
+
+            // includeAll must NOT surface them — the exclusion has no includeAll escape.
+            val all = fx.tools.search(fx.write, SearchQuery("SESSION_NEEDLE_XYZ", SearchFilters(includeAll = true)))
+            assertTrue(
+                all.data["hits"]!!.jsonArray.none { it.jsonObject["path"]!!.jsonPrimitive.content.startsWith("messy/sessions/") },
+                "includeAll does not surface session transcripts",
+            )
+
+            // Browsing straight into the prefix is empty (no prefix-browse escape).
+            val browse = fx.tools.search(fx.write, SearchQuery("SESSION_NEEDLE_XYZ", SearchFilters(pathPrefix = "messy/sessions/")))
+            assertTrue(browse.data["hits"]!!.jsonArray.isEmpty(), "prefix-browse into messy/sessions/ is empty")
+
+            // Path A enumerate by the prefix is likewise empty.
+            val enumd = fx.tools.contextPack(fx.write, SearchQuery("", SearchFilters(pathPrefix = "messy/sessions/")), tokenBudget = 1, enumerate = true)
+            assertTrue(enumd.data["blocks"]!!.jsonArray.isEmpty(), "enumerate into messy/sessions/ is empty")
+        }
+    }
+
+    @Test
     fun `commit_created carries agentId`() = runBlocking {
         McpFixture().use { fx ->
             val payload = async(Dispatchers.Default) {

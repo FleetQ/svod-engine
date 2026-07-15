@@ -217,6 +217,10 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
         if (!filters.includeAll && !includeMessy && filters.pathPrefix?.startsWith("messy/") != true) {
             b.add(PrefixQuery(Term("path", "messy/")), BooleanClause.Occur.MUST_NOT); negatives++
         }
+        // Captured session transcripts (`messy/sessions/`) are UNCONDITIONALLY excluded from recall —
+        // stronger than the `messy/` quarantine: no includeAll / includeMessy / prefix-browse escape.
+        // They hold raw transcripts (secret-adjacent) and must stay out of recall like `<private>`.
+        b.add(PrefixQuery(Term("path", "messy/sessions/")), BooleanClause.Occur.MUST_NOT); negatives++
         if (positives == 0 && negatives == 0) return null
         // Lucene: a clause set with only MUST_NOT matches nothing — anchor with match-all.
         if (positives == 0) b.add(MatchAllDocsQuery(), BooleanClause.Occur.MUST)

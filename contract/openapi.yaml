@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.21.0
+  version: 0.22.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -21,6 +21,7 @@ tags:
   - name: meta
   - name: ops
   - name: events
+  - name: memory
 
 paths:
   /health:
@@ -980,6 +981,143 @@ paths:
               schema: { $ref: "#/components/schemas/IndexStatus" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/memory/capture:
+    post:
+      tags: [memory]
+      summary: Capture a raw session transcript into the recall quarantine (idempotent on sessionId)
+      operationId: captureSession
+      description: >
+        Writes the raw transcript to messy/sessions/ (frontmatter type=session). UNCONDITIONALLY
+        excluded from recall (search + context_pack) — like <private>. Idempotent on sessionId:
+        a re-capture returns the existing note (deduped=true), never a duplicate. The write-path
+        secret scanner is bypassed so a transcript carrying a token is never rejected.
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CaptureRequest" }
+      responses:
+        "200":
+          description: The captured (or pre-existing) session note
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CaptureResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/memory/sessions:
+    get:
+      tags: [memory]
+      summary: List captured session notes (newest first), optionally filtered by distilled
+      operationId: listSessions
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+        - { name: distilled, in: query, required: false, schema: { type: boolean } }
+        - { name: limit, in: query, required: false, schema: { type: integer } }
+      responses:
+        "200":
+          description: Session notes, newest first
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Session" } }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/memory/sessions/mark-distilled:
+    post:
+      tags: [memory]
+      summary: Mark sessions distilled and record the curated note refs (for dashboard compression math)
+      operationId: markSessionsDistilled
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MarkDistilledRequest" }
+      responses:
+        "200":
+          description: Count of session notes flipped to distilled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MarkDistilledResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/memory/proposals:
+    get:
+      tags: [memory]
+      summary: List capture proposals (suggestions inbox) by status
+      operationId: listProposals
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+        - { name: status, in: query, required: false, schema: { type: string, enum: [open, accepted, rejected], default: open } }
+      responses:
+        "200":
+          description: Proposals with the given status
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Proposal" } }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [memory]
+      summary: Append a capture proposal (the external distiller suggests a skill/tool)
+      operationId: createProposal
+      description: Engine assigns id/createdAt/status=open. Deduped by (kind, title, scope).
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateProposalRequest" }
+      responses:
+        "200":
+          description: The proposal id (new or pre-existing dedup match)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreateProposalResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/memory/proposals/{id}:
+    post:
+      tags: [memory]
+      summary: Accept or reject a proposal (status transition ONLY — no auto-create)
+      operationId: actProposal
+      description: >
+        Accept does NOT auto-create a skill/tool — suggestions over automation. It only moves the
+        proposal to accepted/rejected so an operator can act on it deliberately.
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/VaultQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProposalActionRequest" }
+      responses:
+        "200":
+          description: The updated proposal
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Proposal" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/memory/dashboard:
+    get:
+      tags: [memory]
+      summary: Recall subsystem dashboard (capture/distill counts + byte compression)
+      operationId: memoryDashboard
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: Dashboard metrics
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryDashboard" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
 components:
   parameters:
     PathQuery:
@@ -1737,3 +1875,104 @@ components:
           enum: [file.changed, index.updated, index.progress, commit.created, conflict, engine.status, agent.activity, source.synced]
         ts: { type: integer, format: int64 }
         data: { type: object, additionalProperties: true }
+
+    # ---- Recall memory subsystem. Enum wire convention: kind/scope/status are LOWERCASE. ----
+
+    CaptureRequest:
+      type: object
+      required: [sessionId, transcript, startedAt, endedAt]
+      properties:
+        sessionId: { type: string }
+        project: { type: string, nullable: true }
+        transcript: { type: string }
+        startedAt: { type: integer, format: int64, description: epoch millis }
+        endedAt: { type: integer, format: int64, description: epoch millis }
+        toolCallCount: { type: integer, nullable: true }
+
+    CaptureResult:
+      type: object
+      required: [path, revision, deduped]
+      properties:
+        path: { type: string }
+        revision: { type: string }
+        deduped: { type: boolean, description: true when the sessionId was already captured }
+
+    Session:
+      type: object
+      required: [path, sessionId, startedAt, endedAt, bytes, distilled]
+      properties:
+        path: { type: string }
+        project: { type: string, nullable: true }
+        sessionId: { type: string }
+        startedAt: { type: integer, format: int64 }
+        endedAt: { type: integer, format: int64 }
+        bytes: { type: integer, format: int64 }
+        distilled: { type: boolean }
+
+    MarkDistilledRequest:
+      type: object
+      required: [paths, noteRefs]
+      properties:
+        paths: { type: array, items: { type: string } }
+        noteRefs:
+          type: array
+          items: { type: string }
+          description: Curated note paths the distiller wrote (recorded for dashboard compression math).
+
+    MarkDistilledResult:
+      type: object
+      required: [updated]
+      properties:
+        updated: { type: integer }
+
+    Proposal:
+      type: object
+      required: [id, kind, title, scope, confidence, rationale, sourceSessions, createdAt, status]
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [skill, tool] }
+        title: { type: string }
+        scope: { type: string, enum: [project, global] }
+        confidence: { type: number, format: double }
+        rationale: { type: string }
+        sourceSessions: { type: array, items: { type: string } }
+        createdAt: { type: integer, format: int64 }
+        status: { type: string, enum: [open, accepted, rejected] }
+        note: { type: string, nullable: true }
+
+    CreateProposalRequest:
+      type: object
+      required: [kind, title, scope, confidence, rationale, sourceSessions]
+      properties:
+        kind: { type: string, enum: [skill, tool] }
+        title: { type: string }
+        scope: { type: string, enum: [project, global] }
+        confidence: { type: number, format: double }
+        rationale: { type: string }
+        sourceSessions: { type: array, items: { type: string } }
+
+    CreateProposalResult:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+
+    ProposalActionRequest:
+      type: object
+      required: [action]
+      properties:
+        action: { type: string, enum: [accept, reject] }
+        note: { type: string, nullable: true }
+
+    MemoryDashboard:
+      type: object
+      required: [sessionsCaptured, sessionsDistilled, notesWritten, capturedBytes, distilledBytes, compressionRatio, openProposals]
+      properties:
+        sessionsCaptured: { type: integer }
+        sessionsDistilled: { type: integer }
+        notesWritten: { type: integer, description: distinct curated note refs recorded across distill passes }
+        capturedBytes: { type: integer, format: int64 }
+        distilledBytes: { type: integer, format: int64 }
+        compressionRatio: { type: number, format: double, description: "capturedBytes / max(1, distilledBytes)" }
+        lastDistillAt: { type: integer, format: int64, nullable: true }
+        openProposals: { type: integer }

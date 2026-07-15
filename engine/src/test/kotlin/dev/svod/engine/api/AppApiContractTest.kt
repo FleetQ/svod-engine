@@ -278,6 +278,8 @@ class AppApiContractTest {
             "/api/v1/sources", "/api/v1/sources/{id}", "/api/v1/sources/{id}/sync", "/api/v1/sources/{id}/resolve", "/api/v1/sources/sync",
             "/api/v1/embedder", "/api/v1/embedder/test", "/api/v1/embedder/models",
             "/api/v1/index/reembed", "/api/v1/index/pause", "/api/v1/index/resume",
+            "/api/v1/memory/capture", "/api/v1/memory/sessions", "/api/v1/memory/sessions/mark-distilled",
+            "/api/v1/memory/proposals", "/api/v1/memory/proposals/{id}", "/api/v1/memory/dashboard",
         )
         assertEquals(declared, implemented, "contract paths and implemented routes must match exactly")
         assertTrue(Files.exists(specPath), "contract file present")
