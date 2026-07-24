@@ -3,6 +3,143 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.11.2 — 2026-07-25 (App API contract 0.22.0)
+
+### Fixed — silent note corruption in the MCP `edit` tool
+- **`edit` now refuses to persist a note when the post-edit length invariant fails or `newString`
+  is missing** — what used to be silent corruption is a loud error. A malformed/partial edit is
+  rejected before the write instead of being committed as truncated content. No contract change.
+
+## v1.11.1 — 2026-07-15 (App API contract 0.22.0)
+
+### Fixed — `GET /file/history` was ~12.7 s on a large vault
+- **Native `git log` for path-scoped history (~12.7 s → <0.1 s** on the 77k-doc personal vault).
+  Root cause: jgit's path-filtered `LogCommand` re-diffs every commit's tree along the path and
+  cannot use commit-graph / changed-path bloom filters, so it walks the entire ancestry.
+  `GitRepo.log()` now shells out to `git log -n <max> --format=… -- <path>` (the cap pushed down
+  as `-n`), falling back to the jgit walk when the subprocess is unavailable. Renames are still
+  not followed (unchanged behaviour).
+- Default history cap raised 50 → 100, so an unset `max` never walks full history.
+- No response-shape or contract change.
+
+## v1.11.0 — 2026-07-15 (App API contract 0.22.0)
+
+### Added — recall subsystem (session capture → distill → proposals)
+- **Session capture.** `POST /api/v1/memory/capture` stores a raw transcript into
+  `messy/sessions/`, idempotent on `sessionId` (written via `writeBytes`, bypassing the secret
+  scan, so transcripts are kept verbatim).
+- **Session inventory + distill marking.** `GET /api/v1/memory/sessions` (newest first,
+  `?distilled` filter) and `POST /api/v1/memory/sessions/mark-distilled` (flips `distilled:true`
+  and records `noteRefs`).
+- **Proposals inbox.** `GET/POST /api/v1/memory/proposals` and `POST /…/proposals/{id}` — a
+  suggestions queue with status transitions only; accepting a proposal never auto-creates a
+  skill or tool.
+- **Dashboard.** `GET /api/v1/memory/dashboard` — capture/distill counts plus byte-compression
+  math.
+- **Recall guard:** `messy/sessions/` is **unconditionally** excluded from recall in
+  `LuceneIndex.buildFilter` — no `includeAll` / `includeMessy` / prefix-browse escape hatch, so
+  raw transcripts stay out of recall the same way `<private>` does.
+
+### Changed
+- App API **contract 0.22.0** (additive): 7 new `/api/v1/memory/*` routes. Enum wire convention
+  for `kind`/`scope`/`status` is **lowercase**.
+
+### Out of scope
+Distillation itself (LLM compression) is external — the engine only stores, serves, and marks.
+
+## v1.10.0 — 2026-07-07 (App API contract 0.21.0)
+
+### Added — retrieval cost + privacy controls
+- **Token cost in search results** — `SearchHitDto.tokens`, so a client can show what a hit
+  actually costs before packing it into a prompt.
+- **`agentId` on MCP `commit.created` events** — writes are attributable to the agent that made
+  them.
+- **`<private>` index-exclusion** — content marked private is guarded out at prepare, plan-embed
+  and `context_pack`, not just filtered at query time.
+- **`messy/` recall quarantine** — drafts stay out of recall by default (`includeMessyInRecall`
+  config to opt back in).
+
+### Fixed — MCP sessions wedging after an engine restart
+- **Own stdio↔HTTP MCP bridge replaces `mcp-remote` for Claude Desktop.** `mcp-remote` 0.1.38
+  wedges permanently after an engine restart: SSE reconnect gives up after two attempts, then
+  every POST hits a `404 Session not found` that it swallows without answering the client, so
+  each tool call hangs until the 4-minute client timeout. The bridge caps every request (60 s
+  default), returns structured JSON-RPC errors instead of hanging, re-initializes transparently
+  on a 404 and retries once, and skips SSE entirely.
+- **MCP session-lifecycle logging** — session create/close and unknown-session 404s are now
+  logged; during the 2026-07-03 incident the engine-side view of the failure was invisible.
+
+### Changed
+- App API **contract 0.21.0** (additive).
+
+## v1.9.0 — 2026-07-02 (App API contract 0.20.0)
+
+### Added — partial edits, source conflict resolution, two-way write-back
+- **MCP `edit` tool (partial edit).** Agents editing large notes had to resend the full content
+  verbatim (transcription-error risk). `edit` replaces an exact substring: `oldString` must occur
+  exactly once (`bad_request` when absent or ambiguous, `replaceAll` opt-in), with optimistic
+  concurrency via `expectedRevision` or the revision read at edit time — a concurrent writer
+  surfaces as the standard conflict shape, never a clobber. Tool count 14 → **15**.
+- **Persisted source conflicts + resolve endpoint (contract 0.19.0).** A locally-edited synced
+  file used to conflict forever with no way to see or settle it. `ExternalSource.conflicts` is
+  persisted after each sync and exposed in `GET /sources`; `POST /api/v1/sources/{id}/resolve`
+  takes `takeExternal` (external wins once) or `keepVault` (accept the local edit as the new
+  baseline). The manifest was upgraded to a two-sided baseline (`SyncedState{ext,vault}`, legacy
+  single-blob manifests load as `(v,v)`), which is what makes `keepVault` sound: the kept edit
+  stays quiet while the external side is still, is never clobbered by the *old* external
+  content, and a *new* external change re-surfaces as a conflict.
+- **Opt-in two-way write-back (contract 0.20.0).** With `writeBack` on, a vault edit to an
+  already-synced path flows *out* to the external file (atomic temp + rename) instead of
+  conflicting, and is reported under `pushed`. Both-sides-changed stays a conflict — an external
+  file that also changed is never clobbered. Vault-created files are not materialized
+  externally; only tracked paths flow back. A debounced sync on `commit.created` lands the edit
+  in the project file within ~a second, skipping the engine's own sync commits (no loops).
+- **Browsable `main` mirror.** GitHub's web UI and desktop git clients list only heads + tags,
+  never the `refs/svod/sync|backup` refs a vault rides on, so a fully backed-up vault looked
+  empty in the browser. The canonical head is now best-effort force-pushed to `refs/heads/main`
+  after sync and after a one-way backup push.
+
+### Changed
+- App API **contract 0.20.0** (additive): `writeBack` on `ExternalSource`, `pushed` on
+  `SourceSyncResult`, `conflicts` + `POST /sources/{id}/resolve` (0.19.0).
+
+## v1.8.1 — 2026-07-01 (App API contract 0.18.0)
+
+### Fixed — phantom "update available" that never cleared
+- The self-update check read `currentVersion` from a **hardcoded constant in `SvodNode`** that
+  was left at `"1.7.0"` when v1.8.0 was cut, so the engine perpetually saw itself as 1.7.0 and
+  advertised a 1.8.0 update that could never be satisfied. The constant and the Gradle version
+  are now bumped together.
+
+## v1.8.0 — 2026-06-29 (App API contract 0.18.0)
+
+### Added — engine self-update
+- **`GET /update/check` + `POST /update/apply`.** `UpdateService` checks GitHub
+  `releases/latest` and gates on `ApiCompatibility` semver (`updateAvailable` = newer app
+  version; `compatible` = same major). `apply()` spawns the detached `self-update.sh`
+  (download → sha256 → atomic swap → `launchctl kickstart`) and is **opt-in**: 501 unless
+  `SVOD_SELF_UPDATE_SCRIPT` is set, 409 when there is no compatible update. A failed GitHub
+  fetch returns `200 updateAvailable=false` — never a 500.
+- Pairs with the macOS Settings → Updates panel.
+
+### Changed
+- App API **contract 0.18.0** (additive): `/update/check`, `/update/apply`.
+
+## v1.7.0 — 2026-06-29 (App API contract 0.17.0)
+
+### Added — runtime vault CRUD + LLM-access (agent) management
+- **Create/delete vaults at runtime** — `POST /api/v1/vaults` (contract 0.15.0) and
+  `DELETE /api/v1/vaults/{id}` (contract 0.16.0), no restart required.
+- **Manage MCP agents at runtime** — `GET/POST/PUT/DELETE /api/v1/agents` (contract 0.17.0).
+  `AgentController` mutates the persistent config through `ConfigStore` and hot-reloads
+  `AgentRegistry` atomically (build-then-swap), so granting or revoking an LLM's access takes
+  effect on its next MCP call with no restart. Raw tokens are rejected — a secret must be given
+  as a `Secrets` reference. `AgentsDto` carries `mcpPort` + `mcpUrl`.
+- Pairs with the macOS Settings → LLM Access panel.
+
+### Changed
+- App API **contract 0.17.0** (additive, via 0.15.0 → 0.16.0 → 0.17.0).
+
 ## v1.6.4 — 2026-06-17 (App API contract 0.14.0)
 
 ### Fixed — Windows release no longer drops all its assets when MSVC setup breaks

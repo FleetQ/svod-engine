@@ -40,10 +40,14 @@ jobs:
         run: |
           ./gradlew -Psvod.jdk=21 installDist --no-daemon
           MAIN_JAR=$(basename "$(ls build/install/svod-engine/lib/svod-engine-*.jar)")
+          # jpackage --app-version accepts only numeric MAJOR[.MINOR[.PATCH]] — strip the tag's
+          # leading `v` and any pre-release suffix (`v1.11.2-rc1` → `1.11.2`), else jpackage errors.
+          APP_VERSION="${GITHUB_REF_NAME#v}"
+          APP_VERSION="${APP_VERSION%%-*}"
           jpackage --type app-image --name SvodEngine \
             --input build/install/svod-engine/lib \
             --main-jar "$MAIN_JAR" --main-class dev.svod.engine.MainKt \
-            --app-version 1.6.4 --java-options "-Dfile.encoding=UTF-8" \
+            --app-version "$APP_VERSION" --java-options "-Dfile.encoding=UTF-8" \
             --dest out
 
       - name: Archive app-image (unix)
