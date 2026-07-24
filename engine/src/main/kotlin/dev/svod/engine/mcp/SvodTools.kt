@@ -215,8 +215,46 @@ class SvodTools(
                 ToolResult.badRequest("oldString not found in $path — re-read the note; its content may have changed")
             count > 1 && !replaceAll ->
                 ToolResult.badRequest("oldString occurs $count times in $path — add surrounding context to make it unique, or pass replaceAll=true")
-            else ->
-                outcomeResult("edit", agent, engine.write(path, cur.text.replace(oldString, newString), cur.revision, agent.author), path)
+            else -> {
+                val newContent = cur.text.replace(oldString, newString)
+                // Defense-in-depth: never commit a note the transform silently corrupted (the
+                // reported failure mode: matched region removed, newString never inserted, headings
+                // vanished). Verify the to-be-written content BEFORE the write and refuse it on any
+                // deviation — strictly better than catching it post-commit.
+                val integrityError = editIntegrityError(cur.text, oldString, newString, count, newContent, path)
+                if (integrityError != null) {
+                    audit.record(agent.agentId, "edit", "internal_error", path, detail = integrityError)
+                    ToolResult.internalError(integrityError)
+                } else {
+                    outcomeResult("edit", agent, engine.write(path, newContent, cur.revision, agent.author), path)
+                }
+            }
+        }
+    }
+
+    /**
+     * Post-transform integrity check for [edit]. A literal replace of exactly [count] non-overlapping
+     * occurrences of [oldString] with [newString] in [base] has an EXACT resulting length; any
+     * deviation means content was dropped or duplicated, and a non-empty replacement must appear in
+     * the [result]. Returns a human error string when [result] fails either invariant, else null.
+     * Pure and internal so the guard is unit-testable with a deliberately-corrupt [result].
+     */
+    internal fun editIntegrityError(
+        base: String,
+        oldString: String,
+        newString: String,
+        count: Int,
+        result: String,
+        path: String = "note",
+    ): String? {
+        val expectedLen = base.length + count * (newString.length - oldString.length)
+        return when {
+            result.length != expectedLen ->
+                "post-edit integrity check failed for $path: expected length $expectedLen " +
+                    "(base ${base.length}, $count×${oldString.length}→${newString.length}), got ${result.length} — write refused"
+            newString.isNotEmpty() && !result.contains(newString) ->
+                "post-edit integrity check failed for $path: newString not present in result — write refused"
+            else -> null
         }
     }
 

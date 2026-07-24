@@ -34,6 +34,12 @@ data class ToolResult(val status: String, val data: JsonObject, val isError: Boo
         fun badRequest(message: String): ToolResult =
             ToolResult("bad_request", buildJsonObject { put("status", "bad_request"); put("message", message) }, isError = true)
 
+        /** A server-side invariant failed (e.g. an edit's post-transform integrity check) — the
+         *  write was refused rather than committing corrupt content. Distinct from bad_request:
+         *  the agent's inputs were valid; the engine caught its own would-be mistake. */
+        fun internalError(message: String): ToolResult =
+            ToolResult("internal_error", buildJsonObject { put("status", "internal_error"); put("message", message) }, isError = true)
+
         fun blocked(path: String, findings: List<String>): ToolResult =
             ToolResult("blocked", buildJsonObject {
                 put("status", "blocked"); put("path", path)
