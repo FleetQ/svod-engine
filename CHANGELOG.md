@@ -3,6 +3,28 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.11.3 — 2026-07-25 (App API contract 0.22.0)
+
+### Fixed — the self-reported engine version drifted again
+- **`UpdateService.currentAppVersion` was left at `"1.11.1"` when v1.11.2 was cut**, so the running
+  engine reported itself as 1.11.1 and advertised a phantom "1.11.2 available" update that could
+  never clear — the same failure as v1.8.1, recurring because the constant in `SvodNode` and the
+  Gradle `version` are two independent sources of truth with no consistency test. Both are now
+  1.11.3.
+
+### Fixed — release assets were all labelled 1.6.4
+- **`release.yml` hardcoded `jpackage --app-version 1.6.4`**, so every app-image and installer
+  published since v1.6.4 carried that version regardless of the release tag. It now derives from
+  the pushed tag (`${GITHUB_REF_NAME#v}`, pre-release suffix stripped, since jpackage accepts only
+  numeric `MAJOR[.MINOR[.PATCH]]`).
+- **`dist/package.sh` carried the same stale `1.6.4`** and was broken by it: `MAIN_JAR` pointed at
+  `svod-engine-1.6.4.jar`, which no longer exists, so the local packaging script failed its jar
+  check before ever reaching jpackage. It now reads the Gradle `version` as the single source.
+
+### Changed
+- `CHANGELOG.md` backfilled for v1.7.0 → v1.11.2, which had been abandoned after v1.6.4.
+- No engine behaviour or contract change; the App API stays at 0.22.0.
+
 ## v1.11.2 — 2026-07-25 (App API contract 0.22.0)
 
 ### Fixed — silent note corruption in the MCP `edit` tool
