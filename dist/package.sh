@@ -7,8 +7,11 @@ set -euo pipefail
 DIST_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENGINE_DIR="$(cd "$DIST_DIR/../engine" && pwd)"
 OUT="$DIST_DIR/build"
-VERSION="1.6.4"
-BUNDLE_VERSION="1.6.4"   # macOS CFBundleVersion must not start with 0
+# Single source of truth: the Gradle `version` — a hardcoded copy here silently went stale
+# (pinned at 1.6.4 through v1.11.2) and made MAIN_JAR point at a jar that no longer exists.
+VERSION="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$ENGINE_DIR/build.gradle.kts")"
+[ -n "$VERSION" ] || { echo "could not read version from $ENGINE_DIR/build.gradle.kts" >&2; exit 1; }
+BUNDLE_VERSION="${VERSION%%-*}"   # macOS CFBundleVersion must be numeric and not start with 0
 NAME="SvodEngine"
 MAIN_JAR="svod-engine-$VERSION.jar"
 MAIN_CLASS="dev.svod.engine.MainKt"
