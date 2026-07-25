@@ -155,6 +155,10 @@ tasks.test {
         showStandardStreams = false
     }
     systemProperty("file.encoding", "UTF-8")
+    // Lets VersionConsistencyTest compare the authoritative Gradle version against the
+    // currentAppVersion literal in SvodNode, instead of parsing this file back out.
+    systemProperty("svod.projectVersion", version.toString())
+    systemProperty("svod.projectDir", projectDir.absolutePath)
     // Opt-in flag for the test that hits a live Ollama; off by default for hermetic runs.
     systemProperty("svod.ollama.it", System.getProperty("svod.ollama.it", "false"))
     // Opt-in flags for the large-vault perf/soak test (forwarded to the forked test JVM).
