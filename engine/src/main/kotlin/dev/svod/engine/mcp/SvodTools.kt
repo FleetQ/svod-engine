@@ -1,5 +1,6 @@
 package dev.svod.engine.mcp
 
+import dev.svod.engine.core.GuardedWrite
 import dev.svod.engine.core.SvodEngine
 import dev.svod.engine.core.WriteOutcome
 import dev.svod.engine.events.EventBus
@@ -7,6 +8,11 @@ import dev.svod.engine.events.EventTypes
 import dev.svod.engine.graph.LinkGraph
 import dev.svod.engine.index.IndexService
 import dev.svod.engine.index.SearchQuery
+import dev.svod.engine.memory.Classification
+import dev.svod.engine.memory.ClassificationPlan
+import dev.svod.engine.memory.FactClassifier
+import dev.svod.engine.memory.MemoryAdjudicator
+import dev.svod.engine.memory.MemoryCandidate
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -29,7 +35,15 @@ class SvodTools(
     private val audit: AuditLog,
     private val rateLimiter: RateLimiter,
     private val eventBus: EventBus = EventBus(),
+    /**
+     * Optional LLM adjudicator for `remember`'s ambiguous classification band. Null (the default)
+     * keeps the engine LLM-free: ambiguous cases are reported UNCERTAIN instead of guessed.
+     */
+    adjudicator: MemoryAdjudicator? = null,
 ) {
+    /** Classifies an incoming memory against existing memory of the same type/subject. */
+    private val classifier = FactClassifier(engine, index, adjudicator)
+
     // ---- read-only tools ----
 
     suspend fun read(agent: AgentIdentity, path: String): ToolResult = guarded(agent, "read", write = false) {
@@ -305,6 +319,13 @@ class SvodTools(
      * `provisional` — kept out of recall until confirmed — preference/episode/note enter `active`);
      * a `supersedes` target is revoked and linked. Writes through the engine (secret-scanned,
      * committed, indexed, conflict-guarded). Keeps an agent-written KB from poisoning itself.
+     *
+     * Before persisting, the incoming memory is CLASSIFIED against existing memory of the same type
+     * and subject ([FactClassifier]): NEW is written as before, DUPLICATE is a no-op, UPDATE revokes
+     * and links its predecessor, CONTRADICTION persists BOTH sides with a `contradicts:` link rather
+     * than overwriting either, and UNCERTAIN is persisted with `needs-review: true`. Classification
+     * is planned off the write-actor (it may embed and may call an LLM) and applied inside it, so
+     * the decision is only committed if the state it was computed against has not moved.
      */
     suspend fun remember(
         agent: AgentIdentity, content: String, type: String?, subject: String?, confidence: Double?,
@@ -317,36 +338,109 @@ class SvodTools(
         val hash = dev.svod.engine.index.sha256Hex("$t\n${content.trim()}").take(12)
         val path = "$dir/$t/$hash.md"
 
-        // Dedup: same content+type already stored (same deterministic path, same body) ⇒ no-op write.
-        val existing = engine.read(path)
-        if (existing != null && bodyOf(existing.text).trim() == content.trim()) {
-            audit.record(agent.agentId, "remember", "deduped", path)
-            return@guarded ToolResult.ok { put("status", "deduped"); put("path", path); put("type", t); put("memoryStatus", existing.let { statusOf(it.text) ?: st }) }
+        // Secret-scan BEFORE classification. The engine scans again on write, but classification may
+        // embed the content with a REMOTE provider or hand it to an LLM — content that must never
+        // leave the machine has to be refused before it can be sent anywhere.
+        val secrets = engine.scanSecrets(content)
+        if (secrets.isNotEmpty()) {
+            audit.record(agent.agentId, "remember", "blocked", path, detail = secrets.joinToString(", "))
+            return@guarded ToolResult.blocked(path, secrets)
         }
 
-        // Supersession: revoke the prior memory and link it forward (a normal conflict-guarded write).
-        var superseded: String? = null
-        if (!supersedes.isNullOrBlank()) {
-            engine.read(supersedes)?.let { old ->
-                val o = engine.write(supersedes, revoke(old.text, path), old.revision, agent.author)
-                if (o is WriteOutcome.Success) superseded = supersedes
-            }
-        }
+        // Plan off the actor, apply inside it. If a candidate moved in between, the apply is refused
+        // as stale and we re-plan against live state exactly once rather than committing a decision
+        // derived from state that no longer exists.
+        for (attempt in 0..1) {
+            val existing = engine.read(path)
 
-        val note = buildMemoryNote(t, st, subject, confidence, source, content.trim())
-        when (val outcome = engine.write(path, note, existing?.revision, agent.author)) {
-            is WriteOutcome.Success -> {
-                audit.record(agent.agentId, "remember", "ok", path, revision = outcome.revision, detail = outcome.commit)
-                eventBus.publish(EventTypes.AGENT_ACTIVITY) { put("agentId", agent.agentId); put("tool", "remember"); put("path", path); put("commit", outcome.commit) }
-                eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", outcome.commit); put("path", path); put("author", agent.author.name); put("agentId", agent.agentId) }
-                ToolResult.ok {
-                    put("status", "written"); put("path", path); put("type", t); put("memoryStatus", st)
-                    put("revision", outcome.revision); put("commit", outcome.commit)
-                    superseded?.let { put("superseded", it) }
+            // Same content+type ⇒ same deterministic path: an exact restatement is a no-op write.
+            if (existing != null && bodyOf(existing.text).trim() == content.trim()) {
+                audit.record(agent.agentId, "remember", "deduped", path)
+                return@guarded ToolResult.ok {
+                    put("status", "deduped"); put("path", path); put("type", t)
+                    put("memoryStatus", statusOf(existing.text) ?: st)
+                    put("classification", Classification.DUPLICATE.name)
+                    put("relatedNote", path); put("confidence", 1.0)
                 }
             }
-            else -> outcomeResult("remember", agent, outcome, path)
+
+            val plan = if (!supersedes.isNullOrBlank()) {
+                // The caller already declared the relationship; inferring one would only second-guess it.
+                val old = engine.read(supersedes)
+                    ?: return@guarded ToolResult.notFound(supersedes)
+                ClassificationPlan(
+                    Classification.UPDATE,
+                    MemoryCandidate(supersedes, old.revision, bodyOf(old.text).trim(), subject),
+                    1.0, "caller-declared supersedes", mapOf(supersedes to old.revision),
+                )
+            } else {
+                classifier.plan(content, t, subject, path)
+            }
+
+            if (plan.classification == Classification.DUPLICATE && plan.related != null) {
+                val dup = plan.related
+                val dupStatus = engine.read(dup.path)?.let { statusOf(it.text) } ?: st
+                audit.record(agent.agentId, "remember", "deduped", dup.path)
+                return@guarded ToolResult.ok {
+                    put("status", "deduped"); put("path", dup.path); put("type", t)
+                    put("memoryStatus", dupStatus)
+                    put("classification", Classification.DUPLICATE.name)
+                    put("relatedNote", dup.path); put("confidence", plan.confidence)
+                    put("rationale", plan.rationale)
+                }
+            }
+
+            val related = plan.related
+            val note = buildMemoryNote(
+                t, st, subject, confidence, source, content.trim(),
+                contradicts = related?.path?.takeIf { plan.classification == Classification.CONTRADICTION },
+                supersedes = related?.path?.takeIf { plan.classification == Classification.UPDATE },
+                needsReview = plan.classification == Classification.UNCERTAIN,
+            )
+            val files = LinkedHashMap<String, String>()
+            files[path] = note
+            // UPDATE keeps the predecessor's history: it is revoked and linked forward, never removed.
+            if (plan.classification == Classification.UPDATE && related != null) {
+                engine.read(related.path)?.let { files[related.path] = revoke(it.text, path) }
+            }
+            val guards = LinkedHashMap<String, String?>()
+            plan.guards.forEach { (p, rev) -> guards[p] = rev }
+            guards[path] = existing?.revision
+
+            when (val outcome = engine.writeGuarded(files, guards, agent.author, "remember: $path (${plan.classification})")) {
+                is GuardedWrite.Applied -> {
+                    audit.record(agent.agentId, "remember", "ok", path, revision = outcome.revisions[path], detail = outcome.commit)
+                    eventBus.publish(EventTypes.AGENT_ACTIVITY) { put("agentId", agent.agentId); put("tool", "remember"); put("path", path); put("commit", outcome.commit) }
+                    eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", outcome.commit); put("path", path); put("author", agent.author.name); put("agentId", agent.agentId) }
+                    return@guarded ToolResult.ok {
+                        put("status", "written"); put("path", path); put("type", t); put("memoryStatus", st)
+                        put("revision", outcome.revisions[path]); put("commit", outcome.commit)
+                        put("classification", plan.classification.name)
+                        put("confidence", plan.confidence); put("rationale", plan.rationale)
+                        related?.let { put("relatedNote", it.path) }
+                        if (plan.classification == Classification.UPDATE && related != null) put("superseded", related.path)
+                        if (plan.classification == Classification.CONTRADICTION && related != null) {
+                            put("contradicts", related.path)
+                            put("message", "kept both memories; neither was overwritten")
+                        }
+                        if (plan.classification == Classification.UNCERTAIN) put("needsReview", true)
+                    }
+                }
+                is GuardedWrite.Blocked -> {
+                    audit.record(agent.agentId, "remember", "blocked", outcome.path, detail = outcome.findings.joinToString(", "))
+                    return@guarded ToolResult.blocked(outcome.path, outcome.findings)
+                }
+                // Live state moved under the plan — loop and re-classify against what is there now.
+                is GuardedWrite.Stale -> if (attempt == 1) {
+                    audit.record(agent.agentId, "remember", "conflict", outcome.path, detail = "classification state moved twice")
+                    return@guarded ToolResult.conflict {
+                        put("path", outcome.path); put("expected", outcome.expected); put("current", outcome.current)
+                        put("message", "memory changed while it was being classified; retry")
+                    }
+                }
+            }
         }
+        ToolResult.internalError("remember: classification did not converge")
     }
 
     private fun defaultStatusFor(type: String): String = when (type) {
@@ -370,13 +464,29 @@ class SvodTools(
         return frontmatterFences(fm) + parsed.body.trimStart('\n')
     }
 
-    private fun buildMemoryNote(type: String, status: String, subject: String?, confidence: Double?, source: String?, content: String): String {
+    private fun buildMemoryNote(
+        type: String,
+        status: String,
+        subject: String?,
+        confidence: Double?,
+        source: String?,
+        content: String,
+        /** Path of a memory this one contradicts — both are kept; neither wins silently. */
+        contradicts: String? = null,
+        /** Path of the memory this one replaces (the predecessor is revoked, not deleted). */
+        supersedes: String? = null,
+        /** Classification could not be settled; the note is persisted flagged for a human. */
+        needsReview: Boolean = false,
+    ): String {
         val fm = LinkedHashMap<String, Any?>()
         fm["type"] = type
         fm["status"] = status
         subject?.takeIf { it.isNotBlank() }?.let { fm["subject"] = it }
         confidence?.let { fm["confidence"] = it }
         source?.takeIf { it.isNotBlank() }?.let { fm["source"] = it }
+        contradicts?.let { fm["contradicts"] = it }
+        supersedes?.let { fm["supersedes"] = it }
+        if (needsReview) fm["needs-review"] = true
         fm["created"] = java.time.Instant.now().toString()
         return frontmatterFences(fm) + content + "\n"
     }

@@ -3,6 +3,52 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.12.0 — 2026-08-01 (App API contract 0.23.0)
+
+### Added — fact classification on the `remember` promotion gate
+- **`remember` now classifies an incoming memory against what is already stored** before persisting
+  it, instead of only hashing for literal duplication. Candidates come from the existing hybrid
+  path (BM25 + kNN + RRF) filtered to the same `type` with `includeAll=true` — `fact`/`policy`
+  memories are `provisional` and hidden from ordinary recall, yet they are exactly what an incoming
+  fact must be compared against — and are then scoped to the same `subject`. No new index.
+- **Deterministic rules first, LLM only in the ambiguous middle band**: normalized-text equality →
+  token overlap (Jaccard) → embedding cosine → optional adjudicator. The new `MemoryAdjudicator`
+  interface has no implementation and is `null` by default, so the engine stays LLM-free and adds
+  no dependency; absent, unreachable, or declining, the ambiguous band resolves to `UNCERTAIN`
+  rather than guessing a confident class.
+- **Behavior per class**: `NEW` writes as before; `DUPLICATE` is a no-op returning the existing
+  note; `UPDATE` writes the successor with `supersedes:` and revokes + links the predecessor in the
+  same commit (history preserved); `CONTRADICTION` persists **both** sides linked by `contradicts:`
+  and never overwrites either; `UNCERTAIN` persists with `needs-review: true`.
+- The MCP `remember` response gains `classification`, `relatedNote`, `confidence` (plus `rationale`
+  and, where they apply, `contradicts` / `needsReview`). Every pre-existing field keeps its meaning
+  and value — no breaking change for existing callers.
+
+### Added — `SvodEngine.writeGuarded`, a guarded multi-file commit
+- New write primitive: on the write-actor, re-validate a `path → expected revision` guard map
+  against live blob ids, then write every file in **one** commit. A mismatch is
+  `GuardedWrite.Stale` — nothing is written and the caller re-plans, never a silent clobber.
+- This is what lets classification hold the single-writer invariant without stalling it. Planning
+  is impure and slow (Lucene, a possibly-remote embed, possibly an LLM call), and ADR-0017
+  established that writes never wait on embedding; so the plan is built **off** the actor and
+  validated + applied **inside** it — the same shape as `writeBatch(expected=)` and
+  `applyMerge(expectedHead=)`. Concurrent identical `remember` calls now provably collapse to one
+  note: the losers hit the guard, re-plan, and dedup.
+
+### Fixed — secret content could reach a remote embedder before being refused
+- The secret scanner ran at write time, at the end of `remember`. With classification in front of
+  the write, content would be sent to a **remote** embedder or an LLM and only then blocked from
+  disk. `remember` now scans up front and refuses before any planning runs; the engine still
+  re-scans on write. Regression-tested: the adjudicator never observes secret content.
+
+### Contract
+- App API contract **0.23.0** (additive): three new reserved frontmatter keys documented on
+  `/search` — `contradicts`, `supersedes`, `needs-review`. All informational to that endpoint; they
+  do not affect filtering or lifecycle visibility.
+
+See `docs/adr/0018-memory-fact-classification.md` for the threshold choices and the explicit
+non-goal (per-subject fact consistency only — not knowledge-graph entity resolution).
+
 ## v1.11.3 — 2026-07-25 (App API contract 0.22.0)
 
 ### Fixed — the self-reported engine version drifted again

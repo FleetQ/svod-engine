@@ -436,6 +436,12 @@ class IndexService(
 
     fun headCommitIndexed(): String? = IndexMeta.load(metaFile)?.headCommit
 
+    /**
+     * The live embedder. Exposed so callers that need a vector OUTSIDE indexing (memory-fact
+     * similarity) use the same provider the index does, including after a runtime [setEmbedder] swap.
+     */
+    fun activeEmbedder(): Embedder = embedder
+
     fun indexedModel(): String? = IndexMeta.load(metaFile)?.embeddingModel
 
     fun indexedDim(): Int? = IndexMeta.load(metaFile)?.embeddingDim

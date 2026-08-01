@@ -48,6 +48,25 @@ sealed interface WriteOutcome {
     data class Blocked(val path: String, val findings: List<String>) : WriteOutcome
 }
 
+/**
+ * Result of [SvodEngine.writeGuarded] — a multi-file write whose precondition was checked on the
+ * write-actor, immediately before applying.
+ */
+sealed interface GuardedWrite {
+
+    /** Every guard held; all files were written and committed together. */
+    data class Applied(val commit: String, val revisions: Map<String, Revision>) : GuardedWrite
+
+    /**
+     * A guarded path no longer matched the revision the caller planned against — nothing was
+     * written. The caller re-plans against live state rather than clobbering it.
+     */
+    data class Stale(val path: String, val expected: Revision?, val current: Revision?) : GuardedWrite
+
+    /** Refused because [findings] (e.g. leaked secrets) were detected in one of the files. */
+    data class Blocked(val path: String, val findings: List<String>) : GuardedWrite
+}
+
 /** A file's content together with its current revision. */
 data class FileContent(
     val path: String,

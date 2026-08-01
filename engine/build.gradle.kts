@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "dev.svod"
-version = "1.11.3"
+version = "1.12.0"
 
 repositories {
     mavenCentral()
