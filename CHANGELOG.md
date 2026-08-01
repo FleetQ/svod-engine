@@ -3,6 +3,19 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.12.1 — 2026-08-01 (App API contract 0.23.0)
+
+### Fixed — the contract version drifted between the gate and what clients are told
+- **`AppApiServer.Config.apiVersion` was a second hardcoded copy of the contract version.** v1.12.0
+  bumped `ApiCompatibility.CURRENT_CONTRACT_VERSION` to 0.23.0 (and `contract/openapi.yaml` with
+  it), but `/api/v1/settings` kept advertising **0.22.0** — so the engine gated self-update on one
+  version while telling the macOS app, which feature-detects on `apiVersion`, a different one. The
+  same shape as the `currentAppVersion` drift fixed in v1.8.1 and v1.11.3: independent literals for
+  one fact. `Config` now derives its value from `ApiCompatibility`, so there is one source.
+- **`VersionConsistencyTest` extended to cover the contract**, comparing all three publication
+  points — the self-update gate, `/settings`, and `contract/openapi.yaml` — so a one-sided contract
+  bump fails the build instead of shipping.
+
 ## v1.12.0 — 2026-08-01 (App API contract 0.23.0)
 
 ### Added — fact classification on the `remember` promotion gate

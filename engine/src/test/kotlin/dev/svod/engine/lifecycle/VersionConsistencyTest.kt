@@ -37,6 +37,36 @@ class VersionConsistencyTest {
         )
     }
 
+    /**
+     * The CONTRACT version had the same shape of problem: `ApiCompatibility` gated self-update on it
+     * while `AppApiServer.Config` advertised its own hardcoded copy to `/settings`, and
+     * `contract/openapi.yaml` carried a third. Bumping the contract for v1.12.0 moved one and left
+     * the other two, so the engine gated on 0.23.0 while telling the macOS app it spoke 0.22.0.
+     * All three are now compared here; `Config` derives its value, so this pins the remaining pair.
+     */
+    @Test
+    fun `the App API contract version is the same everywhere it is published`() {
+        val gate = ApiCompatibility.CURRENT_CONTRACT_VERSION
+        val advertised = dev.svod.engine.api.AppApiServer.Config().apiVersion
+        assertEquals(
+            gate, advertised,
+            "contract drift: the self-update gate says $gate but /settings advertises $advertised",
+        )
+
+        val spec = File(projectDir.parentFile, "contract/openapi.yaml")
+        assertTrue(spec.isFile, "openapi.yaml not found at ${spec.path}")
+        val specVersion = Regex("(?m)^\\s{2}version:\\s*\"?([0-9]+\\.[0-9]+\\.[0-9]+)\"?\\s*$")
+            .find(spec.readText())
+            ?.groupValues?.get(1)
+        assertNotNull(specVersion, "no top-level `version:` found in contract/openapi.yaml")
+        assertEquals(
+            specVersion, gate,
+            "contract drift: contract/openapi.yaml declares $specVersion but " +
+                "ApiCompatibility.CURRENT_CONTRACT_VERSION is $gate. Bumping the contract means " +
+                "bumping BOTH.",
+        )
+    }
+
     private val projectDir: File
         get() = File(System.getProperty("svod.projectDir") ?: ".")
 }
