@@ -100,6 +100,28 @@ class SvodEngine private constructor(
         timed { actor.submit { doBatch(entries, author, message, overwrite, expected) } }
             .also { r -> if (r.written.isNotEmpty()) r.commit?.let { commitListener?.invoke(it) } }
 
+    /**
+     * Guarded multi-file write: ON THE ACTOR, verify every [guards] entry still matches the live blob
+     * id (a null expected value means "must not exist"), then write all [files] and commit them
+     * together in one commit.
+     *
+     * This is the plan-off-actor / validate-and-apply-on-actor idiom already used by
+     * [writeBatch]'s `expected` and [applyMerge]'s `expectedHead`, generalized: expensive impure
+     * planning (retrieval, embedding, an LLM call) runs OFF the write path — so writes never wait on
+     * a network round-trip — and the decision it produced is committed only if the state it was
+     * computed against has not moved. A mismatch is [GuardedWrite.Stale], never a silent clobber;
+     * the caller re-plans. Because the check and the write share one actor task, nothing can
+     * interleave between them.
+     */
+    suspend fun writeGuarded(
+        files: Map<String, String>,
+        guards: Map<String, Revision?>,
+        author: Author,
+        message: String,
+    ): GuardedWrite =
+        timed { actor.submit { doWriteGuarded(files, guards, author, message) } }
+            .also { if (it is GuardedWrite.Applied) commitListener?.invoke(it.commit) }
+
     /** Git blob id (content hash) of [bytes] — the same value used as a file's revision. Pure, no I/O. */
     fun blobId(bytes: ByteArray): String = git.blobId(bytes)
 
@@ -297,6 +319,36 @@ class SvodEngine private constructor(
         AtomicFile.write(target, bytes, crash)
         val commit = git.commitPaths(listOf(vp.value), "write: ${vp.value}", author) ?: git.headId()!!
         return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)
+    }
+
+    private fun doWriteGuarded(
+        files: Map<String, String>,
+        guards: Map<String, Revision?>,
+        author: Author,
+        message: String,
+    ): GuardedWrite {
+        // Secret-scan first: refuse the whole set rather than committing part of it.
+        for ((path, content) in files) {
+            val secrets = secretScanner.scan(content)
+            if (secrets.isNotEmpty()) {
+                return GuardedWrite.Blocked(VaultPath.of(path).value, secrets.map { "${it.rule} (line ${it.line})" })
+            }
+        }
+        // Validate every precondition against live state before touching anything.
+        for ((path, expected) in guards) {
+            val target = VaultPath.of(path).resolveAgainst(root)
+            val current = if (Files.isRegularFile(target)) git.blobId(Files.readAllBytes(target)) else null
+            if (current != expected) return GuardedWrite.Stale(VaultPath.of(path).value, expected, current)
+        }
+        val written = LinkedHashMap<String, Revision>()
+        for ((path, content) in files) {
+            val vp = VaultPath.of(path)
+            val bytes = content.toByteArray(UTF_8)
+            AtomicFile.write(vp.resolveAgainst(root), bytes, crash)
+            written[vp.value] = git.blobId(bytes)
+        }
+        val commit = git.commitPaths(written.keys.toList(), message, author) ?: git.headId()!!
+        return GuardedWrite.Applied(commit, written)
     }
 
     private fun doBatch(entries: List<BatchEntry>, author: Author, message: String, overwrite: Boolean, expected: Map<String, String?>): BatchResult {
