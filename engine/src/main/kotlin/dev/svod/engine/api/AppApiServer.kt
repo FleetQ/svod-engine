@@ -100,7 +100,13 @@ class AppApiServer(
 
     data class Config(
         val host: String = "127.0.0.1",
-        val apiVersion: String = "0.22.0",
+        /**
+         * The App API contract version advertised to clients (the macOS app feature-detects on it).
+         * Derived from [ApiCompatibility.CURRENT_CONTRACT_VERSION] rather than repeated as a literal:
+         * when this was its own hardcoded string, bumping the contract for 1.12.0 moved the
+         * self-update gate to 0.23.0 while `/settings` kept advertising 0.22.0.
+         */
+        val apiVersion: String = dev.svod.engine.lifecycle.ApiCompatibility.CURRENT_CONTRACT_VERSION,
         val embedderProvider: String = "onnx-local",
         /** Effective embedder model/endpoint for the read-only settings view (null endpoint = in-process). */
         val embedderModel: String = "none",
