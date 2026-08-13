@@ -3,6 +3,7 @@ package dev.svod.engine.mcp
 import dev.svod.engine.index.SearchFilters
 import dev.svod.engine.index.SearchMode
 import dev.svod.engine.index.SearchQuery
+import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
@@ -14,13 +15,16 @@ import io.ktor.server.auth.bearer
 import io.ktor.server.auth.principal
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.doublereceive.DoubleReceive
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.engine.sslConnector
 import io.ktor.server.netty.Netty
 import io.ktor.server.request.header
+import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
@@ -38,6 +42,8 @@ import io.modelcontextprotocol.kotlin.sdk.types.McpJson
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
@@ -96,6 +102,9 @@ class SvodMcpServer(
     private fun Application.configure() {
         install(SSE)
         install(ContentNegotiation) { json(McpJson) }
+        // The POST handler peeks at the body to tell the two wire formats apart; the legacy
+        // transport then parses it again for itself.
+        install(DoubleReceive)
         install(Authentication) {
             bearer("mcp") {
                 authenticate { credential ->
@@ -114,8 +123,16 @@ class SvodMcpServer(
                         transport.handleRequest(this, call)
                     }
                     post {
-                        val transport = getOrCreateTransport(call, transports) ?: return@post
-                        transport.handleRequest(null, call)
+                        // The body is read here to pick a wire format and then again by the legacy
+                        // transport, so DoubleReceive (installed above) must keep it replayable.
+                        val raw = call.receiveText()
+                        val parsed = runCatching { McpJson.parseToJsonElement(raw) }.getOrNull()
+                        if (isLegacyHandshake(call, parsed)) {
+                            val transport = getOrCreateTransport(call, transports) ?: return@post
+                            transport.handleRequest(null, call)
+                        } else {
+                            handleStateless(call, parsed)
+                        }
                     }
                     delete {
                         val transport = findTransport(call, transports) ?: return@delete
@@ -124,6 +141,62 @@ class SvodMcpServer(
                 }
             }
         }
+    }
+
+    /**
+     * Which of the two wire formats this POST is in. A 2025-11-25 client is identifiable by exactly
+     * two things: it carries the session id it was handed, or it is asking for one. Everything else
+     * — including a bare `tools/list` with no headers at all — is served statelessly, which is what
+     * a 2026-07-28 client sends and what the legacy path would only reject for having no session.
+     */
+    private fun isLegacyHandshake(call: ApplicationCall, parsed: JsonElement?): Boolean {
+        if (call.request.header(McpProtocol.HEADER_SESSION_ID) != null) return true
+        val body = parsed as? JsonObject ?: return false
+        return body.rpcMethod() == "initialize"
+    }
+
+    /** Serve a 2026-07-28 request: no handshake, no session — validate, dispatch, answer. */
+    private suspend fun handleStateless(call: ApplicationCall, parsed: JsonElement?) {
+        if (parsed == null) {
+            respondJson(call, HttpStatusCode.BadRequest, jsonRpcError(null, -32700, "Parse error"))
+            return
+        }
+        val agentId = call.principal<UserIdPrincipal>()?.name
+        val agent = agentId?.let { registry.byAgentId(it) }
+        if (agent == null) {
+            call.respond(HttpStatusCode.Unauthorized, "Unknown agent")
+            return
+        }
+
+        val messages = when (parsed) {
+            is JsonObject -> listOf(parsed)
+            is JsonArray -> parsed.map { it as? JsonObject ?: return respondJson(call, HttpStatusCode.BadRequest, jsonRpcError(null, -32600, "Invalid Request: batch entry is not an object")) }
+            else -> return respondJson(call, HttpStatusCode.BadRequest, jsonRpcError(null, -32600, "Invalid Request"))
+        }
+
+        val headerVersion = call.request.header(McpProtocol.HEADER_PROTOCOL_VERSION)
+        val headerMethod = call.request.header(McpProtocol.HEADER_METHOD)
+        val headerName = call.request.header(McpProtocol.HEADER_NAME)
+        for (message in messages) {
+            val mismatch = headerBodyMismatch(headerVersion, headerMethod, headerName, message)
+            if (mismatch != null) {
+                log.info("rejecting MCP request from agent '{}': {}", agent.agentId, mismatch)
+                respondJson(call, HttpStatusCode.BadRequest, jsonRpcError(message.rpcId(), -32600, "Invalid Request: $mismatch"))
+                return
+            }
+        }
+
+        val tools = buildTools(agent)
+        val responses = messages.mapNotNull { dispatchStateless(it, tools, SERVER_NAME, SERVER_VERSION) }
+        when {
+            responses.isEmpty() -> call.respond(HttpStatusCode.Accepted)
+            parsed is JsonArray -> respondJson(call, HttpStatusCode.OK, JsonArray(responses))
+            else -> respondJson(call, HttpStatusCode.OK, responses.first())
+        }
+    }
+
+    private suspend fun respondJson(call: ApplicationCall, status: HttpStatusCode, body: JsonElement) {
+        call.respondText(McpJson.encodeToString(JsonElement.serializer(), body), ContentType.Application.Json, status)
     }
 
     private suspend fun findTransport(call: ApplicationCall, transports: ConcurrentMap<String, StreamableHttpServerTransport>): StreamableHttpServerTransport? {
@@ -176,22 +249,38 @@ class SvodMcpServer(
         return transport
     }
 
-    /** A fresh MCP server for [agent]; each call selects its target vault (default = the agent's). */
+    /** A fresh MCP server for [agent], serving the same catalogue as the stateless path. */
     private fun buildServer(agent: AgentIdentity): Server {
         val server = Server(
-            Implementation(name = "svod", version = "0.1.0"),
+            Implementation(name = SERVER_NAME, version = SERVER_VERSION),
             ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = false))),
         )
+        buildTools(agent).forEach { tool ->
+            server.addTool(tool.name, tool.description, tool.schema()) { req -> tool.handler(req) }
+        }
+        return server
+    }
+
+    /** The tool catalogue bound to [agent]; each call selects its target vault (default = the agent's). */
+    private fun buildTools(agent: AgentIdentity): List<ToolDef> {
+        val tools = mutableListOf<ToolDef>()
 
         // Every per-vault tool's schema gets an optional `vault` (default = the agent's vault). A
         // call may target any vault the agent is granted; an ungranted/unknown vault is rejected.
-        fun schema(props: Map<String, String>, required: List<String>) = ToolSchema(
-            properties = buildJsonObject {
-                props.forEach { (name, type) -> putJsonObject(name) { put("type", type) } }
-                putJsonObject("vault") { put("type", "string") }
-            },
-            required = required,
-        )
+        fun props(props: Map<String, String>) = buildJsonObject {
+            props.forEach { (name, type) -> putJsonObject(name) { put("type", type) } }
+            putJsonObject("vault") { put("type", "string") }
+        }
+
+        fun tool(
+            name: String,
+            description: String,
+            properties: Map<String, String>,
+            required: List<String>,
+            handler: suspend (io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest) -> CallToolResult,
+        ) {
+            tools += ToolDef(name, description, props(properties), required, handler)
+        }
 
         // Resolve the SvodTools for this call's target vault, enforcing the agent's grant. Returns
         // a denial/not-found CallToolResult instead when the vault isn't granted or doesn't exist.
@@ -204,28 +293,28 @@ class SvodMcpServer(
             return t to null
         }
 
-        server.addTool("read", "Read a note's current content + revision.", schema(mapOf("path" to "string"), listOf("path"))) { req ->
+        tool("read", "Read a note's current content + revision.", mapOf("path" to "string"), listOf("path")) { req ->
             val (t, d) = routed(req); d ?: t!!.read(agent, req.str("path")!!).toCallToolResult()
         }
-        server.addTool("write", "Create or update a note (optimistic via expectedRevision).", schema(mapOf("path" to "string", "content" to "string", "expectedRevision" to "string"), listOf("path", "content"))) { req ->
+        tool("write", "Create or update a note (optimistic via expectedRevision).", mapOf("path" to "string", "content" to "string", "expectedRevision" to "string"), listOf("path", "content")) { req ->
             val (t, d) = routed(req); d ?: t!!.write(agent, req.str("path")!!, req.str("content") ?: "", req.str("expectedRevision")).toCallToolResult()
         }
-        server.addTool("edit", "Partial edit: replace an exact substring in a note without resending the whole content. oldString must occur exactly once (add surrounding context to disambiguate) unless replaceAll=true.", schema(mapOf("path" to "string", "oldString" to "string", "newString" to "string", "replaceAll" to "boolean", "expectedRevision" to "string"), listOf("path", "oldString", "newString"))) { req ->
+        tool("edit", "Partial edit: replace an exact substring in a note without resending the whole content. oldString must occur exactly once (add surrounding context to disambiguate) unless replaceAll=true.", mapOf("path" to "string", "oldString" to "string", "newString" to "string", "replaceAll" to "boolean", "expectedRevision" to "string"), listOf("path", "oldString", "newString")) { req ->
             val (t, d) = routed(req); d ?: t!!.edit(agent, req.str("path")!!, req.str("oldString") ?: "", req.str("newString") ?: "", req.bool("replaceAll", false), req.str("expectedRevision")).toCallToolResult()
         }
-        server.addTool("delete", "Soft-delete a note to .trash/.", schema(mapOf("path" to "string", "expectedRevision" to "string"), listOf("path"))) { req ->
+        tool("delete", "Soft-delete a note to .trash/.", mapOf("path" to "string", "expectedRevision" to "string"), listOf("path")) { req ->
             val (t, d) = routed(req); d ?: t!!.delete(agent, req.str("path")!!, req.str("expectedRevision")).toCallToolResult()
         }
-        server.addTool("move", "Move/rename a note.", schema(mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to"))) { req ->
+        tool("move", "Move/rename a note.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
             val (t, d) = routed(req); d ?: t!!.move(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
-        server.addTool("promote", "Promote a draft from messy/ into the curated vault.", schema(mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to"))) { req ->
+        tool("promote", "Promote a draft from messy/ into the curated vault.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
             val (t, d) = routed(req); d ?: t!!.promote(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
-        server.addTool("search", "Hybrid search (keyword/semantic/hybrid) with filters.", schema(mapOf("query" to "string", "mode" to "string", "limit" to "integer"), listOf("query"))) { req ->
+        tool("search", "Hybrid search (keyword/semantic/hybrid) with filters.", mapOf("query" to "string", "mode" to "string", "limit" to "integer"), listOf("query")) { req ->
             val (t, d) = routed(req); d ?: t!!.search(agent, req.toSearchQuery()).toCallToolResult()
         }
-        server.addTool("context_pack", "Assemble a cited context block. Default: token-budgeted hybrid recall. enumerate=true: return EVERY note matching the filters (type/tags) in full, unranked — the 'rule book' (all active policies/preferences) every turn.", schema(mapOf("query" to "string", "mode" to "string", "tokenBudget" to "integer", "type" to "string", "status" to "string", "enumerate" to "boolean"), emptyList())) { req ->
+        tool("context_pack", "Assemble a cited context block. Default: token-budgeted hybrid recall. enumerate=true: return EVERY note matching the filters (type/tags) in full, unranked — the 'rule book' (all active policies/preferences) every turn.", mapOf("query" to "string", "mode" to "string", "tokenBudget" to "integer", "type" to "string", "status" to "string", "enumerate" to "boolean"), emptyList()) { req ->
             val (t, d) = routed(req)
             d ?: run {
                 // Pull a generous candidate pool, then trim to the token budget.
@@ -234,33 +323,35 @@ class SvodMcpServer(
                 t!!.contextPack(agent, q, req.int("tokenBudget", 2000), req.bool("enumerate", false)).toCallToolResult()
             }
         }
-        server.addTool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Classifies the incoming memory against existing memory of the same type+subject and returns 'classification' (NEW|DUPLICATE|UPDATE|CONTRADICTION|UNCERTAIN) with 'relatedNote' and 'confidence': DUPLICATE is a no-op, UPDATE revokes+links its predecessor, CONTRADICTION keeps BOTH sides linked by 'contradicts' (never overwrites), UNCERTAIN is stored with 'needs-review: true'. fact/policy enter 'provisional'. Use 'supersedes' to declare a replacement explicitly.", schema(mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string"), listOf("content"))) { req ->
+        tool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Classifies the incoming memory against existing memory of the same type+subject and returns 'classification' (NEW|DUPLICATE|UPDATE|CONTRADICTION|UNCERTAIN) with 'relatedNote' and 'confidence': DUPLICATE is a no-op, UPDATE revokes+links its predecessor, CONTRADICTION keeps BOTH sides linked by 'contradicts' (never overwrites), UNCERTAIN is stored with 'needs-review: true'. fact/policy enter 'provisional'. Use 'supersedes' to declare a replacement explicitly.", mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string"), listOf("content")) { req ->
             val (t, d) = routed(req)
             d ?: t!!.remember(agent, req.str("content") ?: "", req.str("type"), req.str("subject"), req.double("confidence"), req.str("source"), req.str("status"), req.str("into"), req.str("supersedes")).toCallToolResult()
         }
-        server.addTool("list", "List note paths (optionally filtered by prefix).", schema(mapOf("pathPrefix" to "string"), emptyList())) { req ->
+        tool("list", "List note paths (optionally filtered by prefix).", mapOf("pathPrefix" to "string"), emptyList()) { req ->
             val (t, d) = routed(req); d ?: t!!.list(agent, req.str("pathPrefix")).toCallToolResult()
         }
-        server.addTool("history", "Commit history for a note.", schema(mapOf("path" to "string", "max" to "integer"), listOf("path"))) { req ->
+        tool("history", "Commit history for a note.", mapOf("path" to "string", "max" to "integer"), listOf("path")) { req ->
             val (t, d) = routed(req); d ?: t!!.history(agent, req.str("path")!!, req.int("max", 50)).toCallToolResult()
         }
-        server.addTool("diff", "Unified diff of a note between two revisions.", schema(mapOf("path" to "string", "from" to "string", "to" to "string"), listOf("path", "from", "to"))) { req ->
+        tool("diff", "Unified diff of a note between two revisions.", mapOf("path" to "string", "from" to "string", "to" to "string"), listOf("path", "from", "to")) { req ->
             val (t, d) = routed(req); d ?: t!!.diff(agent, req.str("path")!!, req.str("from")!!, req.str("to")!!).toCallToolResult()
         }
-        server.addTool("get_revision", "Read a note's content at a specific revision.", schema(mapOf("path" to "string", "revision" to "string"), listOf("path", "revision"))) { req ->
+        tool("get_revision", "Read a note's content at a specific revision.", mapOf("path" to "string", "revision" to "string"), listOf("path", "revision")) { req ->
             val (t, d) = routed(req); d ?: t!!.getRevision(agent, req.str("path")!!, req.str("revision")!!).toCallToolResult()
         }
-        server.addTool("link", "Outgoing wikilinks for a note (resolved + unresolved).", schema(mapOf("path" to "string"), listOf("path"))) { req ->
+        tool("link", "Outgoing wikilinks for a note (resolved + unresolved).", mapOf("path" to "string"), listOf("path")) { req ->
             val (t, d) = routed(req); d ?: t!!.link(agent, req.str("path")!!).toCallToolResult()
         }
-        server.addTool("graph_query", "1-hop link neighborhood (outlinks + backlinks).", schema(mapOf("path" to "string"), listOf("path"))) { req ->
+        tool("graph_query", "1-hop link neighborhood (outlinks + backlinks).", mapOf("path" to "string"), listOf("path")) { req ->
             val (t, d) = routed(req); d ?: t!!.graphQuery(agent, req.str("path")!!).toCallToolResult()
         }
-        return server
+        return tools
     }
 
     companion object {
         private const val SESSION_HEADER = "mcp-session-id"
+        private const val SERVER_NAME = "svod"
+        private const val SERVER_VERSION = "0.1.0"
         private val log = org.slf4j.LoggerFactory.getLogger(SvodMcpServer::class.java)
     }
 }

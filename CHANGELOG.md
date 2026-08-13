@@ -3,6 +3,35 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.13.0 — 2026-08-13 (App API contract 0.23.0)
+
+### Added — MCP spec 2026-07-28 served alongside 2025-11-25 on the same endpoint
+- **The handshake is now optional (SEP-2575).** `initialize`/`initialized` were removed from the
+  spec, so a 2026-07-28 client sends `protocolVersion`, `clientInfo` and `clientCapabilities` in
+  `params._meta` (keys `io.modelcontextprotocol/protocolVersion`, `.../clientInfo`,
+  `.../clientCapabilities`) on **every** request. `/mcp` reads them per request and answers the new
+  `server/discover` method with the server's implementation info and capabilities.
+- **Sessions are no longer required (SEP-2567).** A stateless request carries no `Mcp-Session-Id`
+  and creates none; the bearer token alone resolves the agent, so identity — and therefore the git
+  commit author, the role check, the vault grant and the rate limit — is unchanged. This also
+  removes the failure mode logged in v1.11.x, where an engine restart invalidated in-memory session
+  ids and clients got a 404 until they re-initialized.
+- **Routing headers are validated, not trusted (SEP-2243).** `MCP-Protocol-Version`, `Mcp-Method`
+  and `Mcp-Name` are optional, but a request whose headers disagree with its JSON body is rejected
+  with `400` and JSON-RPC `-32600` rather than served from either half. The point of the headers is
+  that a proxy can route without parsing the body, which only holds if they cannot lie.
+- **`tools/list` carries cache hints (SEP-2549)**: `ttlMs` (24h) and `cacheScope: "server"`. Svod's
+  15 tools are fixed at build time and identical for every agent, so a client can cache the
+  catalogue and skip the call entirely.
+- **Backward compatibility is per request, not per deployment.** The format is chosen from the
+  request itself: a `Mcp-Session-Id` header or an `initialize` body takes the 2025-11-25 path
+  through the SDK's streamable-HTTP transport; everything else is served statelessly. Both formats
+  work against one running engine at the same instant — covered by a test that drives an SDK
+  handshake client and a raw stateless client against a single server and has the second read what
+  the first wrote.
+- Internally the tool catalogue moved behind one `ToolDef` list that both paths render, so the two
+  formats cannot drift into advertising or accepting different tools.
+
 ## v1.12.1 — 2026-08-01 (App API contract 0.23.0)
 
 ### Fixed — the contract version drifted between the gate and what clients are told
