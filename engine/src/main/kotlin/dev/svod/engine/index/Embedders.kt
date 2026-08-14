@@ -20,21 +20,27 @@ object Embedders {
 
     /** @param vaultRoot used to locate `.svod/models/` for the on-first-run model cache. */
     fun create(config: EmbedderConfig, vaultRoot: Path): Embedder = when (config.provider) {
+        // BM25-only: nothing to embed, so nothing to cache.
         EmbedderProvider.NONE -> NoneEmbedder
         EmbedderProvider.OLLAMA -> OllamaEmbedder(
             config.ollamaModel,
             config.ollamaEndpoint,
             java.time.Duration.ofSeconds(config.requestTimeoutSeconds.toLong()),
-        )
+        ).cached()
         EmbedderProvider.OPENAI -> OpenAiEmbedder(
             config.openaiModel,
             config.openaiEndpoint,
             // API keys are Secrets references only (env:/file:/keychain:) — never raw over the API.
             config.openaiApiKeyRef?.takeIf { it.isNotBlank() }?.let { dev.svod.engine.security.Secrets.resolve(it) },
             java.time.Duration.ofSeconds(config.requestTimeoutSeconds.toLong()),
-        )
-        EmbedderProvider.ONNX_LOCAL -> loadOnnxLocal(config.onnx, vaultRoot.resolve(".svod").resolve("models"))
+        ).cached()
+        EmbedderProvider.ONNX_LOCAL -> loadOnnxLocal(config.onnx, vaultRoot.resolve(".svod").resolve("models")).cached()
     }
+
+    // Query embedding dominates search latency for every active provider, so the cache is applied
+    // here — the one place a provider is resolved, which makes a model swap produce a fresh (empty)
+    // cache without any explicit invalidation.
+    private fun Embedder.cached(): Embedder = CachingEmbedder(this)
 
     private fun loadOnnxLocal(onnx: OnnxConfig, modelsDir: Path): Embedder {
         val cls = try {

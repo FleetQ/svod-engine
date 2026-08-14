@@ -15,6 +15,7 @@ import org.apache.lucene.index.Term
 import org.apache.lucene.index.VectorSimilarityFunction
 import org.apache.lucene.search.BooleanClause
 import org.apache.lucene.search.BooleanQuery
+import org.apache.lucene.search.FieldExistsQuery
 import org.apache.lucene.search.IndexSearcher
 import org.apache.lucene.search.KnnFloatVectorQuery
 import org.apache.lucene.search.MatchAllDocsQuery
@@ -70,17 +71,27 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
      * Paths that have at least one indexed chunk WITHOUT a stored vector — the embedding backlog.
      * Used by the background indexer to find (and resume) work after a keyword-first pass: every
      * such path still needs embedding. Empty when the index is fully embedded (or BM25-only).
+     *
+     * The backlog is found by NEGATING [FieldExistsQuery] over the kNN field rather than scanning
+     * every document: stored fields are then decompressed only for chunks that actually lack a
+     * vector — none, once embedding has caught up — instead of all of them. This runs twice on the
+     * boot path, so on a large vault the difference is felt at startup.
+     *
+     * `vec` and `vecBytes` are written together in [upsertFile] (one `if (vector != null)` branch)
+     * and a schema change forces a full reindex, so testing the kNN field is equivalent to testing
+     * the stored copy.
      */
     fun pathsMissingVectors(): List<String> = withSearcher { s ->
         val n = s.indexReader.numDocs()
         if (n == 0) return@withSearcher emptyList()
-        val td = s.search(MatchAllDocsQuery(), n)
+        val q = BooleanQuery.Builder()
+            .add(MatchAllDocsQuery(), BooleanClause.Occur.MUST)
+            .add(FieldExistsQuery(VEC_FIELD), BooleanClause.Occur.MUST_NOT)
+            .build()
+        val td = s.search(q, n)
         val sf = s.storedFields()
         val missing = LinkedHashSet<String>()
-        for (sd in td.scoreDocs) {
-            val d = sf.document(sd.doc)
-            if (d.getBinaryValue("vecBytes") == null) missing.add(d.get("path"))
-        }
+        for (sd in td.scoreDocs) missing.add(sf.document(sd.doc).get("path"))
         missing.toList()
     }
 
@@ -93,7 +104,7 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
         for (sd in td.scoreDocs) {
             val d = sf.document(sd.doc)
             val hash = d.get("contentHash") ?: continue
-            val bytes = d.getBinaryValue("vecBytes") ?: continue
+            val bytes = d.getBinaryValue(VEC_BYTES_FIELD) ?: continue
             out[hash] = bytesToFloats(bytes)
         }
         out
@@ -125,8 +136,8 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
             }
             memory.expiresAt?.let { d.add(LongPoint("expiresAt", it)) }
             if (cd.vector != null) {
-                d.add(KnnFloatVectorField("vec", cd.vector, VectorSimilarityFunction.COSINE))
-                d.add(StoredField("vecBytes", floatsToBytes(cd.vector)))
+                d.add(KnnFloatVectorField(VEC_FIELD, cd.vector, VectorSimilarityFunction.COSINE))
+                d.add(StoredField(VEC_BYTES_FIELD, floatsToBytes(cd.vector)))
             }
             writer.addDocument(d)
         }
@@ -156,7 +167,7 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
 
     fun semanticSearch(vector: FloatArray, k: Int, filter: Query?): List<Pair<String, Float>> = withSearcher { s ->
         if (s.indexReader.numDocs() == 0) return@withSearcher emptyList()
-        val q = KnnFloatVectorQuery("vec", vector, k, filter)
+        val q = KnnFloatVectorQuery(VEC_FIELD, vector, k, filter)
         val td = s.search(q, k)
         val sf = s.storedFields()
         td.scoreDocs.map { sf.document(it.doc).get("chunkId") to it.score }
@@ -257,6 +268,17 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
     }
 
     companion object {
+        /**
+         * The kNN vector field. Named rather than inlined because [pathsMissingVectors] detects the
+         * embedding backlog by NEGATING its existence: a rename that missed one site would make the
+         * query match nothing, the `MUST_NOT` therefore match everything, and the engine would
+         * silently re-embed the whole vault on every boot — with no error anywhere.
+         */
+        const val VEC_FIELD = "vec"
+
+        /** The stored copy of the same vector, kept so an unchanged chunk can be reused on reindex. */
+        const val VEC_BYTES_FIELD = "vecBytes"
+
         fun floatsToBytes(arr: FloatArray): BytesRef {
             val buf = ByteBuffer.allocate(arr.size * 4).order(ByteOrder.LITTLE_ENDIAN)
             for (f in arr) buf.putFloat(f)
