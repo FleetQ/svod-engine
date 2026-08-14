@@ -50,7 +50,7 @@ class AgentAdminTest {
     }
 
     @Test
-    fun `duplicate agent id — Conflict`() = runBlocking {
+    fun `duplicate agent id — Conflict`(): Unit = runBlocking {
         val (ctrl, _, _) = controller()
         val ref = tokenRef("token-1")
         ctrl.create(CreateAgentRequest(agentId = "dup", role = "READ_ONLY", tokenRef = ref))
@@ -61,7 +61,7 @@ class AgentAdminTest {
     }
 
     @Test
-    fun `invalid agent id pattern — InvalidRequest`() = runBlocking {
+    fun `invalid agent id pattern — InvalidRequest`(): Unit = runBlocking {
         val (ctrl, _, _) = controller()
         assertFailsWith<AgentAdmin.InvalidRequest> {
             ctrl.create(CreateAgentRequest(agentId = "Bad ID!", role = "READ_ONLY", tokenRef = tokenRef("x")))
@@ -69,7 +69,7 @@ class AgentAdminTest {
     }
 
     @Test
-    fun `raw token (not a Secrets ref) — NotARef`() = runBlocking {
+    fun `raw token (not a Secrets ref) — NotARef`(): Unit = runBlocking {
         val (ctrl, _, _) = controller()
         assertFailsWith<AgentAdmin.NotARef> {
             ctrl.create(CreateAgentRequest(agentId = "agent1", role = "READ_ONLY", tokenRef = "raw-literal-token"))
@@ -92,7 +92,7 @@ class AgentAdminTest {
     }
 
     @Test
-    fun `delete — authenticate returns null, second delete — UnknownAgent`() = runBlocking {
+    fun `delete — authenticate returns null, second delete — UnknownAgent`(): Unit = runBlocking {
         val (ctrl, registry, _) = controller()
         val tokenValue = "delete-test-token"
         val ref = tokenRef(tokenValue)
@@ -113,7 +113,7 @@ class AgentAdminTest {
     }
 
     @Test
-    fun `update unknown agent — UnknownAgent`() = runBlocking {
+    fun `update unknown agent — UnknownAgent`(): Unit = runBlocking {
         val (ctrl, _, _) = controller()
         assertFailsWith<AgentAdmin.UnknownAgent> {
             ctrl.update("ghost", UpdateAgentRequest(role = "WRITE"))
