@@ -3,6 +3,63 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.14.0 — 2026-08-14 (App API contract 0.23.0)
+
+Search-latency work. The contract is unchanged — this is all internal to the index and the
+embedder clients, so no client change is needed to benefit.
+
+The premise came from measuring rather than assuming: of a ~157 ms warm semantic search on a
+79,178-chunk vault, **~112 ms was the Ollama query-embedding round-trip** and only ~45 ms the
+HNSW lookup. The ANN index was never the bottleneck, so all three changes target the embed path.
+
+### Added — query-embedding cache
+- **`CachingEmbedder`**, a bounded LRU (256 entries) over `embedQuery`, applied in
+  `Embedders.create()` for every active provider. A repeated semantic query drops **~157 ms →
+  ~20 ms** while returning identical hits, measured end-to-end on the live vault. Ollama does not
+  itself cache identical embed inputs, so this removes a genuinely repeated cost.
+- Only **queries** are cached — `embedPassages` delegates straight through, since chunk texts are
+  effectively unique and caching them would only grow the heap.
+- Invalidation is structural, not explicit: a provider/model swap builds a fresh instance via
+  `Embedders.create()`, so a vector from a previous model can never be served.
+- The wrapper is `AutoCloseable` and closes its delegate — provider swaps dispose the previous
+  embedder through `(previous as? AutoCloseable)`, so a non-closeable decorator would have
+  stranded `OnnxLocalEmbedder`'s native ONNX session on every swap.
+
+### Changed — the Ollama model stays resident
+- `OllamaEmbedder` now sends **`keep_alive` (default `30m`)** on `/api/embed`. Ollama evicts a
+  model 5 minutes after last use, so the first search of a session paid a full reload: 0.93–2.39 s,
+  median ~1.5 s with the model file warm in the page cache (pooled n=9); one fully-cold observation
+  reached 6.0 s. That is ~5x a normal semantic search at the low end. Residency costs ~0.6 GiB for
+  bge-m3 (the larger `multilingual-e5-large` default would be ~2.1 GiB).
+- Note that `keep_alive` and the cache fix **disjoint** paths and do not compound: a repeat query
+  never touches Ollama at all, while a cache miss against an evicted model still pays the reload.
+
+### Fixed — `truncate` was never actually sent
+- `kotlinx.serialization` omits a property equal to its declared default, so `EmbedRequest`'s
+  `truncate = true` had never reached the wire. Harmless in itself (Ollama also defaults it to
+  `true`), but the same mechanism would have silently voided `keep_alive` and made this release a
+  no-op. `EmbedRequest` now carries no defaults; both fields are regression-tested. Every other
+  `@Serializable` request DTO in the repo was swept — no sibling has the same defect.
+
+### Performance — cheaper embedding-backlog scan
+- `LuceneIndex.pathsMissingVectors()` now finds the backlog by negating `FieldExistsQuery` over the
+  kNN field instead of scanning every document and decompressing its stored fields. Stored fields
+  are read only for chunks actually missing a vector — none once embedding has caught up, rather
+  than all 79,178. This runs twice on the boot path.
+- Equivalence with the old `vecBytes`-null scan was verified against Lucene 9.12.0 outside the
+  repo, running both implementations on multi-segment indexes where a segment carries no `vec`
+  FieldInfo at all, on indexes with deletes plus re-upsert without vectors, after `forceMerge(1)`,
+  and on the `n == matches == numDocs` boundary. Identical counts throughout.
+- The field name is now the constant `LuceneIndex.VEC_FIELD`, because this query detects work by
+  **negation**: a rename missing one site would match nothing, the `MUST_NOT` would then match
+  everything, and the engine would silently re-embed the whole vault on every boot with no error.
+
+### Upgrade notes
+- **No reindex.** `model` and `knownDim()` delegate unchanged, so `IndexMeta` identity is identical
+  and no re-embed is triggered. Verified live: `docCount` unchanged, embedding idle after restart.
+- Design and test plan: `docs/architecture-search-latency.md`, `docs/test-plan-search-latency.md`.
+  The research that produced the premise: `claudedocs/research_hnsw-chromadb_2026-08-14.md`.
+
 ## v1.13.0 — 2026-08-13 (App API contract 0.23.0)
 
 ### Added — MCP spec 2026-07-28 served alongside 2025-11-25 on the same endpoint
