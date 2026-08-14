@@ -3,6 +3,34 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.14.1 — 2026-08-14 (App API contract 0.23.0)
+
+Test-only. **No production code changed**, so this release is behaviourally identical to
+v1.14.0 — it exists so the guard below is traceable to a version.
+
+### Fixed — five agent-auth tests had never run
+- `AgentAdminTest` declared 10 tests and ran **5**. A Kotlin `@Test` whose body is an expression
+  returning something other than `Unit` compiles to a non-void method, and JUnit Jupiter does not
+  collect it: no failure, no skip, no warning — it simply never runs while the suite reports green.
+- All five silent ones ended in `assertFailsWith`, which returns the Throwable, so
+  `= runBlocking { … }` returned `Throwable`. The collected five happened to end in
+  `assertEquals`/`assertTrue`; that was the only thing separating them.
+- All five were the **negative agent-auth cases** — duplicate agent id → `Conflict`, invalid id
+  pattern → `InvalidRequest`, raw token instead of a Secrets ref → `NotARef`, double delete →
+  `UnknownAgent`, update unknown agent → `UnknownAgent`. Exactly the assertions least safe to have
+  quietly absent.
+- Fixed with `(): Unit = runBlocking { … }`. All ten now run and **all ten pass** — the auth logic
+  was correct, it had simply never been exercised.
+
+### Added — a guard so it cannot recur silently
+- `TestMethodCollectionTest` reflects over every compiled test class and fails on any `@Test`
+  method with a non-void return type, naming the method and the type it returns. A class it cannot
+  introspect is also a failure, since an unreadable class is a hole in the guard rather than a pass.
+- Mutation-tested rather than merely observed green: reverting one call site drops `AgentAdminTest`
+  from 10 collected to 9 and the guard fails by name.
+- Repo-wide sweep: declared `@Test` count now equals collected count for every test class.
+  `AgentAdminTest` was the only instance. Suite is **271 tests** (was 265: +5 restored, +1 guard).
+
 ## v1.14.0 — 2026-08-14 (App API contract 0.23.0)
 
 Search-latency work. The contract is unchanged — this is all internal to the index and the
