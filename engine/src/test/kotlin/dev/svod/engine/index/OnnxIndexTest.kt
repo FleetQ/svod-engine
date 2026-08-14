@@ -50,7 +50,8 @@ class OnnxIndexTest {
         assertTrue(Embedders.create(EmbedderConfig(EmbedderProvider.NONE), Path.of("/x")) is NoneEmbedder)
         val onnx = Embedders.create(EmbedderConfig(EmbedderProvider.ONNX_LOCAL, onnx = cfg), Path.of("/x"))
         try {
-            assertTrue(onnx is OnnxLocalEmbedder)
+            // The factory wraps active providers in a query cache, so unwrap to assert the provider.
+            assertTrue((onnx as CachingEmbedder).delegate is OnnxLocalEmbedder)
             assertEquals(384, onnx.dim)
         } finally { (onnx as AutoCloseable).close() }
 

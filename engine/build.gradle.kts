@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "dev.svod"
-version = "1.12.1"
+version = "1.13.0"
 
 repositories {
     mavenCentral()
@@ -48,6 +48,9 @@ dependencies {
     implementation("io.ktor:ktor-server-sse:$ktorVersion")
     implementation("io.ktor:ktor-server-websockets:$ktorVersion")
     implementation("io.ktor:ktor-server-content-negotiation:$ktorVersion")
+    // Lets the MCP POST handler read the body to pick a wire format and still hand it to the
+    // legacy streamable-HTTP transport, which parses it again.
+    implementation("io.ktor:ktor-server-double-receive:$ktorVersion")
     implementation("io.ktor:ktor-serialization-kotlinx-json:$ktorVersion")
 
     // External-change file watcher (App API / step 4)
