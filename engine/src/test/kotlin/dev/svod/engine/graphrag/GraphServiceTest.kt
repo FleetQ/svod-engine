@@ -443,6 +443,46 @@ class GraphServiceTest {
         }
     }
 
+    // ---- cancellation must not wedge the status ----
+
+    @Test
+    fun `a cooperatively cancelled build never leaves the status stuck at BUILDING`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { fx.seedTwoTopics() }
+            val index = fx.newIndex(FakeEmbedder("fake"))
+
+            // Cancel from INSIDE the detector, without interrupting the thread. `close()` would also
+            // interrupt, which raises through the catch — a different path that leaves the
+            // `if (cancelled) return false` checkpoints untested. An earlier version of this test
+            // used close() and passed even with the fix removed, which is why it is written this way.
+            lateinit var service: GraphService
+            val cancelling = object : CommunityDetector {
+                override fun detect(graph: NoteGraph): List<Partition> {
+                    service.cancelBuild()
+                    return LouvainDetector().detect(graph)
+                }
+            }
+            service = GraphService(
+                fx.root.resolve(".svod/graph"), fx.engine, index, SpyLlm(), config(), cancelling,
+            ).start()
+
+            service.rebuild()
+            val deadline = System.currentTimeMillis() + 20_000
+            while (System.currentTimeMillis() < deadline && service.status().state == GraphState.BUILDING.name) {
+                Thread.sleep(50)
+            }
+
+            // Wedged at BUILDING this would spin the UI forever AND make rebuild() refuse for good.
+            assertEquals(
+                GraphState.NOT_BUILT.name, service.status().state,
+                "a cancelled build must settle to what it can actually serve, not stay BUILDING",
+            )
+            assertTrue(service.rebuild(), "a settled service must accept a new build")
+            index.close()
+            service.close()
+        }
+    }
+
     // ---- disabled means disabled ----
 
     @Test

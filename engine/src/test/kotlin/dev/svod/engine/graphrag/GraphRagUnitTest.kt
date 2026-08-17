@@ -150,6 +150,41 @@ class GraphRagUnitTest {
     }
 
     @Test
+    fun `an overwrite interrupted mid-save reads as never-built, not as mixed data`() {
+        val dir = Files.createTempDirectory("svod-graph-store-")
+        val store = GraphStore(dir)
+        val graph = twoTriangles()
+        val old = listOf(
+            CommunityLevel(0, listOf(Community("L0-0", 0, listOf("a1.md", "a2.md"), title = "OLD"))),
+        )
+        store.save(meta(graph, "head-one"), graph, old, emptyMap())
+        assertNotNull(store.load(), "first save must load")
+
+        // Simulate a crash PART-WAY through a second save: the payload files have been replaced but
+        // meta.json was never rewritten. Before the fix, the stale meta made this load cleanly and
+        // hand back communities describing a graph that no longer existed.
+        Files.writeString(
+            dir.resolve("communities.json"),
+            json(listOf(CommunityLevel(0, listOf(Community("L0-0", 0, listOf("gone.md"), title = "NEW"))))),
+        )
+        Files.deleteIfExists(dir.resolve("meta.json"))
+
+        assertNull(
+            store.load(),
+            "an interrupted overwrite must read as NOT_BUILT; serving mixed data is worse than none",
+        )
+    }
+
+    private fun meta(graph: NoteGraph, head: String) = GraphMeta(
+        head = head, builtAt = 1L, noteCount = graph.nodes.size, edgeCount = graph.edges.size,
+        linkEdgeCount = graph.linkEdgeCount, simEdgeCount = graph.simEdgeCount,
+        vectorCoverage = 1.0, summaryProvider = "none", summarisedCount = 0,
+    )
+
+    private fun json(levels: List<CommunityLevel>): String =
+        kotlinx.serialization.json.Json.encodeToString(levels)
+
+    @Test
     fun `sidecar survives a save-load round trip`() {
         val dir = Files.createTempDirectory("svod-graph-store-")
         val store = GraphStore(dir)

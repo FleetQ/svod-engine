@@ -56,11 +56,17 @@ class GraphStore(private val dir: Path) {
      */
     fun save(meta: GraphMeta, graph: NoteGraph, levels: List<CommunityLevel>, centroids: Map<String, FloatArray>) {
         Files.createDirectories(dir)
+        // Drop meta FIRST. Writing it last protects the very first save, but not an OVERWRITE: a
+        // crash after graph.json and before meta.json would leave the PREVIOUS meta describing the
+        // NEW graph, and load() would happily return communities whose members no longer exist —
+        // silently wrong data, which is worse than reporting NOT_BUILT. With meta removed up front,
+        // any crash during a save reads as "never built" and the next start rebuilds.
+        Files.deleteIfExists(metaFile)
         writeAtomic(graphFile, json.encodeToString(graph))
         writeAtomic(communitiesFile, json.encodeToString(levels))
         writeAtomic(centroidsFile, json.encodeToString(centroids.mapValues { it.value.toList() }))
-        // meta LAST: its presence is what makes a sidecar loadable, so it must never appear before the
-        // files it describes.
+        // meta LAST: its presence is what makes a sidecar loadable, so it must never appear before
+        // the files it describes.
         writeAtomic(metaFile, json.encodeToString(meta))
     }
 

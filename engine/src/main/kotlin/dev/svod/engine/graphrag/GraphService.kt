@@ -65,23 +65,43 @@ class GraphService(
             errorMessage = null
             progress = "starting"
             buildThread = Thread({
-                try {
-                    runBuild()
+                // The terminal state is assigned in exactly ONE place, structurally. runBuild has
+                // several `if (cancelled) return` checkpoints; if any of them could skip the state
+                // assignment the status would wedge at BUILDING for the life of the service — a
+                // permanently spinning UI and a `rebuild()` that keeps refusing.
+                val terminal = try {
+                    if (runBuild()) GraphState.READY else settledState()
                 } catch (t: Throwable) {
                     // Contained: a graph build failure must never surface as a broken engine (test A5).
-                    state = GraphState.ERROR
                     errorMessage = t.message ?: t::class.simpleName
                     System.err.println("graph build failed: ${t.message}")
-                } finally {
-                    progress = null
+                    GraphState.ERROR
                 }
+                progress = null
+                state = terminal
             }, "svod-graph-build").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
             buildThread?.start()
         }
         return true
     }
 
-    private fun runBuild() {
+    /** What to report when a build ended without completing: whatever we can still serve. */
+    private fun settledState(): GraphState =
+        if (loaded != null) GraphState.READY else GraphState.NOT_BUILT
+
+    /**
+     * Cancels an in-flight build WITHOUT interrupting its thread.
+     *
+     * Separate from [close] so the cooperative-cancellation path (the `if (cancelled) return`
+     * checkpoints) is reachable deterministically — interrupting instead raises through the catch,
+     * which is a different path and would leave the early-return checkpoints untested.
+     */
+    internal fun cancelBuild() {
+        cancelled = true
+    }
+
+    /** @return true when the build ran to completion; false when it was cancelled part-way. */
+    private fun runBuild(): Boolean {
         // The index head, not `engine.head()`: the graph is a function of the INDEX (its paths and
         // its vectors), so that is the head staleness must be measured against. It is also a plain
         // file read, which keeps `status()` off the write actor and off any blocking call — see
@@ -94,11 +114,11 @@ class GraphService(
 
         val built = NoteGraphBuilder(index, config.simEdgesPerNote, config.simThreshold)
             .build(linkGraph, paths, onProgress = { progress = it }, isCancelled = { cancelled })
-        if (cancelled) return
+        if (cancelled) return false
 
         progress = "communities"
         val partitions = detector.detect(built.graph)
-        if (cancelled) return
+        if (cancelled) return false
 
         val centroids = HashMap<String, FloatArray>()
         val levels = partitions.mapIndexed { levelIdx, partition ->
@@ -115,7 +135,7 @@ class GraphService(
         }
 
         val summarised = summarise(levels)
-        if (cancelled) return
+        if (cancelled) return false
 
         val meta = GraphMeta(
             head = head,
@@ -130,7 +150,7 @@ class GraphService(
         )
         store.save(meta, built.graph, summarised, centroids)
         loaded = GraphStore.Loaded(meta, built.graph, summarised, centroids)
-        state = GraphState.READY
+        return true
     }
 
     /**
