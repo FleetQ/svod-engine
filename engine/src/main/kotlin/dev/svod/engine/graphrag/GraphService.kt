@@ -22,8 +22,26 @@ data class GraphConfig(
      * sync. Off by default, like every other part of this feature. See [GraphService.attachPass].
      */
     val incremental: Boolean = false,
+    /**
+     * Minimum cosine for incremental attachment; null ⇒ reuse [simThreshold].
+     *
+     * A separate knob because the two thresholds answer different questions. [simThreshold] governs
+     * whether an edge is created for CLUSTERING, where a high bar buys sharper communities and a weak
+     * edge might not survive modularity optimisation anyway. Attachment is not clustering — the
+     * partition already exists and the question is only "which of these is the closest home", which
+     * is a classification bar, not a structure-forming one.
+     *
+     * Measured, which is why the knob exists: at the operator's tuned `simThreshold: 0.88` a real new
+     * note (a dense `memory/policy` note) had NO neighbour above the bar and stayed off the map
+     * entirely — the same 17% of notes the 0.88 build leaves uncovered. Its nearest neighbour was in
+     * [0.70, 0.80), and at 0.70 it attached to a coarse theme that does describe it.
+     */
+    val attachThreshold: Double? = null,
     val summary: SummaryLlmConfig = SummaryLlmConfig(),
-)
+) {
+    /** The bar attachment actually applies. */
+    val effectiveAttachThreshold: Double get() = attachThreshold ?: simThreshold
+}
 
 /**
  * Owns the derived graph for one vault: background build, sidecar persistence, status, and the
@@ -494,7 +512,8 @@ class GraphService(
             val v = index.noteVector(path)
             // No vector yet (embedding backlog, or a BM25-only vault) ⇒ nothing to place it by.
             if (v == null) { pending++; continue }
-            val neighbours = Attachment.nearest(v, vectors, config.simEdgesPerNote, config.simThreshold)
+            val neighbours =
+                Attachment.nearest(v, vectors, config.simEdgesPerNote, config.effectiveAttachThreshold)
             val placed = memberOf.mapIndexedNotNull { lvl, m ->
                 Attachment.dominantCommunity(neighbours, m)?.let { lvl to it }
             }

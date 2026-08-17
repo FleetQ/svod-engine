@@ -104,6 +104,13 @@ no LLM call) votes among its k nearest already-placed neighbours and joins the c
 dominates, at every level. Louvain is not re-run and no summary is regenerated; the community records
 `addedSinceSummary` instead.
 
+Attachment has its own similarity floor (`graph.attachThreshold`, defaulting to `simThreshold`).
+Measured on the live vault: at the tuned `simThreshold: 0.88` a real new note had no neighbour above
+the bar and never appeared — attachment had inherited the 17% of notes that threshold leaves off the
+map. Its nearest neighbour bisected to [0.70, 0.80). The two are not the same question: `simThreshold`
+decides whether an edge is worth clustering on; attachment classifies against a partition that already
+exists and changes no community. Live setting: **0.75**, the sweep's 95%-coverage point.
+
 This does **not** solve the problem above, and is not meant to. Attachment does not recompute the
 partition, so after enough new notes the structure drifts from what a full Louvain would produce.
 The two halves belong together: attachment keeps notes *reachable* between builds, and the periodic

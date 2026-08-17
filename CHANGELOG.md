@@ -25,9 +25,8 @@ build are placed into the communities that already exist:
   vectors) — no embedder call, and certainly no LLM call;
 - its k nearest already-placed notes are found, and it joins whichever community **dominates among
   them, weighted by similarity** — at every level, since each level is a partition;
-- the same `simThreshold` the build uses applies, so a note that would not have earned a similarity
-  edge does not earn a community either. It stays **pending**, and is counted rather than filed
-  somewhere arbitrary;
+- a similarity floor applies, so a note with nothing close enough stays **pending** and is counted
+  rather than filed into whichever community happened to be least far away;
 - **Louvain is not re-run and no summary is regenerated.** The community records
   `addedSinceSummary`, so a reader can see that the summary describes slightly fewer notes than the
   size counts.
@@ -35,6 +34,16 @@ build are placed into the communities that already exist:
 Runs on a MIN_PRIORITY daemon thread, writes only `communities.json` + `meta.json` (not the 12 MB
 `graph.json`), and touches neither the Lucene index nor the vault. Every failure degrades to "not
 attached", never to a broken build.
+
+**`graph.attachThreshold` (default: reuse `simThreshold`).** The first cut reused the build's edge
+threshold and was measured against the live vault: at the operator's tuned `simThreshold: 0.88` the
+real new note had **no neighbour above the bar and never appeared** — attachment had inherited exactly
+the 17% of notes a 0.88 build leaves uncovered. Bisected live, its nearest neighbour is in
+**[0.70, 0.80)**, and at 0.70 it attaches to a coarse theme that does describe it. The two thresholds
+answer different questions: `simThreshold` decides whether an edge is worth CLUSTERING on, where a
+weak edge may not survive modularity optimisation anyway; attachment is classification against a
+partition that already exists and changes no community. The live config now sets **0.75** — the value
+the earlier sweep measured at 95% edge coverage.
 
 **Accepted drift:** neighbour attachment does not recompute the partition, so after enough new notes
 the structure diverges from what a full Louvain would produce. Incremental attachment keeps notes

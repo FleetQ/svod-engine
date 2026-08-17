@@ -22,9 +22,9 @@ internal object Attachment {
      * The [k] nearest notes with cosine ≥ [threshold], strongest first.
      *
      * Vectors are L2-normalised by `IndexService.noteVector`, so the dot product IS the cosine.
-     * [threshold] is the same one the full build uses for a similarity edge: a note that would not
-     * have earned an edge must not earn a community either, or attachment would place notes the
-     * build itself would have left isolated.
+     * [threshold] is `GraphConfig.effectiveAttachThreshold` — the build's `simThreshold` unless the
+     * operator set attachment its own bar. Whatever it is, it is a real floor: below it the note is
+     * left pending rather than filed into whichever community happened to be least far away.
      */
     fun nearest(
         target: FloatArray,

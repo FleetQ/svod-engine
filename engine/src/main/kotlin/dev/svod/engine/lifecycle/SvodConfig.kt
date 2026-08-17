@@ -90,6 +90,16 @@ data class SvodConfig(
          * last full build only.
          */
         val incremental: Boolean = false,
+        /**
+         * Minimum cosine for attaching a new note to an existing theme. Null ⇒ reuse [simThreshold].
+         *
+         * Worth setting separately: [simThreshold] tuned high (0.88) deliberately leaves ~17% of
+         * notes off the map, and attachment inherits that — measured, a real new note had no
+         * neighbour above 0.88 and never appeared. Attachment is classification against a partition
+         * that already exists, not structure-forming, so it can use a lower bar without changing any
+         * community.
+         */
+        val attachThreshold: Double? = null,
     )
     /**
      * [blockStartup]=false (default) binds the App API immediately and builds the semantic index in
@@ -353,6 +363,7 @@ data class SvodConfig(
             summaryInputChars = graph.summaryInputChars,
             rebuildOnStartup = graph.rebuildOnStartup,
             incremental = graph.incremental,
+            attachThreshold = graph.attachThreshold,
             summary = dev.svod.engine.graphrag.SummaryLlmConfig(
                 provider = provider,
                 model = graph.summaryModel,

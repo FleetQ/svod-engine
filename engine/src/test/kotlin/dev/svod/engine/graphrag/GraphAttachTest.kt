@@ -50,6 +50,7 @@ class GraphAttachTest {
         incremental: Boolean = true,
         simThreshold: Double = 0.5,
         simEdgesPerNote: Int = 4,
+        attachThreshold: Double? = null,
     ) = GraphConfig(
         enabled = true,
         simEdgesPerNote = simEdgesPerNote,
@@ -58,6 +59,7 @@ class GraphAttachTest {
         summariseTopLevels = 1,
         rebuildOnStartup = false,
         incremental = incremental,
+        attachThreshold = attachThreshold,
     )
 
     private fun awaitBuild(g: GraphService, timeoutMs: Long = 60_000) {
@@ -328,6 +330,40 @@ class GraphAttachTest {
             assertEquals(1, strict.status().pendingCount, "and must be counted, so the operator can act")
             index.close(); strict.close()
         }
+    }
+
+    @Test
+    fun `attachment can be given a lower bar than the build's edge threshold`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { fx.seedTwoTopics() }
+            val index = fx.newIndex(FakeEmbedder("fake"))
+            val dir = fx.root.resolve(".svod/graph")
+            GraphService(dir, fx.engine, index, SpyLlm(), config()).start().also {
+                it.rebuild(); awaitBuild(it); it.close()
+            }
+            addCookNote(fx, index)
+
+            // The bar that leaves it pending — the build's own, which on the real vault is tuned
+            // high enough to leave ~17% of notes off the map.
+            val strict = GraphService(dir, fx.engine, index, SpyLlm(), config(simThreshold = 0.999)).start()
+            assertEquals(0, strict.attachPass().attached)
+            strict.close()
+
+            // The same note, the same graph, attachment given its own (lower) bar. Nothing about the
+            // partition changes — only whether this note gets a home in it.
+            val lenient = GraphService(
+                dir, fx.engine, index, SpyLlm(), config(simThreshold = 0.999, attachThreshold = 0.5),
+            ).start()
+            assertEquals(1, lenient.attachPass().attached, "an explicit attachThreshold must override simThreshold")
+            assertNotNull(holderOf(lenient, "cook/risotto.md"))
+            index.close(); lenient.close()
+        }
+    }
+
+    @Test
+    fun `attachment falls back to the build threshold when given no bar of its own`() {
+        assertEquals(0.88, GraphConfig(simThreshold = 0.88).effectiveAttachThreshold)
+        assertEquals(0.75, GraphConfig(simThreshold = 0.88, attachThreshold = 0.75).effectiveAttachThreshold)
     }
 
     @Test
