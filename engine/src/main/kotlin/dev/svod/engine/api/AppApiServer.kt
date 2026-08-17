@@ -405,7 +405,7 @@ class AppApiServer(
                             "sample" -> c.members.take(dev.svod.engine.graphrag.MEMBER_SAMPLE)
                             else -> c.members
                         }
-                        GraphCommunityDto(c.id, c.level, c.title, c.summary, c.size, shown)
+                        GraphCommunityDto(c.id, c.level, c.title, c.summary, c.size, shown, c.addedSinceSummary)
                     },
                 ))
             }
@@ -414,7 +414,7 @@ class AppApiServer(
                 val id = call.request.queryParameters["id"]
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorDto("bad_request", "id is required"))
                 val c = vc.graph?.community(id) ?: return@get call.notFound("community $id")
-                call.respond(GraphCommunityDto(c.id, c.level, c.title, c.summary, c.size, c.members))
+                call.respond(GraphCommunityDto(c.id, c.level, c.title, c.summary, c.size, c.members, c.addedSinceSummary))
             }
             get("/api/v1/graph/status") {
                 val vc = vault() ?: return@get call.notFound("vault")

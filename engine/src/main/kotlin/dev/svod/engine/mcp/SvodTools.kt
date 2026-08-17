@@ -162,6 +162,12 @@ class SvodTools(
                 if (status.stale) {
                     put("hint", "built against an older commit: the themes are still valid but may miss the most recent notes")
                 }
+                if (status.incremental) {
+                    // Attached notes ARE reachable through these themes; pending ones are on no theme
+                    // at all — a materially different thing to tell an agent than one "stale" flag.
+                    put("attachedSinceBuild", status.attachedCount)
+                    put("notOnAnyTheme", status.pendingCount)
+                }
                 putJsonArray("communities") {
                     found.forEach { c ->
                         addJsonObject {
@@ -200,6 +206,10 @@ class SvodTools(
             put("communityCount", s.communityCount); put("levelCount", s.levelCount)
             put("vectorCoverage", s.vectorCoverage); put("summaryProvider", s.summaryProvider)
             put("summarisedCount", s.summarisedCount); put("error", s.error); put("progress", s.progress)
+            // Incremental attachment (0.26.0). `attachedCount`/`pendingCount` mean nothing unless
+            // `incremental` is true — with it off they are simply never computed.
+            put("incremental", s.incremental)
+            put("attachedCount", s.attachedCount); put("pendingCount", s.pendingCount)
         }
     }
 

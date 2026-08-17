@@ -70,6 +70,23 @@ class GraphStore(private val dir: Path) {
         writeAtomic(metaFile, json.encodeToString(meta))
     }
 
+    /**
+     * Persists an incremental attachment: only the community memberships and the metadata that
+     * records which paths were folded in.
+     *
+     * Deliberately does NOT go through [save]. Attachment never touches `graph.json` (12 MB on the
+     * real vault) or the centroids, so rewriting them on every commit would be pure churn — and it
+     * skips [save]'s delete-meta-first dance on purpose: there the risk is a stale meta describing a
+     * NEW graph, which is silently wrong data. Here the two files disagree by at most one attachment
+     * pass, and the caller re-checks membership before adding a path, so a crash between the two
+     * writes costs nothing worse than re-doing that pass.
+     */
+    fun saveIncremental(meta: GraphMeta, levels: List<CommunityLevel>) {
+        Files.createDirectories(dir)
+        writeAtomic(communitiesFile, json.encodeToString(levels))
+        writeAtomic(metaFile, json.encodeToString(meta))
+    }
+
     /** Removes the sidecar, so a failed rebuild cannot keep serving data it no longer describes. */
     fun clear() {
         if (!Files.isDirectory(dir)) return

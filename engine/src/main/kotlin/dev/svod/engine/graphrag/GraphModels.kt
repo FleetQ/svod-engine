@@ -25,6 +25,15 @@ data class Community(
     val title: String,
     /** Model that produced [summary]; null when [summary] is null. */
     val model: String? = null,
+    /**
+     * Members attached incrementally AFTER this community was built and summarised.
+     *
+     * The summary is deliberately not regenerated for them — one note joining 320 does not
+     * invalidate a two-sentence characterisation, and regenerating would put an LLM call back on the
+     * commit path, which this feature exists to avoid. The count is the honest disclosure that the
+     * summary describes slightly less than the membership does.
+     */
+    val addedSinceSummary: Int = 0,
 ) {
     val size: Int get() = members.size
 }
@@ -76,9 +85,22 @@ data class GraphStatus(
     val vectorCoverage: Double = 0.0,
     val summaryProvider: String = "none",
     val summarisedCount: Int = 0,
+    /**
+     * Whether on-commit incremental attachment is switched on. Without it, [attachedCount] and
+     * [pendingCount] are never computed and stay 0 — which would otherwise be indistinguishable from
+     * "nothing has changed", so a client must read this flag before believing those two.
+     */
+    val incremental: Boolean = false,
+    /** Notes attached to an existing community since the last full build (no Louvain, no LLM). */
+    val attachedCount: Int = 0,
+    /** Indexed notes that are on no theme at all: not yet attached, or with no close-enough neighbour. */
+    val pendingCount: Int = 0,
     val error: String? = null,
     val progress: String? = null,
-)
+) {
+    /** Notes that arrived after the last full build, attached or not — what a rebuild would fold in. */
+    val newSinceBuild: Int get() = attachedCount + pendingCount
+}
 
 /** Persisted build metadata; the staleness comparison reads [head]. */
 @Serializable
@@ -93,6 +115,18 @@ data class GraphMeta(
     val vectorCoverage: Double,
     val summaryProvider: String,
     val summarisedCount: Int,
+    /**
+     * Notes attached incrementally since this build, in attachment order.
+     *
+     * Persisted (rather than derived) because it is the only record of which paths are already on the
+     * map: they are added to community membership but deliberately NOT to [NoteGraph.nodes], so
+     * without this list every restart would re-attach them and duplicate their membership. A full
+     * rebuild resets it to empty, which is exactly right — the rebuild absorbs them properly.
+     *
+     * Defaulted, so a sidecar written before this field existed still loads: an older build simply
+     * reports nothing attached, which is the truth for it.
+     */
+    val attachedPaths: List<String> = emptyList(),
 ) {
     companion object {
         /**

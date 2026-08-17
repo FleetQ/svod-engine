@@ -96,6 +96,20 @@ GraphRAG is designed for static corpora and has no good answer; neither do we.
 like the existing `embeddingStatus()`, so staleness is *known*, never silently wrong. Rebuild is
 explicit (or interval-based), not per-write. This is a deliberate trade, not an oversight.
 
+**Narrowed in 1.17.0 (`graph.incremental`, off by default).** "Visible" turned out to be too little:
+measured on the real vault, a note written after the build was found by search within seconds and was
+in **no community at any level**, while the pane showed a bare "stale" badge and a rebuild cost ~15
+minutes. So new notes are now *attached* between builds — the note's stored vector (no embedder call,
+no LLM call) votes among its k nearest already-placed neighbours and joins the community that
+dominates, at every level. Louvain is not re-run and no summary is regenerated; the community records
+`addedSinceSummary` instead.
+
+This does **not** solve the problem above, and is not meant to. Attachment does not recompute the
+partition, so after enough new notes the structure drifts from what a full Louvain would produce.
+The two halves belong together: attachment keeps notes *reachable* between builds, and the periodic
+full rebuild restores the truth. What changed is that the operator can now see how much has
+accumulated — `attachedCount + pendingCount` on `graphStatus` — instead of a boolean.
+
 ## 9. Safety envelope (binding on every phase)
 
 1. Sidecar `.svod/graph/` only — **no** change to the Lucene schema (would force a reindex of 79,178

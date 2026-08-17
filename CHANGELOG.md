@@ -3,6 +3,59 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.17.0 — 2026-08-17 (App API contract 0.26.0)
+
+The thematic map stops describing only the vault as it was at the last build.
+
+### The gap, measured
+
+The index is incremental; the graph was not. Verified live on a 3,096-note vault against a note
+written after the build: **search found it within seconds, and it was in no community at any level**.
+Nothing auto-rebuilt it — `rebuildOnStartup` is off, there is no timer and no commit hook — and a full
+rebuild is **~15 minutes**, almost entirely the Ollama summary calls. So the honest statement was that
+the thematic layer described the vault as of the last build, and the pane's only signal was a bare
+"stale" badge.
+
+### Added — incremental attachment, with no model call anywhere
+
+`graph.incremental` (**off by default**). On each index sync, notes that appeared since the last full
+build are placed into the communities that already exist:
+
+- the note's vector is **already in Lucene** (`IndexService.noteVector` mean-pools stored chunk
+  vectors) — no embedder call, and certainly no LLM call;
+- its k nearest already-placed notes are found, and it joins whichever community **dominates among
+  them, weighted by similarity** — at every level, since each level is a partition;
+- the same `simThreshold` the build uses applies, so a note that would not have earned a similarity
+  edge does not earn a community either. It stays **pending**, and is counted rather than filed
+  somewhere arbitrary;
+- **Louvain is not re-run and no summary is regenerated.** The community records
+  `addedSinceSummary`, so a reader can see that the summary describes slightly fewer notes than the
+  size counts.
+
+Runs on a MIN_PRIORITY daemon thread, writes only `communities.json` + `meta.json` (not the 12 MB
+`graph.json`), and touches neither the Lucene index nor the vault. Every failure degrades to "not
+attached", never to a broken build.
+
+**Accepted drift:** neighbour attachment does not recompute the partition, so after enough new notes
+the structure diverges from what a full Louvain would produce. Incremental attachment keeps notes
+reachable *between* builds; the periodic full rebuild restores the truth. A stated trade, not a defect
+— which is exactly why the next item exists.
+
+### Added — staleness you can act on
+
+`GET /api/v1/graph/status` and the `graph_status` tool gain `incremental`, `attachedCount` and
+`pendingCount`. `attachedCount + pendingCount` is how many notes arrived since the last full build,
+split by whether they are on a theme yet — a client can now offer a rebuild against a number instead
+of showing a badge. `incremental` must be read first: with the feature off the two counts are never
+computed, and 0 would otherwise read as "nothing has changed".
+
+The counts are computed on the attach thread and only read from `status()`; enumerating indexed paths
+is a full stored-field sweep and this feature does not put one on a request path.
+
+### Contract
+
+0.25.0 → **0.26.0**, additive: three new `GraphStatus` fields and one new `GraphCommunity` field.
+
 ## v1.16.0 — 2026-08-17 (App API contract 0.25.0)
 
 Makes the thematic graph usable by agents. The feature worked; the tool shape made it impractical to

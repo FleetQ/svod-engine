@@ -84,6 +84,12 @@ data class SvodConfig(
         val summaryTimeoutSeconds: Int = 120,
         /** Build once at startup when the sidecar is missing or stale. Off by default. */
         val rebuildOnStartup: Boolean = false,
+        /**
+         * Attach notes written after a build to the existing themes, on each index sync — no LLM, no
+         * re-clustering. Off by default; without it the thematic map describes the vault as of the
+         * last full build only.
+         */
+        val incremental: Boolean = false,
     )
     /**
      * [blockStartup]=false (default) binds the App API immediately and builds the semantic index in
@@ -346,6 +352,7 @@ data class SvodConfig(
             summariseTopLevels = graph.summariseTopLevels,
             summaryInputChars = graph.summaryInputChars,
             rebuildOnStartup = graph.rebuildOnStartup,
+            incremental = graph.incremental,
             summary = dev.svod.engine.graphrag.SummaryLlmConfig(
                 provider = provider,
                 model = graph.summaryModel,
