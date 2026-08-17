@@ -210,6 +210,9 @@ class SvodTools(
             // `incremental` is true — with it off they are simply never computed.
             put("incremental", s.incremental)
             put("attachedCount", s.attachedCount); put("pendingCount", s.pendingCount)
+            // 0.27.0. A proxy: sampled attachments whose placement vote has since changed. 0.0 means
+            // none of the sample drifted, NOT that the partition is still what Louvain would build.
+            put("driftRatio", s.driftRatio)
         }
     }
 

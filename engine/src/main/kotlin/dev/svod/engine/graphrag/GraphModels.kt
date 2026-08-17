@@ -95,6 +95,16 @@ data class GraphStatus(
     val attachedCount: Int = 0,
     /** Indexed notes that are on no theme at all: not yet attached, or with no close-enough neighbour. */
     val pendingCount: Int = 0,
+    /**
+     * Fraction of attached notes whose neighbourhood has since moved on: their dominant-neighbour
+     * vote no longer names the community they sit in. 0.0 when nothing is attached.
+     *
+     * **A proxy, not a verdict.** It detects notes the incremental pass would now place elsewhere; it
+     * does NOT measure how far the whole partition has diverged from what a fresh Louvain would
+     * produce — that is only knowable by running one. `0.0` therefore means "no attached note has
+     * drifted", never "the partition is still optimal".
+     */
+    val driftRatio: Double = 0.0,
     val error: String? = null,
     val progress: String? = null,
 ) {

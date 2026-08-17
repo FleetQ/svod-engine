@@ -27,6 +27,7 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.http.content.staticFiles
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.ContentType
+import io.ktor.server.request.path
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
@@ -36,6 +37,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
@@ -816,6 +818,28 @@ class AppApiServer(
 
             webSocket("/api/v1/events") {
                 eventBus.events.collect { e -> send(Frame.Text(encodeEvent(e))) }
+            }
+
+            // An unmatched path UNDER /api is a client error, not a viewer route.
+            //
+            // Without this, the SPA fallback below answered every unknown API path with
+            // `200 text/html` — measured on `/api/v1/does-not-exist`, `/api/v1/graph/nope` and
+            // `/api/v9/settings`. A client then cannot tell "no such endpoint" from "endpoint
+            // returned a page", and a typed client raises a DECODING error rather than a not-found
+            // one. That has cost this project time twice, and is why the house rule is to
+            // feature-detect on `apiVersion` and never on a 404. The rule stays — but the engine
+            // should not have been making 404 unusable in the first place.
+            //
+            // Ktor scores explicit segments above a tailcard, so every real route above still wins;
+            // this only catches what nothing else matched. Registered unconditionally, so the answer
+            // does not depend on whether the viewer happens to be configured.
+            route("/api/{...}") {
+                handle {
+                    call.respond(
+                        HttpStatusCode.NotFound,
+                        ErrorDto("unknown_route", "no such endpoint: ${call.request.path()}"),
+                    )
+                }
             }
 
             // Opt-in: serve the reference web viewer same-origin (so its WS + fetch need no CORS).

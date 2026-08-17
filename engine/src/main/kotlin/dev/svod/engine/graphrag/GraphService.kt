@@ -37,6 +37,11 @@ data class GraphConfig(
      * [0.70, 0.80), and at 0.70 it attached to a coarse theme that does describe it.
      */
     val attachThreshold: Double? = null,
+    /**
+     * Compose a coarse level's summary from its CHILD communities' summaries rather than from raw
+     * note excerpts. See [GraphService.summarise].
+     */
+    val hierarchicalSummaries: Boolean = false,
     val summary: SummaryLlmConfig = SummaryLlmConfig(),
 ) {
     /** The bar attachment actually applies. */
@@ -83,6 +88,7 @@ class GraphService(
      */
     @Volatile private var noteVectors: Map<String, FloatArray>? = null
     @Volatile private var pendingCount: Int = 0
+    @Volatile private var driftRatio: Double = 0.0
     private val passQueued = java.util.concurrent.atomic.AtomicBoolean(false)
     private val attachExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "svod-graph-attach").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
@@ -217,6 +223,7 @@ class GraphService(
         // A full build absorbs every note properly, so the incremental bookkeeping starts over:
         // `meta.attachedPaths` is empty by construction and nothing is outstanding.
         pendingCount = 0
+        driftRatio = 0.0
         // The builder already pooled these; keeping them saves the next pass a Lucene sweep. Only
         // when the feature is on, so an operator who never enabled it pays no memory for it.
         noteVectors = if (config.incremental) built.vectors else null
@@ -232,6 +239,116 @@ class GraphService(
      */
     private fun summarise(levels: List<CommunityLevel>): List<CommunityLevel> {
         if (!summaryLlm.isActive || levels.isEmpty()) return levels
+        return if (config.hierarchicalSummaries) summariseHierarchical(levels) else summariseFlat(levels)
+    }
+
+    /**
+     * Summarises every level from the finest upward, composing each coarse level from the level below.
+     *
+     * **The problem it solves, measured on the real vault.** The flat path summarises only the
+     * coarsest level, where the median community holds 44 notes and the largest holds 320 — while the
+     * prompt budget fits under ten. Every one of those 38 summaries was therefore written from a
+     * sample, honestly disclosed but thin. One level down there are 258 communities with a median of
+     * **7** members: small enough to summarise in full. So the flat path summarises exactly the level
+     * where a summary is least trustworthy, and leaves unsummarised the level where it would be most
+     * accurate.
+     *
+     * Here, level 0 is summarised from raw excerpts as before, and each coarser community is
+     * summarised from its CHILDREN'S titles and summaries — a compressed representation of its whole
+     * membership rather than eight raw notes out of 320.
+     *
+     * The cost is the reason this is off by default: 38 calls become ~354 on `personal`.
+     * [GraphConfig.summariseTopLevels] does not apply — every level must be summarised, because a
+     * coarse level with no summarised children has nothing to compose from.
+     */
+    private fun summariseHierarchical(levels: List<CommunityLevel>): List<CommunityLevel> {
+        var done = 0
+        val out = ArrayList<CommunityLevel>(levels.size)
+        var previous: List<Community>? = null
+        for (lvl in levels) {
+            val communities = ArrayList<Community>(lvl.communities.size)
+            for (c in lvl.communities) {
+                if (cancelled || c.size < config.minCommunitySize) {
+                    communities.add(c)
+                    continue
+                }
+                progress = "summarising ${++done}"
+                // Level 0 has no children; so does any level whose children all failed to resolve.
+                // Both fall back to the raw-excerpt prompt — degrade, never fail.
+                val built = previous?.let { childPrompt(c, it) } ?: buildPrompt(c)
+                val raw = runCatching {
+                    runBlocking { summaryLlm.summarise(built.prompt, systemPrompt(built.language)) }
+                }
+                    .onFailure { System.err.println("graph summary: provider threw: ${it.message}") }
+                    .getOrNull()
+                if (raw.isNullOrBlank()) {
+                    communities.add(c)
+                } else {
+                    val (title, body) = parseSummary(raw)
+                    communities.add(c.copy(title = title ?: c.title, summary = body, model = summaryLlm.model))
+                }
+            }
+            out.add(lvl.copy(communities = communities))
+            previous = communities
+        }
+        return out
+    }
+
+    /**
+     * A prompt built from [c]'s child communities instead of from note text.
+     *
+     * A child is a community of the level below whose members are a subset of [c]'s. Louvain levels
+     * are nested by construction, but this does not assume it — a community that is not fully
+     * contained is skipped rather than mis-attributed. Returns null when nothing resolves, so the
+     * caller can fall back to the raw path.
+     *
+     * Reads no note content at all, which is both cheaper and a stronger privacy position than the
+     * raw path: the only text that reaches the model is text the model itself produced one level down.
+     */
+    private fun childPrompt(c: Community, candidates: List<Community>): BuiltPrompt? {
+        val members = c.members.toHashSet()
+        val children = candidates.filter { it.members.isNotEmpty() && members.containsAll(it.members) }
+        if (children.isEmpty()) return null
+
+        val body = StringBuilder()
+        var included = 0
+        for (child in children.sortedByDescending { it.size }) {
+            if (body.length >= config.summaryInputChars) break
+            body.append("--- ").append(child.title).append(" (").append(child.size).append(" бележки)\n")
+            child.summary?.let { body.append(it.take(PER_CHILD_CHARS)).append('\n') }
+            body.append('\n')
+            included++
+        }
+        if (included == 0) return null
+
+        val covered = children.take(included).sumOf { it.size }
+        val header = StringBuilder()
+            .append("Група от ${c.size} бележки, разделена на ${children.size} подгрупи.\n\n")
+            .append("=== НАЧАЛО НА ПОДГРУПИТЕ ===\n")
+        val footer = StringBuilder("=== КРАЙ НА ПОДГРУПИТЕ ===\n\n")
+        // Only when the budget actually cut children off. The flat path must disclose a sample every
+        // time it truncates; here the whole point is that it usually does not have to, and a footer
+        // claiming otherwise would be a fabrication in the opposite direction.
+        if (included < children.size) {
+            footer.append(
+                "Видя $included от общо ${children.size} подгрупи ($covered от ${c.size} бележки). " +
+                    "Обобщи какво личи от тях и не твърди, че описваш всички.\n",
+            )
+        }
+        val language = dominantLanguage(body)
+        footer.append(
+            "Горното са ОБОБЩЕНИЯ на подгрупи, които трябва да обобщиш на по-високо ниво. Не ги " +
+                "преразказвай едно по едно и не продължавай текста им.\n" +
+                "Отговори с точно два реда и нищо друго, без форматиране, без звездички:\n" +
+                "TITLE: <кратко заглавие до 6 думи>\n" +
+                "SUMMARY: <2-4 изречения какво обединява тези подгрупи>\n" +
+                language.instruction + " Не измисляй факти.",
+        )
+        return BuiltPrompt(header.toString() + body + footer, language)
+    }
+
+    /** The original path: summarise the coarsest levels only, each from raw member excerpts. */
+    private fun summariseFlat(levels: List<CommunityLevel>): List<CommunityLevel> {
         val firstSummarised = (levels.size - config.summariseTopLevels).coerceAtLeast(0)
         var done = 0
         val out = ArrayList<CommunityLevel>(levels.size)
@@ -489,6 +606,12 @@ class GraphService(
         val fresh = index.indexedPaths().asSequence().filter { it !in known }.sorted().toList()
         if (fresh.isEmpty()) {
             pendingCount = 0
+            // Nothing new, but the notes attached earlier may have drifted — that is precisely the
+            // steady state this measure exists for, so it must not be skipped just because the pass
+            // has no work.
+            if (snapshot.meta.attachedPaths.isNotEmpty()) {
+                driftRatio = measureDrift(snapshot.meta.attachedPaths, noteVectorsFor(snapshot), snapshot.levels)
+            }
             return AttachResult(0, 0)
         }
 
@@ -526,6 +649,9 @@ class GraphService(
 
         if (attachedNow.isEmpty()) {
             pendingCount = pending
+            if (snapshot.meta.attachedPaths.isNotEmpty()) {
+                driftRatio = measureDrift(snapshot.meta.attachedPaths, vectors, snapshot.levels)
+            }
             return AttachResult(0, pending)
         }
 
@@ -559,8 +685,62 @@ class GraphService(
             // in a full build.
             noteVectors = vectors + freshVectors
             pendingCount = pending
+            // Measured against the levels this pass just wrote and the NEW attachedPaths, so the
+            // notes placed a moment ago are inside the sample rather than structurally excluded from
+            // it — and written inside the lock, or a rebuild finishing in this window would reset it
+            // to 0.0 and then be overwritten by a figure computed from the partition it replaced.
+            driftRatio = measureDrift(meta.attachedPaths, vectors + freshVectors, levels)
         }
         return AttachResult(attachedNow.size, pending)
+    }
+
+    /**
+     * How many attached notes would no longer be placed where they sit.
+     *
+     * Re-runs the placement vote for a bounded sample of already-attached notes against the FINEST
+     * level — the level where a wrong home is actually visible, since coarse communities absorb
+     * almost anything — and returns the fraction that now name a different community.
+     *
+     * **Bounded on purpose, and the bound is not silent:** at most [DRIFT_SAMPLE] notes are checked,
+     * taken evenly across attachment history rather than from the end, so the figure covers old and
+     * new attachments alike. Checking every attached note would be O(attached × corpus) dot products
+     * on a path that runs after every commit.
+     *
+     * **What it cannot see.** A note whose neighbourhood has thinned out until nothing clears the
+     * threshold produces no vote at all; it is counted as neither checked nor drifted, so a corpus
+     * drifting by *losing* cohesion reads as 0.0. That is a second reason the field is a proxy — the
+     * first being that it compares votes, not partitions (see [GraphStatus.driftRatio]).
+     */
+    private fun measureDrift(
+        attached: List<String>,
+        vectors: Map<String, FloatArray>,
+        levels: List<CommunityLevel>,
+    ): Double {
+        val finest = levels.firstOrNull() ?: return 0.0
+        if (attached.isEmpty()) return 0.0
+        val memberOf = HashMap<String, String>(finest.communities.sumOf { it.members.size })
+        for (c in finest.communities) for (p in c.members) memberOf[p] = c.id
+
+        val step = ((attached.size + DRIFT_SAMPLE - 1) / DRIFT_SAMPLE).coerceAtLeast(1)
+        var checked = 0
+        var drifted = 0
+        for ((i, path) in attached.withIndex()) {
+            if (i % step != 0) continue
+            if (checked >= DRIFT_SAMPLE || cancelled) break
+            val home = memberOf[path] ?: continue
+            // The note's OWN vector is re-read from the index rather than taken from the cache: an
+            // edited note keeps its cached vector (only newly attached notes refresh it), and a note
+            // whose content moved to another topic is exactly the drift this is meant to catch. The
+            // candidate set stays cached — that is the documented approximation.
+            val v = index.noteVector(path) ?: vectors[path] ?: continue
+            val neighbours = Attachment.nearest(
+                v, vectors, config.simEdgesPerNote, config.effectiveAttachThreshold, exclude = path,
+            )
+            val now = Attachment.dominantCommunity(neighbours, memberOf) ?: continue
+            checked++
+            if (now != home) drifted++
+        }
+        return if (checked == 0) 0.0 else drifted.toDouble() / checked
     }
 
     /**
@@ -649,6 +829,7 @@ class GraphService(
             // to enumerate every indexed path, and `status()` is served from App API request handlers
             // — the one place this feature promised never to put a Lucene sweep.
             pendingCount = pendingCount,
+            driftRatio = driftRatio,
             error = errorMessage,
             progress = progress,
         )
@@ -675,6 +856,12 @@ class GraphService(
          */
         const val MAX_ATTACH_PER_PASS = 500
 
+        /**
+         * Attached notes re-checked per pass for [measureDrift]. Sampled evenly across attachment
+         * history, so the ratio is an estimate over the whole set rather than a reading of the tail.
+         */
+        const val DRIFT_SAMPLE = 50
+
         /** Per-note excerpt cap, so one long note cannot consume a whole community's prompt budget. */
         const val PER_NOTE_CHARS = 1_500
 
@@ -684,6 +871,9 @@ class GraphService(
          * only a handful of bodies fit.
          */
         const val PATH_LIST_CAP = 60
+
+        /** Per-child summary cap in the hierarchical prompt, so one verbose child cannot fill it. */
+        const val PER_CHILD_CHARS = 600
 
         /**
          * Label matchers. `[^\p{L}\p{N}]{0,4}` absorbs the `**`, `- `, `> ` and `#` a model puts in

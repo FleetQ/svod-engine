@@ -2,6 +2,7 @@ package dev.svod.engine.graphrag
 
 import dev.svod.engine.core.GitCli
 import dev.svod.engine.index.FakeEmbedder
+import dev.svod.engine.index.INDEXER
 import dev.svod.engine.index.IndexFixture
 import dev.svod.engine.index.IndexService
 import dev.svod.engine.index.SearchQuery
@@ -83,6 +84,26 @@ class GraphAttachTest {
     /** The community at the coarsest level holding [path], or null when it is on no theme. */
     private fun holderOf(g: GraphService, path: String): Community? =
         g.communities(null, null, 500).firstOrNull { path in it.members }
+
+    /**
+     * Rewrites an EXISTING note and lets the index catch up.
+     *
+     * `IndexFixture.seed` always writes with `expectedRevision = null`, which on an existing path is
+     * a `WriteOutcome.Conflict` — a returned value, not an exception, so a "seed over" silently does
+     * nothing and any test built on it passes for the wrong reason. This reads the live revision
+     * first and **asserts the write succeeded**.
+     */
+    private fun editNote(fx: IndexFixture, index: IndexService, path: String, content: String) {
+        runBlocking {
+            val rev = fx.engine.read(path)?.revision
+            val outcome = fx.engine.write(path, content, expectedRevision = rev, author = INDEXER)
+            assertTrue(
+                outcome is dev.svod.engine.core.WriteOutcome.Success,
+                "the edit did not land, so whatever follows would be testing nothing: $outcome",
+            )
+        }
+        index.reconcileNow()
+    }
 
     /** Writes a note that clearly belongs with the `cook/` cluster and lets the index catch up. */
     private fun addCookNote(fx: IndexFixture, index: IndexService, path: String = "cook/risotto.md") {
@@ -343,16 +364,23 @@ class GraphAttachTest {
             }
             addCookNote(fx, index)
 
+            // `incremental = false` on both probes so `start()` does not also fire a pass in the
+            // background: this test asserts what the THRESHOLD does, and a background pass that wins
+            // the race would leave the explicit call with nothing fresh to attach and fail it for an
+            // unrelated reason. A direct `attachPass()` still runs — only the hook is gated.
+            val strict = GraphService(
+                dir, fx.engine, index, SpyLlm(), config(incremental = false, simThreshold = 0.999),
+            ).start()
             // The bar that leaves it pending — the build's own, which on the real vault is tuned
             // high enough to leave ~17% of notes off the map.
-            val strict = GraphService(dir, fx.engine, index, SpyLlm(), config(simThreshold = 0.999)).start()
             assertEquals(0, strict.attachPass().attached)
             strict.close()
 
             // The same note, the same graph, attachment given its own (lower) bar. Nothing about the
             // partition changes — only whether this note gets a home in it.
             val lenient = GraphService(
-                dir, fx.engine, index, SpyLlm(), config(simThreshold = 0.999, attachThreshold = 0.5),
+                dir, fx.engine, index, SpyLlm(),
+                config(incremental = false, simThreshold = 0.999, attachThreshold = 0.5),
             ).start()
             assertEquals(1, lenient.attachPass().attached, "an explicit attachThreshold must override simThreshold")
             assertNotNull(holderOf(lenient, "cook/risotto.md"))
@@ -411,6 +439,125 @@ class GraphAttachTest {
                 g.communities(null, null, 500).all { it.addedSinceSummary == 0 },
                 "a fresh summary describes the full membership",
             )
+            index.close(); g.close()
+        }
+    }
+
+    // ---- drift measure ----
+
+    @Test
+    fun `drift is zero when nothing has been attached`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { fx.seedTwoTopics() }
+            val index = fx.newIndex(FakeEmbedder("fake"))
+            val g = GraphService(fx.root.resolve(".svod/graph"), fx.engine, index, SpyLlm(), config()).start()
+            g.rebuild(); awaitBuild(g)
+            g.attachPass()
+            assertEquals(0.0, g.status().driftRatio, 1e-9, "nothing attached ⇒ nothing can have drifted")
+            index.close(); g.close()
+        }
+    }
+
+    @Test
+    fun `a freshly attached note does not count as drifted`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { fx.seedTwoTopics() }
+            val index = fx.newIndex(FakeEmbedder("fake"))
+            val g = GraphService(fx.root.resolve(".svod/graph"), fx.engine, index, SpyLlm(), config()).start()
+            g.rebuild(); awaitBuild(g)
+            addCookNote(fx, index)
+            assertEquals(1, g.attachPass().attached)
+            assertEquals(1, g.status().attachedCount, "the note must be inside the sampled set")
+
+            // The note was just placed by the same vote the measure re-runs, so it must agree with
+            // itself — and the vote genuinely runs here, because the pass measures against the paths
+            // it just wrote. It would NOT run if the measure read the pre-pass attachedPaths, which
+            // is exactly the bug this assertion caught: the metric was structurally blind to the
+            // notes attached in the pass that computed it. It also exercises the self-exclusion —
+            // without it the note is its own nearest neighbour at cosine 1.0 and drift is 0 by
+            // construction, for the wrong reason.
+            assertEquals(0.0, g.status().driftRatio, 1e-9)
+            index.close(); g.close()
+        }
+    }
+
+    @Test
+    fun `a note whose neighbourhood moved on is counted as drifted`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { fx.seedTwoTopics() }
+            val index = fx.newIndex(FakeEmbedder("fake"))
+            val g = GraphService(fx.root.resolve(".svod/graph"), fx.engine, index, SpyLlm(), config()).start()
+            g.rebuild(); awaitBuild(g)
+            addCookNote(fx, index)
+            assertEquals(1, g.attachPass().attached)
+            assertEquals(0.0, g.status().driftRatio, 1e-9)
+
+            // Rewrite the attached note to be about the OTHER topic. Attachment never re-places a
+            // note it has already placed, so it keeps sitting in the cooking theme while everything
+            // about its content now says infrastructure — drift, in one edit.
+            editNote(
+                fx, index, "cook/risotto.md",
+                "# Ризото\nkubernetes cluster deployment rollout nginx proxy tls certificate",
+            )
+            g.attachPass()
+
+            // The load-bearing assertion: without it the measure could be hard-coded to 0.0 and every
+            // other drift test would still pass.
+            assertTrue(
+                g.status().driftRatio > 0.0,
+                "the neighbourhood changed underneath an attached note and the measure did not notice",
+            )
+            index.close(); g.close()
+        }
+    }
+
+    @Test
+    fun `drift counts the notes attached by the same pass, not only the earlier ones`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { fx.seedTwoTopics() }
+            val index = fx.newIndex(FakeEmbedder("fake"))
+            val g = GraphService(fx.root.resolve(".svod/graph"), fx.engine, index, SpyLlm(), config()).start()
+            g.rebuild(); awaitBuild(g)
+
+            addCookNote(fx, index, "cook/risotto.md")
+            assertEquals(1, g.attachPass().attached)
+
+            // One note drifts, and a SECOND note is attached by the very pass that measures. The
+            // second one cannot have drifted, so the honest ratio is 1 of 2.
+            editNote(
+                fx, index, "cook/risotto.md",
+                "# Ризото\nkubernetes cluster deployment rollout nginx proxy tls certificate",
+            )
+            runBlocking { fx.seed("cook/gnocchi.md", "# Ньоки\nrecipe tomato basil pasta simmer boiling water") }
+            index.reconcileNow()
+            assertEquals(1, g.attachPass().attached, "the second note must attach in this pass")
+            assertEquals(2, g.status().attachedCount)
+
+            // Reading the PRE-pass attachedPaths would sample only the first note and report 1.0 —
+            // the metric would be blind to everything the pass it runs in just attached, and would
+            // overstate drift for as long as attachments kept arriving.
+            assertEquals(
+                0.5, g.status().driftRatio, 1e-9,
+                "expected 1 drifted of 2 attached; a 1.0 here means the current pass's attachment was excluded",
+            )
+            index.close(); g.close()
+        }
+    }
+
+    @Test
+    fun `a full rebuild clears the drift measure with the attachment bookkeeping`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { fx.seedTwoTopics() }
+            val index = fx.newIndex(FakeEmbedder("fake"))
+            val g = GraphService(fx.root.resolve(".svod/graph"), fx.engine, index, SpyLlm(), config()).start()
+            g.rebuild(); awaitBuild(g)
+            addCookNote(fx, index)
+            g.attachPass()
+
+            g.rebuild(); awaitBuild(g)
+
+            assertEquals(0.0, g.status().driftRatio, 1e-9, "the rebuild re-clustered everything")
+            assertEquals(0, g.status().attachedCount)
             index.close(); g.close()
         }
     }

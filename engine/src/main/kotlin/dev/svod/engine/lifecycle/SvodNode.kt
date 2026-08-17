@@ -32,6 +32,7 @@ class SvodNode private constructor(
     private val sourceScheduler: dev.svod.engine.sources.SourceScheduler,
     private val backupScheduler: dev.svod.engine.sync.BackupScheduler,
     private val syncScheduler: dev.svod.engine.sync.SyncScheduler,
+    private val graphScheduler: dev.svod.engine.graphrag.GraphScheduler,
     private val sourceWatch: dev.svod.engine.sources.SourceWatchManager,
     private val ready: AtomicBoolean,
     private val ownsScope: CoroutineScope,
@@ -60,6 +61,7 @@ class SvodNode private constructor(
         runCatching { sourceScheduler.stop() }
         runCatching { backupScheduler.stop() }
         runCatching { syncScheduler.stop() }
+        runCatching { graphScheduler.stop() }
         runCatching { sourceWatch.stop() }
         runCatching { api.stop() }
         runCatching { mcp.stop() }
@@ -146,7 +148,7 @@ class SvodNode private constructor(
                 val vaultCreator = VaultController(vaults, configStore, workScope, eventBus, hostId)
                 val agentController = AgentController(configStore, registry, config.host)
                 val updateService = UpdateService(
-                    currentAppVersion = "1.17.0",
+                    currentAppVersion = "1.18.0",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 val api = AppApiServer(
@@ -243,13 +245,23 @@ class SvodNode private constructor(
                 )
                 syncScheduler.start()
 
+                // Periodic FULL graph rebuild. Incremental attachment keeps new notes reachable but
+                // does not recompute the partition; without this the design's "a periodic rebuild
+                // restores the truth" had nothing performing it. Off unless a trigger is configured.
+                val graphScheduler = dev.svod.engine.graphrag.GraphScheduler(
+                    workScope,
+                    config.graph.rebuildIntervalMinutes,
+                    config.graph.rebuildAfterAttached,
+                ) { vaults.contexts().map { it.graph } }
+                graphScheduler.start()
+
                 // Start the FS watchers for every autoSync source (the global SourceScheduler above stays
                 // as a coarse polling safety-net for hosts where native watching doesn't fire).
                 sourceWatch.start()
 
                 ready.set(true)
                 eventBus.publish(dev.svod.engine.events.EventTypes.ENGINE_STATUS) { put("status", "ready") }
-                return SvodNode(config, vaults, eventBus, mcp, api, backup, sourceScheduler, backupScheduler, syncScheduler, sourceWatch, ready, workScope)
+                return SvodNode(config, vaults, eventBus, mcp, api, backup, sourceScheduler, backupScheduler, syncScheduler, graphScheduler, sourceWatch, ready, workScope)
             } catch (t: Throwable) {
                 vaults.close()
                 throw t
