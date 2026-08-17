@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.25.0
+  version: 0.26.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -330,6 +330,9 @@ paths:
         ADDITIVE in 0.24.0. `stale` means the vault advanced past the HEAD the graph was built
         against; results are still served. `vectorCoverage` below 1.0 means some notes had no
         embeddings at build time, so their edges are wikilink-only.
+        0.26.0 makes staleness actionable: when `incremental` is true, `attachedCount` +
+        `pendingCount` is how many notes arrived since that build, split by whether they are on a
+        theme yet. A client should offer a rebuild against that number rather than a bare badge.
       operationId: graphStatus
       responses:
         "200":
@@ -1440,6 +1443,12 @@ components:
           type: array
           description: "Membership as requested by the `members` parameter; may be a sample or empty. `size` is authoritative."
           items: { type: string }
+        addedSinceSummary:
+          type: integer
+          description: >
+            ADDED in 0.26.0. Members attached incrementally after this community was summarised.
+            Above 0 means `summary` describes slightly fewer notes than `size` counts — the summary
+            is deliberately not regenerated, which would put an LLM call back on the commit path.
 
     GraphCommunities:
       type: object
@@ -1473,6 +1482,23 @@ components:
           description: "Fraction of notes that had vectors at build time. Below 1.0 ⇒ some edges are wikilink-only."
         summaryProvider: { type: string }
         summarisedCount: { type: integer }
+        incremental:
+          type: boolean
+          description: >
+            ADDED in 0.26.0. Whether on-commit incremental attachment is on. `attachedCount` and
+            `pendingCount` are only computed when it is — with it off they stay 0, which would
+            otherwise be indistinguishable from "nothing has changed". Read this before believing them.
+        attachedCount:
+          type: integer
+          description: >
+            ADDED in 0.26.0. Notes attached to an existing theme since the last full build, without
+            re-clustering or a model call. They ARE reachable through the themes.
+        pendingCount:
+          type: integer
+          description: >
+            ADDED in 0.26.0. Indexed notes on no theme at all — not yet attached, or with no
+            neighbour above the similarity threshold. `attachedCount + pendingCount` is how many
+            notes arrived since the last full build.
         error: { type: string, nullable: true }
         progress: { type: string, nullable: true }
 

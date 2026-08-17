@@ -90,6 +90,11 @@ data class GraphCommunityDto(
     val summary: String? = null,
     val size: Int,
     val members: List<String>,
+    /**
+     * ADDED in 0.26.0. Members attached incrementally after this community was summarised, so a
+     * reader can tell that [summary] describes slightly fewer notes than [size] counts.
+     */
+    val addedSinceSummary: Int = 0,
 )
 
 /** [stale] means the vault advanced past the build's HEAD; results are still served (design §8). */

@@ -103,6 +103,16 @@ class VaultContext private constructor(
                     dev.svod.engine.graphrag.SummaryLlms.create(gc.summary),
                     gc,
                 ).start()
+                // Chain the graph onto the hook the index ALREADY fires after catching up to a
+                // commit, rather than adding a second listener: the graph's incremental attachment
+                // is a function of what the index just indexed, so it must run after that, not after
+                // the commit. The original publisher is preserved — it was wired before index.start()
+                // on purpose, so the earliest progress ticks are not lost.
+                val publishSynced = index.onSynced
+                index.onSynced = { head ->
+                    publishSynced?.invoke(head)
+                    graph.onIndexSynced()
+                }
 
                 return VaultContext(vs.id, vs.name ?: vs.id, engine, index, conflicts, syncEngine, syncGit, watcher, graph)
             } catch (t: Throwable) {

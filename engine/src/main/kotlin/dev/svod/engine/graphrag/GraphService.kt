@@ -17,8 +17,31 @@ data class GraphConfig(
     val summariseTopLevels: Int = 1,
     val summaryInputChars: Int = 12_000,
     val rebuildOnStartup: Boolean = false,
+    /**
+     * Attach notes that appear after a build to the communities that already exist, on every index
+     * sync. Off by default, like every other part of this feature. See [GraphService.attachPass].
+     */
+    val incremental: Boolean = false,
+    /**
+     * Minimum cosine for incremental attachment; null ⇒ reuse [simThreshold].
+     *
+     * A separate knob because the two thresholds answer different questions. [simThreshold] governs
+     * whether an edge is created for CLUSTERING, where a high bar buys sharper communities and a weak
+     * edge might not survive modularity optimisation anyway. Attachment is not clustering — the
+     * partition already exists and the question is only "which of these is the closest home", which
+     * is a classification bar, not a structure-forming one.
+     *
+     * Measured, which is why the knob exists: at the operator's tuned `simThreshold: 0.88` a real new
+     * note (a dense `memory/policy` note) had NO neighbour above the bar and stayed off the map
+     * entirely — the same 17% of notes the 0.88 build leaves uncovered. Its nearest neighbour was in
+     * [0.70, 0.80), and at 0.70 it attached to a coarse theme that does describe it.
+     */
+    val attachThreshold: Double? = null,
     val summary: SummaryLlmConfig = SummaryLlmConfig(),
-)
+) {
+    /** The bar attachment actually applies. */
+    val effectiveAttachThreshold: Double get() = attachThreshold ?: simThreshold
+}
 
 /**
  * Owns the derived graph for one vault: background build, sidecar persistence, status, and the
@@ -47,12 +70,53 @@ class GraphService(
     @Volatile private var buildThread: Thread? = null
     @Volatile private var cancelled = false
 
+    // ---- incremental attachment (see [attachPass]) ----
+
+    /**
+     * Note vectors for the nodes of the loaded graph, kept for the kNN placement of new notes.
+     *
+     * Held in memory rather than persisted: at 1,024 dims a 3,096-note vault is ~12.7 MB of floats,
+     * which is cheap to hold but would be ~38 MB of JSON to store and would force a sidecar layout
+     * bump — and a layout bump invalidates the sidecar, costing the operator a ~15-minute rebuild for
+     * a derived cache. A full build hands its vectors over for free; otherwise the first pass after a
+     * restart reads them back from Lucene (no embedder call — `IndexService.noteVector`).
+     */
+    @Volatile private var noteVectors: Map<String, FloatArray>? = null
+    @Volatile private var pendingCount: Int = 0
+    private val passQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val attachExec = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "svod-graph-attach").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
+    }
+
     /** Loads any existing sidecar and, if configured, kicks off a background build. Never blocks. */
     fun start(): GraphService {
         if (!config.enabled) return this
         loaded = store.load()?.also { state = GraphState.READY }
         if (config.rebuildOnStartup && (loaded == null || isStale())) rebuild()
+        // A vault almost always moved on while the engine was down, and nothing else would notice
+        // until the next commit — without this the pane would report "0 new notes" next to a stale
+        // badge for as long as the operator did not write anything.
+        else if (loaded != null && isStale()) onIndexSynced()
         return this
+    }
+
+    /**
+     * Called after the index catches up to a commit. Never blocks the caller: the indexer's own
+     * thread invokes this, and it must not wait on a Lucene sweep.
+     */
+    fun onIndexSynced() {
+        if (!config.enabled || !config.incremental) return
+        // At most one pass queued behind the running one. Clearing the flag when the task STARTS (not
+        // when it finishes) means a commit arriving mid-pass still schedules a follow-up, so no
+        // change is missed; clearing it at the end would drop it.
+        if (!passQueued.compareAndSet(false, true)) return
+        runCatching {
+            attachExec.submit {
+                passQueued.set(false)
+                runCatching { attachPass() }
+                    .onFailure { System.err.println("graph attach failed: ${it.message}") }
+            }
+        }.onFailure { passQueued.set(false) } // executor shut down (close) — nothing to do
     }
 
     /** Starts a background rebuild. No-op when disabled or already building. */
@@ -150,6 +214,12 @@ class GraphService(
         )
         store.save(meta, built.graph, summarised, centroids)
         loaded = GraphStore.Loaded(meta, built.graph, summarised, centroids)
+        // A full build absorbs every note properly, so the incremental bookkeeping starts over:
+        // `meta.attachedPaths` is empty by construction and nothing is outstanding.
+        pendingCount = 0
+        // The builder already pooled these; keeping them saves the next pass a Lucene sweep. Only
+        // when the feature is on, so an operator who never enabled it pays no memory for it.
+        noteVectors = if (config.incremental) built.vectors else null
         return true
     }
 
@@ -388,6 +458,130 @@ class GraphService(
         return FloatArray(dim) { (sum[it] / norm).toFloat() }
     }
 
+    // ---- incremental attachment ----
+
+    /** What one pass did. Returned for tests; production reads the counters through [status]. */
+    internal data class AttachResult(val attached: Int, val pending: Int, val skipped: Boolean = false)
+
+    /**
+     * Folds notes that appeared after the last full build into the communities that already exist.
+     *
+     * **The whole point is what it does NOT do:** no LLM call, no re-run of Louvain, no re-embedding,
+     * no summary regeneration, and no write to the Lucene index or the vault. A new note takes its
+     * stored vector, finds its nearest already-placed neighbours, and joins whichever community
+     * dominates among them — at every level, because each level is a partition of the corpus and a
+     * note missing from level 0 is still missing from the map.
+     *
+     * **Accepted drift** (`design-graphrag.md` §8): neighbour attachment does not recompute the
+     * partition, so after enough new notes the structure diverges from what a full Louvain would
+     * produce. That is why this and the periodic full rebuild belong together — this keeps notes
+     * reachable between builds; the build restores the truth. It is a stated trade, not a defect.
+     */
+    internal fun attachPass(): AttachResult {
+        val snapshot = loaded ?: return AttachResult(0, 0, skipped = true)
+        // A full build is authoritative and is about to replace everything here; racing it would only
+        // write a partition that is thrown away moments later.
+        if (buildThread?.isAlive == true) return AttachResult(0, 0, skipped = true)
+
+        val known = HashSet<String>(snapshot.graph.nodes.size + snapshot.meta.attachedPaths.size)
+        known.addAll(snapshot.graph.nodes)
+        known.addAll(snapshot.meta.attachedPaths)
+        val fresh = index.indexedPaths().asSequence().filter { it !in known }.sorted().toList()
+        if (fresh.isEmpty()) {
+            pendingCount = 0
+            return AttachResult(0, 0)
+        }
+
+        val vectors = noteVectorsFor(snapshot)
+        // memberOf per level: which community currently holds each placed note.
+        val memberOf = snapshot.levels.map { lvl ->
+            val m = HashMap<String, String>(lvl.communities.sumOf { it.members.size })
+            for (c in lvl.communities) for (p in c.members) m[p] = c.id
+            m
+        }
+
+        val additions = HashMap<String, MutableList<String>>() // community id -> new members
+        val attachedNow = ArrayList<String>()
+        val freshVectors = HashMap<String, FloatArray>()
+        var pending = 0
+        // Bounded so one pass cannot monopolise the thread after a bulk import; the remainder is
+        // reported as pending and picked up by the next pass, never silently dropped.
+        val batch = fresh.take(MAX_ATTACH_PER_PASS)
+        for (path in batch) {
+            if (cancelled) break
+            val v = index.noteVector(path)
+            // No vector yet (embedding backlog, or a BM25-only vault) ⇒ nothing to place it by.
+            if (v == null) { pending++; continue }
+            val neighbours =
+                Attachment.nearest(v, vectors, config.simEdgesPerNote, config.effectiveAttachThreshold)
+            val placed = memberOf.mapIndexedNotNull { lvl, m ->
+                Attachment.dominantCommunity(neighbours, m)?.let { lvl to it }
+            }
+            if (placed.isEmpty()) { pending++; continue }
+            for ((_, id) in placed) additions.getOrPut(id) { ArrayList() }.add(path)
+            attachedNow.add(path)
+            freshVectors[path] = v
+        }
+        pending += fresh.size - batch.size
+
+        if (attachedNow.isEmpty()) {
+            pendingCount = pending
+            return AttachResult(0, pending)
+        }
+
+        val levels = snapshot.levels.map { lvl ->
+            lvl.copy(
+                communities = lvl.communities.map { c ->
+                    val add = additions[c.id] ?: return@map c
+                    // Re-check membership: the crash window in saveIncremental (communities written,
+                    // meta not) can leave a path present here but absent from attachedPaths, and a
+                    // duplicated member would inflate size and show the note twice.
+                    val incoming = add.filter { it !in c.members }
+                    if (incoming.isEmpty()) c
+                    else c.copy(
+                        members = (c.members + incoming).sorted(),
+                        addedSinceSummary = c.addedSinceSummary + incoming.size,
+                    )
+                },
+            )
+        }
+        val meta = snapshot.meta.copy(attachedPaths = snapshot.meta.attachedPaths + attachedNow)
+
+        synchronized(this) {
+            // Only commit against the snapshot this pass read. A full build that finished meanwhile
+            // has already absorbed these notes properly, and overwriting it would resurrect the old
+            // partition.
+            if (loaded !== snapshot) return AttachResult(0, pending, skipped = true)
+            runCatching { store.saveIncremental(meta, levels) }
+                .onFailure { System.err.println("graph attach: sidecar write failed: ${it.message}") }
+            loaded = GraphStore.Loaded(meta, snapshot.graph, levels, snapshot.centroids)
+            // New notes become candidates for the next arrival's neighbours, as they would have been
+            // in a full build.
+            noteVectors = vectors + freshVectors
+            pendingCount = pending
+        }
+        return AttachResult(attachedNow.size, pending)
+    }
+
+    /**
+     * Note vectors for the placed nodes, materialised at most once per loaded graph.
+     *
+     * Reads stored chunk vectors back out of Lucene and mean-pools them — the same zero-embedder-call
+     * path the full build uses. Measured cost is a few seconds for ~3k notes, which is why it happens
+     * on the attach thread and only when there is actually something to place.
+     */
+    private fun noteVectorsFor(snapshot: GraphStore.Loaded): Map<String, FloatArray> {
+        noteVectors?.let { return it }
+        val out = HashMap<String, FloatArray>(snapshot.graph.nodes.size)
+        for (p in snapshot.graph.nodes) {
+            if (cancelled) break
+            index.noteVector(p)?.let { out[p] = it }
+        }
+        for (p in snapshot.meta.attachedPaths) index.noteVector(p)?.let { out[p] = it }
+        noteVectors = out
+        return out
+    }
+
     // ---- query surface (NO LLM — guarded by test D1) ----
 
     /**
@@ -449,6 +643,12 @@ class GraphService(
             vectorCoverage = snapshot?.meta?.vectorCoverage ?: 0.0,
             summaryProvider = summaryLlm.provider,
             summarisedCount = snapshot?.meta?.summarisedCount ?: 0,
+            incremental = config.incremental,
+            attachedCount = snapshot?.meta?.attachedPaths?.size ?: 0,
+            // Read from the last pass, never computed here: the only way to count unplaced notes is
+            // to enumerate every indexed path, and `status()` is served from App API request handlers
+            // — the one place this feature promised never to put a Lucene sweep.
+            pendingCount = pendingCount,
             error = errorMessage,
             progress = progress,
         )
@@ -463,9 +663,18 @@ class GraphService(
     override fun close() {
         cancelled = true
         buildThread?.interrupt()
+        attachExec.shutdownNow()
     }
 
     private companion object {
+        /**
+         * Notes placed in one pass. A bulk import (a first sync, a restored vault) can add thousands
+         * at once; the rest are reported as pending and taken by the following pass rather than
+         * holding the thread — and at that scale a full rebuild is the right answer anyway, which is
+         * what the pane's count now tells the operator.
+         */
+        const val MAX_ATTACH_PER_PASS = 500
+
         /** Per-note excerpt cap, so one long note cannot consume a whole community's prompt budget. */
         const val PER_NOTE_CHARS = 1_500
 
