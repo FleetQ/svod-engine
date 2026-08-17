@@ -166,12 +166,26 @@ engine correctly started a full re-embed and the graph correctly reported honest
 1,069 chunks that had vectors at that moment. It is recorded here because the degradation path (B2)
 was thereby exercised at full scale, unintentionally, and behaved exactly as designed.
 
-## Acceptance criteria
+## Acceptance criteria — final result
 
-1. Every test in **A** passes — these are the "did not break Svod" tests.
-2. **D1** passes: zero LLM calls at query time.
-3. `./gradlew test` green, and the **collected test count rises by the number of tests added** (per the
-   JUnit gotcha above).
-4. I1 shows no search-latency regression.
-5. G4 + G5 confirmed by hand against real builds.
-6. Validation runs against a **copy** of `personal`, never the live vault.
+| # | Criterion | Result |
+|---|---|---|
+| 1 | Every test in **A** passes (the "did not break Svod" set) | ✅ |
+| 2 | **D1**: zero LLM calls at query time | ✅ |
+| 3 | Suite green AND the collected count rises by the number added | ✅ **308 tests / 306 passed / 0 failures / 2 skipped**, of which **37 new** — 271 baseline + 37. Counts read from `build/test-results/*.xml`, not from stdout. |
+| 4 | No search-latency regression | ✅ (I1: 0–7 ms) |
+| 5 | G4 + G5 confirmed by hand | ⚠️ **G5 confirmed and it found a real defect** (see above). **G4 NOT run**: the installed app v0.2.15 was never literally pointed at the new engine. Indirect evidence only — `AppApiContractTest` conformance passes and the new engine served every pre-existing route during live validation. Treat G4 as **unverified**. |
+| 6 | Validation against a **copy** of `personal`, never the live vault | ✅ live vault `git status` clean throughout |
+
+### Measurement hygiene learned here
+
+Two runs produced misleading numbers and both were **my counting**, not the tests:
+
+- `grep -c ' FAILED'` on gradle stdout counts `> Task :test FAILED` and `BUILD FAILED`, so a run with
+  zero failing tests reported "FAILED: 2".
+- A concurrent `./gradlew test` in the same working tree (a review subagent) made a run die on
+  `Could not write XML test results`, which looks like a suite failure and is not one. It also
+  overwrote `build/test-results/`, producing a report set with none of the new tests in it.
+
+**Rule: take counts from `build/test-results/*.xml` after an exclusive run with that directory
+cleared.** Never from a stdout grep, and never while another gradle is live in the same tree.
