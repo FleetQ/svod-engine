@@ -21,8 +21,13 @@ interface SummaryLlm {
     val model: String
     val isActive: Boolean
 
-    /** Returns the raw model output, or null if unavailable. Must not throw. */
-    suspend fun summarise(prompt: String): String?
+    /**
+     * Returns the raw model output, or null if unavailable. Must not throw.
+     *
+     * [system] is kept OUT of [prompt] on purpose: a small model handed 12k characters of source
+     * documents will otherwise treat a leading instruction as more document and continue writing it.
+     */
+    suspend fun summarise(prompt: String, system: String? = null): String?
 }
 
 /** The guaranteed baseline: no summaries. Communities still exist, labelled from their members. */
@@ -30,7 +35,7 @@ object NoneSummaryLlm : SummaryLlm {
     override val provider = "none"
     override val model = "none"
     override val isActive = false
-    override suspend fun summarise(prompt: String): String? = null
+    override suspend fun summarise(prompt: String, system: String?): String? = null
 }
 
 /**
@@ -56,10 +61,10 @@ class OllamaSummaryLlm(
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
-    override suspend fun summarise(prompt: String): String? {
+    override suspend fun summarise(prompt: String, system: String?): String? {
         val body = json.encodeToString(
             GenerateRequest.serializer(),
-            GenerateRequest(model = model, prompt = prompt, keepAlive = keepAlive),
+            GenerateRequest(model = model, prompt = prompt, system = system, keepAlive = keepAlive),
         )
         val req = HttpRequest.newBuilder(URI.create("${endpoint.trimEnd('/')}/api/generate"))
             .timeout(requestTimeout)
@@ -84,6 +89,7 @@ class OllamaSummaryLlm(
     private data class GenerateRequest(
         val model: String,
         val prompt: String,
+        val system: String? = null,
         val stream: Boolean = false,
         @kotlinx.serialization.SerialName("keep_alive") val keepAlive: String,
         val options: Options = Options(),
