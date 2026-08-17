@@ -105,3 +105,12 @@ data class GraphMeta(
 }
 
 internal const val SIDECAR_VERSION = GraphMeta.SIDECAR_VERSION
+
+/**
+ * Member paths previewed per community when listing many of them.
+ *
+ * Measured on a 3,096-note vault: emitting every member made one default listing ≈44,300 tokens, of
+ * which 97% were paths and ~1,200 were the titles and summaries a caller actually reasons over. Five
+ * is enough to recognise a theme; the full list is one targeted call away.
+ */
+const val MEMBER_SAMPLE = 5

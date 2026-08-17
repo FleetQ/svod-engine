@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.24.0
+  version: 0.25.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -277,14 +277,50 @@ paths:
       operationId: graphCommunities
       parameters:
         - { name: query, in: query, required: false, schema: { type: string } }
-        - { name: level, in: query, required: false, schema: { type: integer }, description: "Hierarchy level; default the coarsest. Out of range is clamped." }
+        - { name: level, in: query, required: false, schema: { type: integer }, description: "Hierarchy level; default the coarsest (broad overview). 0 is the finest and ranks a specific query noticeably better. Out of range is clamped." }
         - { name: limit, in: query, required: false, schema: { type: integer, default: 20 } }
+        - name: members
+          in: query
+          required: false
+          schema: { type: string, enum: [full, sample, none], default: full }
+          description: >
+            ADDED in 0.25.0. How much of each community's membership to include. `full` is the default
+            for backwards compatibility with app v0.2.16, but the member lists dominate the payload —
+            on a 3,096-note vault they were 97% of it. New callers should use `sample` (or `none`) and
+            fetch one community's membership from /api/v1/graph/community when they need it.
       responses:
         "200":
           description: Communities
           content:
             application/json:
               schema: { $ref: "#/components/schemas/GraphCommunities" }
+
+  /api/v1/graph/community:
+    get:
+      tags: [graph]
+      summary: One community with its full membership
+      description: >
+        ADDED in 0.25.0. The targeted counterpart to /api/v1/graph/communities: list the themes
+        cheaply, then pull every member of the single theme you need.
+      operationId: graphCommunity
+      parameters:
+        - { name: id, in: query, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Community
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GraphCommunity" }
+        "400":
+          description: Missing id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Unknown community id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/graph/status:
     get:
@@ -1399,9 +1435,10 @@ components:
           type: string
           nullable: true
           description: "Null when no summary provider was active at build time. The community is still usable."
-        size: { type: integer }
+        size: { type: integer, description: "The TRUE member count, regardless of how many paths `members` carries." }
         members:
           type: array
+          description: "Membership as requested by the `members` parameter; may be a sample or empty. `size` is authoritative."
           items: { type: string }
 
     GraphCommunities:
