@@ -38,7 +38,7 @@ class GraphRagUnitTest {
 
     @Test
     fun `contract version was bumped for the additive graph routes`() {
-        assertEquals("0.26.0", ApiCompatibility.CURRENT_CONTRACT_VERSION)
+        assertEquals("0.27.0", ApiCompatibility.CURRENT_CONTRACT_VERSION)
     }
 
     // ---- B4/B5: edge canonicalisation ----

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.26.0
+  version: 0.27.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -1499,6 +1499,15 @@ components:
             ADDED in 0.26.0. Indexed notes on no theme at all — not yet attached, or with no
             neighbour above the similarity threshold. `attachedCount + pendingCount` is how many
             notes arrived since the last full build.
+        driftRatio:
+          type: number
+          format: double
+          description: >
+            ADDED in 0.27.0. Fraction of attached notes whose neighbourhood has since moved on —
+            their placement vote no longer names the community they sit in. Measured over a bounded
+            sample (up to 50) taken evenly across attachment history, against the FINEST level.
+            A proxy for divergence, not a measurement of it: 0.0 means no sampled attachment has
+            drifted, never that the partition is still optimal — only a full rebuild can say that.
         error: { type: string, nullable: true }
         progress: { type: string, nullable: true }
 

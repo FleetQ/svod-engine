@@ -100,6 +100,27 @@ data class SvodConfig(
          * community.
          */
         val attachThreshold: Double? = null,
+        /**
+         * Minutes between forced full rebuilds. Null/0 ⇒ time alone never triggers one.
+         *
+         * The safety net for slow, steady drift that never crosses [rebuildAfterAttached].
+         */
+        val rebuildIntervalMinutes: Int? = null,
+        /**
+         * Attached notes at or above which a full rebuild is due. Null/0 ⇒ drift alone never
+         * triggers one.
+         *
+         * The honest trigger: a rebuild costs minutes of local LLM time, so it should fire because
+         * the map has actually drifted, not because a clock ran out.
+         */
+        val rebuildAfterAttached: Int? = null,
+        /**
+         * Compose a coarse level's summary from its CHILD communities' summaries instead of from raw
+         * note excerpts. Off by default — it multiplies the build's LLM call count (measured on the
+         * real vault: 38 calls → ~354), in exchange for summaries that describe the whole group
+         * rather than a sample of under ten notes.
+         */
+        val hierarchicalSummaries: Boolean = false,
     )
     /**
      * [blockStartup]=false (default) binds the App API immediately and builds the semantic index in
@@ -364,6 +385,7 @@ data class SvodConfig(
             rebuildOnStartup = graph.rebuildOnStartup,
             incremental = graph.incremental,
             attachThreshold = graph.attachThreshold,
+            hierarchicalSummaries = graph.hierarchicalSummaries,
             summary = dev.svod.engine.graphrag.SummaryLlmConfig(
                 provider = provider,
                 model = graph.summaryModel,

@@ -3,6 +3,101 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.18.0 — 2026-08-17 (App API contract 0.27.0)
+
+Hardening sprint, from an internal survey run against the live engine
+(`claudedocs/research_svod-improvements_2026-08-17.md`). Nothing here was a bug report — the engine
+carries **zero `TODO`/`FIXME` markers and zero open issues**. These are a defect, a missing mechanism,
+and the quality lever the design named a sprint ago.
+
+### Fixed — an unknown `/api` path answered `200 text/html`
+
+Measured on the live engine: `/api/v1/does-not-exist`, `/api/v1/graph/nope` and `/api/v9/settings`
+all returned **200 with the web viewer's index page**, because the SPA fallback caught everything the
+explicit routes did not. A client could not tell "no such endpoint" from "endpoint returned a page",
+and a typed client raised a *decoding* error rather than a not-found one — which is exactly how this
+project twice ended up debugging the wrong thing.
+
+Unmatched paths under `/api/` now return `404` with the standard `ErrorDto` body, regardless of
+whether the viewer is configured. Real routes and the viewer's own client-side routes are unaffected
+(Ktor scores explicit segments above a tailcard). The house rule stands — feature-detect on
+`apiVersion`, never on a 404 — but the engine is no longer the reason it had to.
+
+**Behaviour change on undefined paths.** The contract never specified them, so this is not a contract
+break; it is called out here because a client relying on the old 200 would now see a 404.
+
+### Added — `GraphScheduler`: the periodic rebuild the drift trade depends on
+
+v1.17.0's incremental attachment explicitly bets that "a periodic full rebuild restores the truth".
+Nothing performed one: `rebuildOnStartup` is off by default, there was no timer, and the only triggers
+were a button and an endpoint. The bet had no counterparty.
+
+`graph.rebuildAfterAttached` (attached-note threshold) and `graph.rebuildIntervalMinutes` (elapsed
+time) — either fires a rebuild; both null (the default) and the scheduler never starts. Mirrors
+`SourceScheduler` exactly, down to the "log the failure and keep ticking" behaviour. The threshold is
+the honest trigger, since a rebuild costs minutes of local LLM time and firing it on a vault that has
+not moved is waste; the interval is the safety net for slow, steady drift.
+
+### Added — `driftRatio`, so "stale" is a quantity
+
+`attachedCount` counts notes, not divergence. `GraphStatus.driftRatio` is the fraction of attached
+notes whose placement vote no longer names the community they sit in, measured against the **finest**
+level (coarse communities absorb almost anything) over a bounded sample of up to 50, taken evenly
+across attachment history.
+
+Explicitly a **proxy**, with two stated blind spots: `0.0` means no sampled attachment has drifted,
+never that the partition is still what a fresh Louvain would produce; and a note whose neighbourhood
+has thinned below the threshold casts no vote at all, so a corpus drifting by *losing* cohesion also
+reads as `0.0`. The sampled note's own vector is re-read from the index rather than taken from the
+cache — an edited note keeps its cached vector, and a note whose content moved to another topic is
+precisely the drift this exists to catch.
+
+The measure covers the attachments made by the pass computing it. An earlier cut read the *pre-pass*
+`attachedPaths` and was therefore structurally blind to everything it had just attached — caught in
+review, and the reason there is now a test pinning the denominator (one drifted note plus one
+freshly attached note must read exactly 0.5, not 1.0).
+
+Cost note: measuring drift after a restart materialises the note-vector cache (a few seconds on ~3k
+notes) even when there is nothing to attach. It runs on the MIN_PRIORITY attach thread, once.
+
+### Added — hierarchical summarisation (`graph.hierarchicalSummaries`, off by default)
+
+Counted on the real 3,096-note vault:
+
+| level | communities | with ≥3 members | median (≥3) | largest | **summarised** |
+|---|---|---|---|---|---|
+| 0 | 809 | **258** | **7** | 103 | **0** |
+| 1 | 566 | 58 | 25 | 315 | **0** |
+| 2 | 546 | 38 | 44 | **320** | **38** |
+
+`summariseTopLevels: 1` summarises only the coarsest level — median 44 notes, largest 320 — while the
+prompt budget fits under ten. Every one of those 38 summaries was therefore written from a sample,
+honestly disclosed and thin. One level down, 258 communities have a median of **7** members, which fit
+entirely, and none of them was summarised. **The flat path summarises the level where a summary is
+least trustworthy and leaves unsummarised the level where it would be most accurate.**
+
+With the flag on: level 0 is summarised from raw excerpts as before, and each coarser community is
+summarised from its **children's titles and summaries** — a compressed view of its whole membership
+instead of eight raw notes out of 320. Children are matched by membership subset rather than by
+assuming Louvain nesting; an unresolvable child set falls back to the raw path. Composed prompts read
+no note text at all, and the sample-disclosure footer is emitted only when children were actually cut
+off — a footer that always claimed a sample would be a fabrication in the other direction.
+
+Off by default because it takes the build from 38 calls to ~354 (2–4 hours on `qwen2.5:7b-instruct`).
+`summariseTopLevels` does not apply when it is on: a coarse level with no summarised children has
+nothing to compose from.
+
+### Added — boot phases are timed
+
+"Cold start is 25 s – 7.5 min" was a number with no breakdown behind it, and an optimisation without a
+breakdown is a guess. `VaultContext.open` now logs the elapsed time of engine open, index start, file
+watcher start and graph start, per vault.
+
+### Contract
+
+0.26.0 → **0.27.0**, additive: one new `GraphStatus` field (`driftRatio`), also on the `graph_status`
+MCP tool.
+
 ## v1.17.0 — 2026-08-17 (App API contract 0.26.0)
 
 The thematic map stops describing only the vault as it was at the last build.

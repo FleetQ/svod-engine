@@ -55,12 +55,26 @@ class VaultContext private constructor(
     }
 
     companion object {
+        private val log = org.slf4j.LoggerFactory.getLogger(VaultContext::class.java)
+
+        /** Runs [body], logging how long it took. Boot phases only — this must stay off hot paths. */
+        private inline fun <T> phase(vault: String, name: String, body: () -> T): T {
+            val t0 = System.currentTimeMillis()
+            val result = body()
+            log.info("vault $vault: $name took ${System.currentTimeMillis() - t0} ms")
+            return result
+        }
+
         fun open(vs: SvodConfig.VaultSettings, config: SvodConfig, scope: CoroutineScope, eventBus: EventBus, hostId: String): VaultContext {
             val vault = Paths.get(vs.path)
             // Single-instance per vault: SvodEngine.open acquires the exclusive vault lock. Commits
             // record committer = this machine's host id (author stays the agent/UI) for sync provenance.
             val committer = dev.svod.engine.core.Author(hostId, "$hostId@svod.local")
-            val engine = SvodEngine.open(vault, scope, dev.svod.engine.security.SecretScanner(config.secretScanning), committer)
+            // Boot phases are timed because "cold start is 25 s - 7.5 min" was, until now, a number
+            // with no breakdown behind it — and an optimisation without a breakdown is a guess.
+            val engine = phase(vs.id, "engine open") {
+                SvodEngine.open(vault, scope, dev.svod.engine.security.SecretScanner(config.secretScanning), committer)
+            }
             try {
                 val ec = config.toEmbedderConfig()
                 val embedder = Embedders.create(ec, vault)
@@ -81,7 +95,7 @@ class VaultContext private constructor(
                         put("vault", vs.id); put("done", done); put("total", total); put("state", state)
                     }
                 }
-                index.start()
+                phase(vs.id, "index start") { index.start() }
                 engine.onCommit { index.onCommit(it) }
 
                 val conflicts = ConflictStore()
@@ -91,18 +105,21 @@ class VaultContext private constructor(
                 val syncGit = SyncGit(vault)
                 val syncEngine = SyncEngine(engine, syncGit, conflicts, eventBus, vs.id, hostId)
 
-                val watcher = FileWatcher(vault, engine, index, eventBus).start()
+                // The suspect: methvin's DirectoryWatcher hashes the whole tree when it is built.
+                val watcher = phase(vs.id, "file watcher start") { FileWatcher(vault, engine, index, eventBus).start() }
 
                 // Derived thematic graph. Disabled by default; start() is a no-op unless enabled, and
                 // a build never blocks startup or touches the Lucene index.
                 val gc = config.toGraphConfig()
-                val graph = dev.svod.engine.graphrag.GraphService(
-                    vault.resolve(".svod").resolve("graph"),
-                    engine,
-                    index,
-                    dev.svod.engine.graphrag.SummaryLlms.create(gc.summary),
-                    gc,
-                ).start()
+                val graph = phase(vs.id, "graph start") {
+                    dev.svod.engine.graphrag.GraphService(
+                        vault.resolve(".svod").resolve("graph"),
+                        engine,
+                        index,
+                        dev.svod.engine.graphrag.SummaryLlms.create(gc.summary),
+                        gc,
+                    ).start()
+                }
                 // Chain the graph onto the hook the index ALREADY fires after catching up to a
                 // commit, rather than adding a second listener: the graph's incremental attachment
                 // is a function of what the index just indexed, so it must run after that, not after

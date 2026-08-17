@@ -31,11 +31,21 @@ internal object Attachment {
         vectors: Map<String, FloatArray>,
         k: Int,
         threshold: Double,
+        /**
+         * Path to leave out of the candidate set.
+         *
+         * Needed when re-voting a note that is ALREADY in [vectors] — an attached note is added to
+         * the cache so later arrivals can find it, and it would otherwise be its own nearest
+         * neighbour at cosine 1.0 and vote for wherever it already sits. A drift measure built on
+         * that can only ever report zero.
+         */
+        exclude: String? = null,
     ): List<Neighbour> {
         if (k <= 0) return emptyList()
         // Min-heap on score: the weakest kept neighbour is the cheapest to evict.
         val best = java.util.PriorityQueue<Neighbour>(k + 1, compareBy { it.score })
         for ((path, v) in vectors) {
+            if (path == exclude) continue
             if (v.size != target.size) continue // a mid-flight embedder swap can leave mixed dims
             var dot = 0.0
             for (i in target.indices) dot += target[i] * v[i]
