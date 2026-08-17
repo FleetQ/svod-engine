@@ -180,7 +180,13 @@ class GraphService(
                 // [SummaryLlm] documents that summarise must not throw, but it is a pluggable
                 // interface — trusting that would let one bad implementation fail a whole build for
                 // an optional embellishment. Contain it here (test D5).
-                val raw = runCatching { runBlocking { summaryLlm.summarise(buildPrompt(c)) } }
+                // buildPrompt returns the language it decided, so the system clause carries the SAME
+                // decision. Re-deriving it from the assembled prompt would read this file's own
+                // Cyrillic instruction text as content and classify everything as Bulgarian.
+                val built = buildPrompt(c)
+                val raw = runCatching {
+                    runBlocking { summaryLlm.summarise(built.prompt, systemPrompt(built.language)) }
+                }
                     .onFailure { System.err.println("graph summary: provider threw: ${it.message}") }
                     .getOrNull()
                 if (raw.isNullOrBlank()) {
@@ -203,7 +209,10 @@ class GraphService(
      * note is never indexed, so it can never become a graph node and can never reach a model
      * (test D2). Input is capped so a large community cannot overrun the model's context (test D4).
      */
-    private fun buildPrompt(c: Community): String {
+    /** A prompt plus the language decision that produced it, so both travel together. */
+    internal data class BuiltPrompt(val prompt: String, val language: SummaryLanguage)
+
+    private fun buildPrompt(c: Community): BuiltPrompt {
         val sb = StringBuilder()
         val header = StringBuilder()
         val body = StringBuilder()
@@ -222,36 +231,82 @@ class GraphService(
             included++
         }
 
-        header.append(
-            "Ти си асистент, който обобщава тематична група бележки от лично хранилище.\n" +
-                "Върни точно два реда:\n" +
-                "TITLE: <кратко заглавие до 6 думи>\n" +
-                "SUMMARY: <2-4 изречения какво обединява тези бележки и какво съдържат>\n" +
-                "Пиши на езика, преобладаващ в бележките. Не измисляй факти.\n",
-        )
+        header.append("Групa от ${c.size} бележки. Пътища: ")
+            .append(c.members.take(PATH_LIST_CAP).joinToString(", "))
+            .append(if (c.size > PATH_LIST_CAP) ", …\n\n" else "\n\n")
+            .append("=== НАЧАЛО НА ИЗВАДКАТА ===\n")
+
+        val footer = StringBuilder("=== КРАЙ НА ИЗВАДКАТА ===\n\n")
         // Real communities reach hundreds of notes while the prompt budget fits under ten, so the
         // model MUST be told it is seeing a sample. Without this it confidently describes 588 notes
         // from 8 — a fabrication the operator has no way to detect.
         if (included < c.size) {
-            header.append(
-                "ВНИМАНИЕ: това са само $included от общо ${c.size} бележки в групата. " +
-                    "Обобщи какво личи от извадката и не твърди, че описваш всички.\n",
+            footer.append(
+                "Видя само $included от общо ${c.size} бележки. Обобщи какво личи от извадката и не " +
+                    "твърди, че описваш всички.\n",
             )
         }
-        header.append("Пътища в групата (пълен списък): ")
-            .append(c.members.take(PATH_LIST_CAP).joinToString(", "))
-            .append(if (c.size > PATH_LIST_CAP) ", …\n\n" else "\n\n")
+        // The instruction goes AFTER the excerpts, not before them. Measured on the real vault with
+        // qwen2.5:7b: with the instruction first, 6 of 21 communities came back as a verbatim
+        // continuation of the pasted documents — 12k characters of source text drowned a leading
+        // instruction and the model simply kept writing the document. Recency fixes that.
+        val language = dominantLanguage(body)
+        footer.append(
+            "Горното са ИЗВАДКИ, които трябва да обобщиш. Не ги преразказвай дословно и не " +
+                "продължавай текста им.\n" +
+                "Отговори с точно два реда и нищо друго, без форматиране, без звездички:\n" +
+                "TITLE: <кратко заглавие до 6 думи>\n" +
+                "SUMMARY: <2-4 изречения какво обединява тези бележки>\n" +
+                language.instruction + " Не измисляй факти.",
+        )
 
-        sb.append(header).append(body)
-        return sb.toString()
+        sb.append(header).append(body).append(footer)
+        return BuiltPrompt(sb.toString(), language)
     }
 
-    /** Parses the `TITLE:` / `SUMMARY:` shape, tolerating a model that ignores it. */
+    /**
+     * The language the answer must be written in, decided HERE rather than by the model.
+     *
+     * "Write in the language predominant in the notes" asks a 7B model to make a judgement it does
+     * not make reliably: with that instruction, `qwen2.5:7b` (a Chinese-origin model) answered in
+     * Chinese for **8 of 21** real communities whose notes contain no Chinese at all. Counting the
+     * scripts ourselves and issuing one unambiguous instruction removes the judgement entirely.
+     */
+    internal fun dominantLanguage(text: CharSequence): SummaryLanguage {
+        var cyrillic = 0
+        var latin = 0
+        for (ch in text) {
+            when {
+                ch in 'Ѐ'..'ӿ' -> cyrillic++
+                ch in 'a'..'z' || ch in 'A'..'Z' -> latin++
+            }
+        }
+        return if (cyrillic > latin) SummaryLanguage.BULGARIAN else SummaryLanguage.ENGLISH
+    }
+
+    /** System instruction, kept out of the prompt so it cannot be mistaken for input. */
+    private fun systemPrompt(language: SummaryLanguage): String =
+        "You summarise groups of notes. Always answer with exactly two lines, 'TITLE: ...' and " +
+            "'SUMMARY: ...'. Never copy or continue the supplied text. ${language.systemClause}"
+
+    /**
+     * Parses the `TITLE:` / `SUMMARY:` shape, tolerating a model that decorates it.
+     *
+     * The first version anchored on `^\s*TITLE:` and missed every response that came back as
+     * `**TITLE: …**`, which qwen2.5:7b produced for 2 of 21 real communities — the label then leaked
+     * into the summary text and the title silently fell back to a folder name. Markdown emphasis,
+     * list bullets and quote markers are all stripped before matching, and the trailing emphasis is
+     * removed from the captured value.
+     */
     private fun parseSummary(raw: String): Pair<String?, String> {
-        val title = Regex("(?im)^\\s*TITLE:\\s*(.+)$").find(raw)?.groupValues?.get(1)?.trim()?.takeIf { it.isNotEmpty() }
-        val body = Regex("(?ims)^\\s*SUMMARY:\\s*(.+)$").find(raw)?.groupValues?.get(1)?.trim()
+        val title = LABEL_TITLE.find(raw)?.groupValues?.get(1)?.let(::cleanLabelValue)?.takeIf { it.isNotEmpty() }
+        val body = LABEL_SUMMARY.find(raw)?.groupValues?.get(1)?.let(::cleanLabelValue)?.takeIf { it.isNotEmpty() }
         return title to (body ?: raw.trim())
     }
+
+    /** Strips the markdown decoration a model wraps around a labelled value. */
+    private fun cleanLabelValue(v: String): String =
+        v.trim().trim('*', '_', '`', '"', '\'', ' ').trim()
 
     /**
      * Machine label used when there is no summary: the most specific directory prefix that still
@@ -420,5 +475,12 @@ class GraphService(
          * only a handful of bodies fit.
          */
         const val PATH_LIST_CAP = 60
+
+        /**
+         * Label matchers. `[^\p{L}\p{N}]{0,4}` absorbs the `**`, `- `, `> ` and `#` a model puts in
+         * front of a label; without it a bolded `**TITLE:` never matches at all.
+         */
+        val LABEL_TITLE = Regex("(?im)^[^\\p{L}\\p{N}]{0,4}TITLE\\s*:\\s*(.+)$")
+        val LABEL_SUMMARY = Regex("(?ims)^[^\\p{L}\\p{N}]{0,4}SUMMARY\\s*:\\s*(.+)$")
     }
 }

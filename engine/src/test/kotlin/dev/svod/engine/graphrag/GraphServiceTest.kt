@@ -34,10 +34,12 @@ class GraphServiceTest {
         override val model = "spy-model"
         override val isActive = true
         val prompts = CopyOnWriteArrayList<String>()
+        val systems = CopyOnWriteArrayList<String?>()
         val calls = AtomicInteger(0)
-        override suspend fun summarise(prompt: String): String? {
+        override suspend fun summarise(prompt: String, system: String?): String? {
             calls.incrementAndGet()
             prompts.add(prompt)
+            systems.add(system)
             if (boom) throw IllegalStateException("summariser exploded")
             return reply(prompt)
         }
@@ -435,8 +437,142 @@ class GraphServiceTest {
             // Without this disclosure the model describes hundreds of notes from a handful and the
             // operator has no way to tell — a fabrication the engine would be responsible for.
             assertTrue(
-                spy.prompts.any { it.contains("ВНИМАНИЕ") && it.contains("от общо") },
+                spy.prompts.any { it.contains("Видя само") && it.contains("от общо") },
                 "a truncated community must tell the model it is seeing a sample",
+            )
+            index.close()
+            g.close()
+        }
+    }
+
+    // ---- summary parsing and prompt shape (both regressions seen on the LIVE vault) ----
+
+    @Test
+    fun `a bolded TITLE label is still parsed`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { fx.seedTwoTopics() }
+            val index = fx.newIndex(FakeEmbedder("fake"))
+            // Verbatim shape qwen2.5:7b returned for 2 of 21 real communities. The original regex
+            // anchored on `^\s*TITLE:` and missed it, so the label leaked into the summary body and
+            // the title silently fell back to a folder name.
+            val bolded = "**TITLE: Mobile App Architecture and Networking**\n" +
+                "**SUMMARY:** The documents discuss the architecture of the Actio Mobile app."
+            val g = GraphService(
+                fx.root.resolve(".svod/graph"), fx.engine, index, SpyLlm(reply = { bolded }), config(),
+            ).start()
+            g.rebuild(); awaitBuild(g)
+
+            val summarised = g.communities(null, null, 20).filter { it.summary != null }
+            assertTrue(summarised.isNotEmpty(), "expected at least one summarised community")
+            for (c in summarised) {
+                assertEquals("Mobile App Architecture and Networking", c.title)
+                assertTrue(
+                    "TITLE:" !in c.summary!! && "SUMMARY:" !in c.summary!!,
+                    "the label leaked into the summary body: ${c.summary}",
+                )
+            }
+            index.close()
+            g.close()
+        }
+    }
+
+    @Test
+    fun `the instruction comes after the excerpts, not before them`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { fx.seedTwoTopics() }
+            val index = fx.newIndex(FakeEmbedder("fake"))
+            val spy = SpyLlm()
+            val g = GraphService(fx.root.resolve(".svod/graph"), fx.engine, index, spy, config()).start()
+            g.rebuild(); awaitBuild(g)
+
+            assertTrue(spy.prompts.isNotEmpty())
+            for (p in spy.prompts) {
+                val excerptStart = p.indexOf("=== НАЧАЛО НА ИЗВАДКАТА ===")
+                val instruction = p.indexOf("Отговори с точно два реда")
+                assertTrue(excerptStart >= 0, "excerpt delimiter missing from the prompt")
+                assertTrue(instruction >= 0, "closing instruction missing from the prompt")
+                // With the instruction FIRST, 6 of 21 real communities came back as a verbatim
+                // continuation of the pasted documents: 12k characters drowned a leading
+                // instruction. Recency is the fix, so the ordering is the thing to guard.
+                assertTrue(
+                    instruction > excerptStart,
+                    "the instruction must follow the excerpts, or a small model just keeps writing them",
+                )
+            }
+            index.close()
+            g.close()
+        }
+    }
+
+    @Test
+    fun `the answer language is decided from the content, not left to the model`() {
+        IndexFixture.create().use { fx ->
+            runBlocking {
+                // Enough distinct Cyrillic notes to form a community, with a couple of wikilinks so
+                // the graph is connected even if the fake embedder tokenises Cyrillic poorly.
+                for (i in 1..6) {
+                    fx.seed(
+                        "bg/n$i.md",
+                        "Бележка за архитектурата на системата и решенията по нея номер $i\n[[bg/n1.md]]",
+                    )
+                }
+            }
+            val index = fx.newIndex(FakeEmbedder("fake"))
+            val spy = SpyLlm()
+            val g = GraphService(fx.root.resolve(".svod/graph"), fx.engine, index, spy, config()).start()
+            g.rebuild(); awaitBuild(g)
+
+            assertTrue(
+                spy.prompts.isNotEmpty(),
+                "no summary was attempted; graph status = ${g.status()}",
+            )
+            // Asking the model to "write in the language predominant in the notes" made qwen2.5:7b
+            // answer in Chinese for 8 of 21 real communities. The decision is ours now.
+            assertTrue(
+                spy.prompts.all { it.contains("Пиши САМО на български") },
+                "Cyrillic content must pin the answer to Bulgarian",
+            )
+            assertTrue(
+                spy.systems.all { it != null && it.contains("only in Bulgarian") },
+                "the system clause must carry the SAME language decision as the prompt",
+            )
+            index.close()
+            g.close()
+        }
+    }
+
+    @Test
+    fun `latin content pins the answer to English`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { fx.seedTwoTopics() }
+            val index = fx.newIndex(FakeEmbedder("fake"))
+            val spy = SpyLlm()
+            val g = GraphService(fx.root.resolve(".svod/graph"), fx.engine, index, spy, config()).start()
+            g.rebuild(); awaitBuild(g)
+
+            assertTrue(spy.systems.isNotEmpty())
+            assertTrue(
+                spy.systems.all { it != null && it.contains("only in English") },
+                "predominantly Latin content must pin the answer to English, got ${spy.systems}",
+            )
+            index.close()
+            g.close()
+        }
+    }
+
+    @Test
+    fun `the system instruction is passed out of band, not inside the prompt`() {
+        IndexFixture.create().use { fx ->
+            runBlocking { fx.seedTwoTopics() }
+            val index = fx.newIndex(FakeEmbedder("fake"))
+            val spy = SpyLlm()
+            val g = GraphService(fx.root.resolve(".svod/graph"), fx.engine, index, spy, config()).start()
+            g.rebuild(); awaitBuild(g)
+
+            assertTrue(spy.systems.isNotEmpty(), "no system instruction was supplied")
+            assertTrue(
+                spy.systems.all { !it.isNullOrBlank() },
+                "every summarise call must carry the system instruction",
             )
             index.close()
             g.close()

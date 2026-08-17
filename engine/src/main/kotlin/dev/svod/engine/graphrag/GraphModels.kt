@@ -37,6 +37,23 @@ data class CommunityLevel(val level: Int, val communities: List<Community>)
 enum class GraphState { NOT_BUILT, BUILDING, READY, ERROR }
 
 /**
+ * The language a community summary must be written in.
+ *
+ * Only two, and chosen by counting scripts rather than by asking the model: this vault is Bulgarian
+ * and English, and a model left to decide for itself drifted to Chinese on a third of the corpus.
+ */
+enum class SummaryLanguage(val instruction: String, val systemClause: String) {
+    BULGARIAN(
+        instruction = "Пиши САМО на български език.",
+        systemClause = "Answer only in Bulgarian. Never answer in any other language.",
+    ),
+    ENGLISH(
+        instruction = "Пиши САМО на английски език.",
+        systemClause = "Answer only in English. Never answer in any other language.",
+    ),
+}
+
+/**
  * What the graph surfaces know about themselves. [stale] means the vault advanced past [head] since
  * the build — results are still served, because a slightly stale thematic map beats none, but the
  * caller is told. This is the deliberate answer to incremental staleness (design §8).

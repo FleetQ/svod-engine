@@ -3,6 +3,57 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.15.1 — 2026-08-17 (App API contract 0.24.0)
+
+Summary quality. Contract unchanged; the graph itself is unchanged. Only the wording of the summary
+prompt and the parsing of the model's reply differ, so this needs no reindex and no graph schema
+change — but it does need a `POST /api/v1/graph/rebuild` to take effect on an already-built sidecar.
+
+Measured on the real vault with `qwen2.5:7b-instruct`: the first build produced **12 of 21 usable
+summaries**. Two distinct causes, both fixed:
+
+### Fixed — a bolded label was never parsed
+The model answered `**TITLE: …**` for 2 of 21 communities. The matcher anchored on `^\s*TITLE:`, so it
+missed them entirely: the label text leaked into the summary body and the title silently fell back to
+a folder name. Labels now tolerate leading markdown/bullet/quote characters, and surrounding emphasis
+is stripped from the captured value.
+
+### Fixed — the model continued the documents instead of summarising them
+6 of 21 summaries came back as a verbatim continuation of the pasted notes. The instruction was placed
+**before** ~12,000 characters of source text, which a 7B model simply reads as more document. Now:
+- the excerpts are fenced by explicit `=== НАЧАЛО/КРАЙ НА ИЗВАДКАТА ===` markers,
+- the instruction is emitted **after** them, and
+- the role instruction moves out of the prompt entirely into Ollama's `system` field, so it cannot be
+  mistaken for input at all (`SummaryLlm.summarise` gained a `system` parameter).
+
+### Fixed — the model answered in Chinese
+Fixing the two above surfaced a third failure that had been hidden behind them: once the model was
+actually generating rather than copying, `qwen2.5:7b` (a Chinese-origin model) answered in **Chinese
+for 8 of 21** communities whose notes contain none. The instruction had asked it to "write in the
+language predominant in the notes" — a judgement a 7B model does not make reliably.
+
+The judgement now happens in code: `dominantLanguage()` counts Cyrillic against Latin in the excerpts
+and emits one unambiguous instruction, carried identically by the prompt footer and the system clause.
+`buildPrompt` returns the language alongside the prompt so the two cannot diverge — deriving it from
+the assembled prompt instead would read this file's own Cyrillic instruction text as content and
+classify every vault as Bulgarian.
+
+### Measured end to end, on the real vault
+
+| | usable summaries | build |
+|---|---|---|
+| v1.15.0 | 12 / 21 | 17 min |
+| after the parsing + prompt-order fix | 13 / 21 (8 answered in Chinese) | 3.5 min |
+| **v1.15.1** | **21 / 21** | **7.2 min** |
+
+"Usable" means structurally parsed *and* in a language the operator reads — the first metric only
+checked structure, which is why the middle row initially looked like 21/21.
+
+Each fix is guarded by a test, including one that asserts the instruction's *position* relative to the
+excerpts rather than merely its presence.
+
+Suite: 313 tests, 311 passed, 2 skipped.
+
 ## v1.15.0 — 2026-08-17 (App API contract 0.24.0)
 
 Graph-aware recall, in two layers. Deliberately **not** full GraphRAG: there is no LLM entity
