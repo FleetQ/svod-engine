@@ -129,30 +129,62 @@ class SvodTools(
     }
 
     /**
-     * Thematic communities with their pre-computed summaries (Ниво 2).
+     * The vault's thematic map (Ниво 2), deliberately WITHOUT the full member lists.
      *
      * **No model is consulted here.** With a query the ranking uses the same embedder the search path
      * already uses; the summaries themselves were written at build time. The caller receives evidence
      * and does its own reasoning — that is what keeps query time LLM-free (test D1).
+     *
+     * Measured on a 3,096-note vault: emitting every member path made one default call ≈44,300
+     * tokens, of which **97% were paths** and only ~1,200 were the titles and summaries an agent
+     * actually reasons over. A tool that costs more context than it returns signal is one an agent
+     * is right to avoid, so the bulk call now carries a small [dev.svod.engine.graphrag.MEMBER_SAMPLE] preview and the caller
+     * fetches the full list for the ONE community it cares about via [graphCommunity].
      */
     suspend fun graphCommunities(agent: AgentIdentity, query: String?, level: Int?, limit: Int): ToolResult =
         guarded(agent, "graph_communities", write = false) {
             val g = graph ?: return@guarded ToolResult.ok {
-                put("state", "NOT_BUILT"); putJsonArray("communities") {}
+                put("state", "NOT_BUILT")
+                put("hint", "the thematic graph has not been built for this vault; that is not the same as the vault having no themes")
+                putJsonArray("communities") {}
             }
+            val status = g.status()
             val found = g.communities(query, level, limit)
             ToolResult.ok {
-                put("state", g.status().state)
-                put("stale", g.status().stale)
+                put("state", status.state)
+                put("stale", status.stale)
+                put("levelCount", status.levelCount)
+                // The level actually served, so a caller can ask for a finer one deliberately.
+                put("level", found.firstOrNull()?.level)
+                if (status.state == "NOT_BUILT") {
+                    put("hint", "not built yet — ask the user to run a graph rebuild; do not conclude the vault has no themes")
+                }
+                if (status.stale) {
+                    put("hint", "built against an older commit: the themes are still valid but may miss the most recent notes")
+                }
                 putJsonArray("communities") {
                     found.forEach { c ->
                         addJsonObject {
                             put("id", c.id); put("level", c.level); put("title", c.title)
                             put("summary", c.summary); put("size", c.size)
-                            putJsonArray("members") { c.members.forEach { add(it) } }
+                            // A preview only. `size` is the true count; call graph_community for all.
+                            putJsonArray("sampleMembers") { c.members.take(dev.svod.engine.graphrag.MEMBER_SAMPLE).forEach { add(it) } }
+                            if (c.size > dev.svod.engine.graphrag.MEMBER_SAMPLE) put("moreMembers", c.size - dev.svod.engine.graphrag.MEMBER_SAMPLE)
                         }
                     }
                 }
+            }
+        }
+
+    /** Every member path of ONE community — the targeted follow-up to [graphCommunities]. */
+    suspend fun graphCommunity(agent: AgentIdentity, id: String): ToolResult =
+        guarded(agent, "graph_community", write = false) {
+            val c = graph?.community(id)
+                ?: return@guarded ToolResult.notFound("community $id")
+            ToolResult.ok {
+                put("id", c.id); put("level", c.level); put("title", c.title)
+                put("summary", c.summary); put("size", c.size)
+                putJsonArray("members") { c.members.forEach { add(it) } }
             }
         }
 
@@ -679,5 +711,6 @@ class SvodTools(
          * every hit would fill the budget with notes the query never matched.
          */
         const val EXPAND_SEEDS = 3
+
     }
 }

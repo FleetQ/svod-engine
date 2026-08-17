@@ -314,7 +314,7 @@ class SvodMcpServer(
         tool("search", "Hybrid search (keyword/semantic/hybrid) with filters.", mapOf("query" to "string", "mode" to "string", "limit" to "integer"), listOf("query")) { req ->
             val (t, d) = routed(req); d ?: t!!.search(agent, req.toSearchQuery()).toCallToolResult()
         }
-        tool("context_pack", "Assemble a cited context block. Default: token-budgeted hybrid recall. enumerate=true: return EVERY note matching the filters (type/tags) in full, unranked — the 'rule book' (all active policies/preferences) every turn. graphExpand=true: also pull the 1-hop wikilink neighbourhood of the top hits into any leftover budget (those blocks are marked viaGraph).", mapOf("query" to "string", "mode" to "string", "tokenBudget" to "integer", "type" to "string", "status" to "string", "enumerate" to "boolean", "graphExpand" to "boolean"), emptyList()) { req ->
+        tool("context_pack", "Assemble a cited context block. Default: token-budgeted hybrid recall. enumerate=true: return EVERY note matching the filters (type/tags) in full, unranked — the 'rule book' (all active policies/preferences) every turn. graphExpand=true: also pull the 1-hop wikilink neighbourhood of the top hits into any leftover budget (those blocks are marked viaGraph) — worth it when you need the CONTEXT around an answer (what a decision links to, what cites it), not when you just need the matching text.", mapOf("query" to "string", "mode" to "string", "tokenBudget" to "integer", "type" to "string", "status" to "string", "enumerate" to "boolean", "graphExpand" to "boolean"), emptyList()) { req ->
             val (t, d) = routed(req)
             d ?: run {
                 // Pull a generous candidate pool, then trim to the token budget.
@@ -345,11 +345,42 @@ class SvodMcpServer(
         tool("graph_query", "1-hop link neighborhood (outlinks + backlinks).", mapOf("path" to "string"), listOf("path")) { req ->
             val (t, d) = routed(req); d ?: t!!.graphQuery(agent, req.str("path")!!).toCallToolResult()
         }
-        tool("graph_communities", "Thematic communities of the vault with pre-computed summaries. With 'query', ranked by similarity to it; without, the coarsest level by size. Returns EVIDENCE (summaries + member paths) — synthesise the answer yourself. Consults no model.", mapOf("query" to "string", "level" to "integer", "limit" to "integer"), emptyList()) { req ->
+        tool(
+            "graph_communities",
+            "The vault's THEMATIC MAP: clusters of related notes with a pre-computed one-paragraph summary each. " +
+                "USE THIS, not search, for corpus-level questions — 'what do I know about X', 'what have I been working on', " +
+                "'what themes exist here', 'summarise my notes on Y'. Search returns the best few chunks and cannot see the " +
+                "corpus as a whole; this can. For finding one specific note, use search instead. " +
+                "'level' selects granularity: omit it for the coarsest level (a handful of broad themes — best for an overview), " +
+                "or pass 0 for the finest level (many small, specific clusters — ranks noticeably better when you have a precise " +
+                "query). 'query' ranks the themes by similarity to it. " +
+                "Returns a PREVIEW of member paths only ('sampleMembers' plus 'moreMembers'); 'size' is the true count. " +
+                "Call graph_community with an id to get every member of the one theme you care about — the full lists are large " +
+                "and returning them all would cost far more context than the summaries are worth. " +
+                "This is EVIDENCE, not an answer: synthesise it yourself. Consults no model.",
+            mapOf("query" to "string", "level" to "integer", "limit" to "integer"),
+            emptyList(),
+        ) { req ->
             val (t, d) = routed(req)
             d ?: t!!.graphCommunities(agent, req.str("query"), req.int("level", -1).takeIf { it >= 0 }, req.int("limit", 20)).toCallToolResult()
         }
-        tool("graph_status", "Build state of the derived thematic graph: whether it exists, when it was built, and whether it is stale relative to HEAD.", emptyMap(), emptyList()) { req ->
+        tool(
+            "graph_community",
+            "Every note path in ONE theme, by the id returned from graph_communities. The targeted follow-up: list the themes " +
+                "first, then pull the members of the single theme you need.",
+            mapOf("id" to "string"),
+            listOf("id"),
+        ) { req ->
+            val (t, d) = routed(req); d ?: t!!.graphCommunity(agent, req.str("id")!!).toCallToolResult()
+        }
+        tool(
+            "graph_status",
+            "Build state of the thematic graph. state=NOT_BUILT means it has never been built for this vault — that is NOT the " +
+                "same as the vault having no themes, so do not conclude anything about its content; tell the user it needs " +
+                "building. stale=true means it was built against an older commit: still usable, may miss the newest notes.",
+            emptyMap(),
+            emptyList(),
+        ) { req ->
             val (t, d) = routed(req); d ?: t!!.graphStatus(agent).toCallToolResult()
         }
         return tools

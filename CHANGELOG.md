@@ -3,6 +3,44 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.16.0 — 2026-08-17 (App API contract 0.25.0)
+
+Makes the thematic graph usable by agents. The feature worked; the tool shape made it impractical to
+call.
+
+### Fixed — one listing cost more context than it returned
+
+Measured on a 3,096-note vault: a default `graph_communities` call returned **≈44,300 tokens**, of
+which **97% were member paths** and only ~1,200 were the titles and summaries a caller reasons over.
+No amount of prompt guidance fixes a tool that expensive — an agent is right to avoid it.
+
+- `graph_communities` now returns a **`sampleMembers` preview (5 paths) plus `moreMembers`**, never
+  the full lists. `size` remains the true count, so a 588-note theme still reports 588.
+- New **`graph_community(id)`** tool and `GET /api/v1/graph/community` route return the complete
+  membership of one theme. `GraphService.community(id)` already existed but was unreachable — the
+  targeted accessor was written and never exposed, which is why the bulk call had to carry everything.
+- App API `GET /api/v1/graph/communities` gains `members=full|sample|none`, defaulting to **`full`**
+  so app v0.2.16 in the field is unaffected. New callers should pass `sample`.
+
+### Added — the tools now say when to use them
+
+Guidance lives in the tool descriptions, so every agent gets it without per-project setup:
+- **when to prefer this over `search`** — corpus-level questions ("what do I know about X", "what have
+  I been working on") rather than finding one note;
+- **what `level` means** — omit for a broad overview, pass `0` for the finest level, which measurably
+  ranks a specific query better;
+- **`NOT_BUILT` is not "no themes"** — the empty response now carries a `hint` saying so, because an
+  agent that reads it as "this vault has no structure" reports a conclusion it has no basis for;
+- **`stale` means usable but possibly missing the newest notes**;
+- `levelCount` and the served `level` are returned, so a finer level can be requested deliberately.
+
+`context_pack`'s `graphExpand` description now states when it earns its cost: when the *context around*
+an answer matters, not when the matching text is enough.
+
+### Contract
+
+0.24.0 → **0.25.0**, additive: one new route, one new optional parameter, two new response fields.
+
 ## v1.15.1 — 2026-08-17 (App API contract 0.24.0)
 
 Summary quality. Contract unchanged; the graph itself is unchanged. Only the wording of the summary

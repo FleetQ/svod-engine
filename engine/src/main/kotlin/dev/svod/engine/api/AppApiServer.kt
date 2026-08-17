@@ -391,14 +391,30 @@ class AppApiServer(
                 val query = call.request.queryParameters["query"]?.takeIf { it.isNotBlank() }
                 val level = call.request.queryParameters["level"]?.toIntOrNull()
                 val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 20
+                // Default `full` for back-compat: app v0.2.16 shipped against 0.24.0 and reads
+                // `members`. New callers should ask for `sample` — the full lists dominate the
+                // payload (~97% of it on a 3k-note vault) and are rarely all needed at once.
+                val members = call.request.queryParameters["members"] ?: "full"
                 val status = g.status()
                 call.respond(GraphCommunitiesDto(
                     state = status.state,
                     stale = status.stale,
-                    communities = g.communities(query, level, limit.coerceIn(1, 200)).map {
-                        GraphCommunityDto(it.id, it.level, it.title, it.summary, it.size, it.members)
+                    communities = g.communities(query, level, limit.coerceIn(1, 200)).map { c ->
+                        val shown = when (members.lowercase()) {
+                            "none" -> emptyList()
+                            "sample" -> c.members.take(dev.svod.engine.graphrag.MEMBER_SAMPLE)
+                            else -> c.members
+                        }
+                        GraphCommunityDto(c.id, c.level, c.title, c.summary, c.size, shown)
                     },
                 ))
+            }
+            get("/api/v1/graph/community") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                val id = call.request.queryParameters["id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorDto("bad_request", "id is required"))
+                val c = vc.graph?.community(id) ?: return@get call.notFound("community $id")
+                call.respond(GraphCommunityDto(c.id, c.level, c.title, c.summary, c.size, c.members))
             }
             get("/api/v1/graph/status") {
                 val vc = vault() ?: return@get call.notFound("vault")
