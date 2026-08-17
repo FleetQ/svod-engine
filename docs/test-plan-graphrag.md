@@ -122,11 +122,36 @@ live engine on :7619 were untouched throughout (verified: `git status` clean, en
 
 | # | Check | Budget | Measured |
 |---|---|---|---|
-| I1 | Warm `search()` | No regression | **0–7 ms** with the graph READY — unaffected ✅ |
+| I1 | Warm `search()` | No regression | **6–14 ms** warm, HTTP 200, 10 hits, graph READY ✅ — see the correction below |
 | I2 | Full graph build | Must not block startup | **12–14 s** on a MIN_PRIORITY background thread ✅ |
 | I3 | Engine cold start | Unchanged | `/ready` in **0.1 s**; build is never on the boot path ✅ |
 | I4 | `communities(query)` | < 50 ms warm | **4–6 ms** warm (first call 2.4 s = Ollama model load, the same cost search pays) ✅ |
 | I5 | Sidecar size | < 5% of the index | **12.2 MB = 1.79%** of 681 MB ✅ |
+
+### CORRECTION — the first I1 number was measured against the wrong thing
+
+The originally recorded "0–7 ms" was **wrong**. Those requests used `?query=`, but the App API
+parameter is **`q`**, so every one of them returned `400 {"error":"bad_request","message":"provide q
+or a filter (e.g. tags)"}`. The timing was real; the subject was not. It measured how fast the engine
+rejects a malformed request, and it happened to point in the direction that flattered the conclusion.
+
+Re-measured with `q=`, all HTTP 200 with 10 hits each:
+
+| | median | max |
+|---|---|---|
+| Live engine on `main` (feature absent) | 73 ms | 166 ms |
+| New engine, contract 0.24.0, graph READY | 7 ms | 14 ms |
+
+**Do not read that as "the graph made search faster."** The two engines are not a clean A/B — the
+query-embedding cache and background activity differ between them. The claim this table supports is
+only that search on the new engine is healthy and not slower.
+
+The authoritative no-regression evidence is **test A3**, which asserts identical hit ids *and* order
+with the graph off versus built, on the same corpus in the same process. A benchmark across two
+engines cannot establish that; the test can.
+
+**Rule: check an endpoint returns 200 before timing it.** A latency number from an error response is
+worse than no number.
 
 ### What the build produced at real scale
 
@@ -174,7 +199,7 @@ was thereby exercised at full scale, unintentionally, and behaved exactly as des
 | 2 | **D1**: zero LLM calls at query time | ✅ |
 | 3 | Suite green AND the collected count rises by the number added | ✅ **308 tests / 306 passed / 0 failures / 2 skipped**, of which **37 new** — 271 baseline + 37. Counts read from `build/test-results/*.xml`, not from stdout. |
 | 4 | No search-latency regression | ✅ (I1: 0–7 ms) |
-| 5 | G4 + G5 confirmed by hand | ⚠️ **G5 confirmed and it found a real defect** (see above). **G4 NOT run**: the installed app v0.2.15 was never literally pointed at the new engine. Indirect evidence only — `AppApiContractTest` conformance passes and the new engine served every pre-existing route during live validation. Treat G4 as **unverified**. |
+| 5 | G4 + G5 confirmed by hand | ✅ both. **G5** found a real defect (see above). **G4 run for real**: the installed **v0.2.15** was launched against the 0.24.0 engine via an argument-domain override (`-svod.settings.endpointPort 7998`, not persisted), against a **copy** of the vault. Title bar showed the vault name `personal-g4`, which exists only in that config — proof of which engine it was talking to. Connected (green), tree rendered incl. a note written through the new engine, file opened with its frontmatter table, inspector showed backlinks + commit history. No error banner. The Теми pane was absent, which is correct — v0.2.15 predates it. |
 | 6 | Validation against a **copy** of `personal`, never the live vault | ✅ live vault `git status` clean throughout |
 
 ### Measurement hygiene learned here
