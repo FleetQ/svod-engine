@@ -3,6 +3,46 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.15.0 — 2026-08-17 (App API contract 0.24.0)
+
+Graph-aware recall, in two layers. Deliberately **not** full GraphRAG: there is no LLM entity
+extraction over chunks, and none is stubbed for.
+
+### Added — Ниво 1: recall expansion
+- `context_pack(graphExpand=true)` appends the 1-hop wikilink neighbourhood of the top ranked hits
+  into whatever token budget is left over. Expanded blocks carry `viaGraph: true` and `viaPath`, so an
+  agent can separate primary evidence from the context pulled in around it. Default off; a link-graph
+  failure leaves the ranked blocks untouched.
+
+### Added — Ниво 2: thematic communities
+- A note-level graph built from resolved wikilinks **plus kNN similarity** over vectors already stored
+  in Lucene, persisted to a sidecar at `.svod/graph/`, clustered by Louvain into a hierarchy.
+  `IndexService.noteVector` mean-pools existing chunk vectors, so this costs **zero embedder calls and
+  zero LLM calls**.
+  Measured on a 3,096-note vault: wikilinks alone give 732 edges over 19% of notes; with similarity,
+  **14,315 edges over 100%**.
+- Optional per-community summaries via a pluggable `SummaryLlm` (`none` by default, Ollama
+  implementation provided) — generated at **build time only**. Query time consults no model, so the
+  engine remains fully functional with no LLM at all.
+- New MCP tools `graph_communities` and `graph_status`; new App API routes
+  `GET /api/v1/graph/communities`, `GET /api/v1/graph/status`, `POST /api/v1/graph/rebuild`. The
+  existing `GET /api/v1/graph` is unchanged.
+- New config block `graph` — **`enabled` is false and `summaryProvider` is "none" by default**, so a
+  fresh install builds nothing and calls nothing.
+
+### Safety
+`search()` is untouched (asserted identical with the graph off vs. built), the Lucene index is never
+written and needs no reindex, the vault is never written, and every failure path degrades: build
+failure, corrupt sidecar, missing vectors, unreachable or throwing summariser.
+
+### Known limitation
+The coarsest hierarchy level can hold hundreds of notes while the summary prompt fits fewer than ten.
+The prompt states explicitly that it is seeing N of M, so a summary cannot be silently fabricated from
+a sample — but summarising a community that large properly needs hierarchical summarisation, which
+this release does not implement.
+
+Suite: 308 tests, 306 passed, 2 skipped (37 new).
+
 ## v1.14.1 — 2026-08-14 (App API contract 0.23.0)
 
 Test-only. **No production code changed**, so this release is behaviourally identical to
