@@ -15,6 +15,13 @@ interface VaultView {
     val engine: SvodEngine
     val index: IndexService
     val conflicts: ConflictStore?
+
+    /**
+     * The derived thematic graph, when this vault has one. Defaulted so existing implementations
+     * (tests, fixtures) need no change and a vault without the feature simply reports "not built".
+     */
+    val graph: dev.svod.engine.graphrag.GraphService? get() = null
+
     fun syncStatus(): SyncStatusDto?
 }
 

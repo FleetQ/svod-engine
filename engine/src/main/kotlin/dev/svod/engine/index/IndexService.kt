@@ -453,6 +453,35 @@ class IndexService(
 
     fun docCount(): Int = index.numDocs()
 
+    // ---- read-only projections for the graph sidecar (dev.svod.engine.graphrag) ----
+
+    /** Every note path currently in the index. `private: true` notes are absent — they are never indexed. */
+    fun indexedPaths(): Set<String> = index.pathBlobMap().keys
+
+    /**
+     * A single note-level vector: the L2-normalised mean of the note's chunk vectors, or null when the
+     * note has none yet (background embedding still running, or a BM25-only embedder).
+     *
+     * Deliberately per-note rather than a bulk map: holding all ~79k chunk vectors at once would be
+     * ~316 MB at 1024 dims, whereas pooling one note at a time and releasing its chunks keeps the
+     * caller's peak at one vector per note (test B6). Reads stored vectors — costs no embedder call.
+     */
+    fun noteVector(path: String): FloatArray? {
+        val vectors = index.existingVectors(path)
+        if (vectors.isEmpty()) return null
+        val dim = vectors.values.first().size
+        val sum = DoubleArray(dim)
+        for (v in vectors.values) {
+            if (v.size != dim) continue // defensive: a mid-flight model swap can mix dims
+            for (i in 0 until dim) sum[i] += v[i]
+        }
+        var norm = 0.0
+        for (x in sum) norm += x * x
+        norm = kotlin.math.sqrt(norm)
+        if (norm == 0.0) return null
+        return FloatArray(dim) { (sum[it] / norm).toFloat() }
+    }
+
     // ---- search (thread-safe; no executor needed) ----
 
     /**
