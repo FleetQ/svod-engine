@@ -382,6 +382,38 @@ class AppApiServer(
                     unresolved = g.unresolvedEdges().map { GraphEdgeDto(it.first, it.second) },
                 ))
             }
+            // Derived thematic graph (Ниво 2). Separate from /api/v1/graph, which stays the raw
+            // wikilink graph the UI already renders — these are additive routes, not a replacement.
+            get("/api/v1/graph/communities") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                val g = vc.graph
+                    ?: return@get call.respond(GraphCommunitiesDto(state = "NOT_BUILT", stale = false, communities = emptyList()))
+                val query = call.request.queryParameters["query"]?.takeIf { it.isNotBlank() }
+                val level = call.request.queryParameters["level"]?.toIntOrNull()
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 20
+                val status = g.status()
+                call.respond(GraphCommunitiesDto(
+                    state = status.state,
+                    stale = status.stale,
+                    communities = g.communities(query, level, limit.coerceIn(1, 200)).map {
+                        GraphCommunityDto(it.id, it.level, it.title, it.summary, it.size, it.members)
+                    },
+                ))
+            }
+            get("/api/v1/graph/status") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                call.respond(vc.graph?.status() ?: dev.svod.engine.graphrag.GraphStatus(state = "NOT_BUILT", enabled = false))
+            }
+            post("/api/v1/graph/rebuild") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val g = vc.graph
+                    ?: return@post call.respond(HttpStatusCode.Conflict, ErrorDto("graph_disabled", "the graph feature is not enabled for this vault"))
+                if (!g.rebuild()) {
+                    return@post call.respond(HttpStatusCode.Conflict, ErrorDto("graph_busy", "a build is already running, or the feature is disabled"))
+                }
+                call.respond(HttpStatusCode.Accepted, g.status())
+            }
+
             get("/api/v1/tags") {
                 val vc = vault() ?: return@get call.notFound("vault")
                 call.respond(TagsDto(tags(vc)))

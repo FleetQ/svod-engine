@@ -40,6 +40,12 @@ class SvodTools(
      * keeps the engine LLM-free: ambiguous cases are reported UNCERTAIN instead of guessed.
      */
     adjudicator: MemoryAdjudicator? = null,
+    /**
+     * The vault's derived thematic graph, when it has one. Null keeps every graph tool answering
+     * "not built" instead of failing — the tools stay registered so an agent's capability probe does
+     * not change shape depending on config.
+     */
+    private val graph: dev.svod.engine.graphrag.GraphService? = null,
 ) {
     /** Classifies an incoming memory against existing memory of the same type/subject. */
     private val classifier = FactClassifier(engine, index, adjudicator)
@@ -123,6 +129,49 @@ class SvodTools(
     }
 
     /**
+     * Thematic communities with their pre-computed summaries (Ниво 2).
+     *
+     * **No model is consulted here.** With a query the ranking uses the same embedder the search path
+     * already uses; the summaries themselves were written at build time. The caller receives evidence
+     * and does its own reasoning — that is what keeps query time LLM-free (test D1).
+     */
+    suspend fun graphCommunities(agent: AgentIdentity, query: String?, level: Int?, limit: Int): ToolResult =
+        guarded(agent, "graph_communities", write = false) {
+            val g = graph ?: return@guarded ToolResult.ok {
+                put("state", "NOT_BUILT"); putJsonArray("communities") {}
+            }
+            val found = g.communities(query, level, limit)
+            ToolResult.ok {
+                put("state", g.status().state)
+                put("stale", g.status().stale)
+                putJsonArray("communities") {
+                    found.forEach { c ->
+                        addJsonObject {
+                            put("id", c.id); put("level", c.level); put("title", c.title)
+                            put("summary", c.summary); put("size", c.size)
+                            putJsonArray("members") { c.members.forEach { add(it) } }
+                        }
+                    }
+                }
+            }
+        }
+
+    /** Build state of the derived graph, including whether it is stale relative to HEAD. */
+    suspend fun graphStatus(agent: AgentIdentity): ToolResult = guarded(agent, "graph_status", write = false) {
+        val s = graph?.status()
+            ?: dev.svod.engine.graphrag.GraphStatus(state = "NOT_BUILT", enabled = false)
+        ToolResult.ok {
+            put("state", s.state); put("enabled", s.enabled); put("stale", s.stale)
+            put("head", s.head); put("currentHead", s.currentHead); put("builtAt", s.builtAt)
+            put("noteCount", s.noteCount); put("edgeCount", s.edgeCount)
+            put("linkEdgeCount", s.linkEdgeCount); put("simEdgeCount", s.simEdgeCount)
+            put("communityCount", s.communityCount); put("levelCount", s.levelCount)
+            put("vectorCoverage", s.vectorCoverage); put("summaryProvider", s.summaryProvider)
+            put("summarisedCount", s.summarisedCount); put("error", s.error); put("progress", s.progress)
+        }
+    }
+
+    /**
      * Assemble a token-budgeted, cited context block from hybrid retrieval — the agent-memory recall
      * primitive. Runs the same hybrid search (BM25 + kNN + RRF + any reranker), then DEDUPS to one
      * block per note (so a single note can't dominate), and greedily fills up to [tokenBudget] in
@@ -138,7 +187,13 @@ class SvodTools(
      *    ignoring the token budget (capped at [ENUMERATE_CAP] notes for safety). Use with a `type`
      *    or `tags` filter to load all active policies/preferences verbatim every turn.
      */
-    suspend fun contextPack(agent: AgentIdentity, query: SearchQuery, tokenBudget: Int, enumerate: Boolean = false): ToolResult =
+    suspend fun contextPack(
+        agent: AgentIdentity,
+        query: SearchQuery,
+        tokenBudget: Int,
+        enumerate: Boolean = false,
+        graphExpand: Boolean = false,
+    ): ToolResult =
         guarded(agent, "context_pack", write = false) {
             val blocks = ArrayList<PackBlock>()
             var total = 0
@@ -170,6 +225,11 @@ class SvodTools(
                     total += est
                     if (total >= tokenBudget) break
                 }
+                if (graphExpand && total < tokenBudget) {
+                    // Contained: a link-graph failure must leave the primary blocks exactly as they
+                    // were (test E5). Expansion is a bonus, never a precondition.
+                    total = runCatching { expandViaGraph(blocks, total, tokenBudget) }.getOrDefault(total)
+                }
             }
             ToolResult.ok {
                 put("query", query.text); put("mode", mode)
@@ -179,15 +239,58 @@ class SvodTools(
                         addJsonObject {
                             put("path", b.path); put("heading", b.heading); put("content", b.content)
                             put("score", b.score); put("commit", b.commit); put("author", b.author); put("tokens", b.tokens)
+                            // Additive and only present on expanded blocks, so an agent can tell
+                            // primary evidence from the context pulled in around it.
+                            if (b.viaPath != null) { put("viaGraph", true); put("viaPath", b.viaPath) }
                         }
                     }
                 }
             }
         }
 
+    /**
+     * Ниво 1 recall expansion: pull the 1-hop wikilink neighbourhood of the strongest hits into the
+     * remaining token budget.
+     *
+     * Order matters — neighbours are appended AFTER the ranked blocks and never displace one
+     * (test E3), because a linked note is context for the answer, not the answer. Notes already
+     * packed are skipped (test E4). Returns the new running token total.
+     */
+    private suspend fun expandViaGraph(blocks: MutableList<PackBlock>, startTotal: Int, tokenBudget: Int): Int {
+        if (blocks.isEmpty()) return startTotal
+        val g = linkGraph()
+        val packed = blocks.mapTo(HashSet()) { it.path }
+        var total = startTotal
+
+        // Only the strongest few hits get expanded; every hit's neighbourhood would swamp the budget
+        // with material the query never actually matched.
+        val seeds = blocks.take(EXPAND_SEEDS).map { it.path }
+        val candidates = LinkedHashMap<String, String>() // neighbour path -> the hit that pulled it in
+        for (seed in seeds) {
+            for (l in g.outlinks(seed)) {
+                val target = l.resolvedPath ?: continue
+                if (target !in packed) candidates.putIfAbsent(target, seed)
+            }
+            for (b in g.backlinks(seed)) if (b !in packed) candidates.putIfAbsent(b, seed)
+        }
+
+        for ((path, via) in candidates) {
+            if (total >= tokenBudget) break
+            val content = engine.read(path)?.text?.let(dev.svod.engine.index.MarkdownChunker::stripPrivateSpans) ?: continue
+            val est = estimateTokens(content)
+            if (total + est > tokenBudget) continue
+            val prov = engine.history(path, 1).firstOrNull()
+            blocks.add(PackBlock(path, "", content, 0.0, prov?.commit, prov?.authorName, est, viaPath = via))
+            total += est
+        }
+        return total
+    }
+
     private class PackBlock(
         val path: String, val heading: String, val content: String,
         val score: Double, val commit: String?, val author: String?, val tokens: Int,
+        /** Non-null on a graph-expanded block: the ranked hit whose neighbourhood pulled it in. */
+        val viaPath: String? = null,
     )
 
     /** Cheap token estimate (~4 chars/token); the App API search DTO shares the same estimator. */
@@ -570,5 +673,11 @@ class SvodTools(
     private companion object {
         /** Safety cap on Path-A enumeration (logged via the result size if hit); avoids pathological packs. */
         const val ENUMERATE_CAP = 500
+
+        /**
+         * How many of the top ranked blocks get their neighbourhood expanded (Ниво 1). Expanding
+         * every hit would fill the budget with notes the query never matched.
+         */
+        const val EXPAND_SEEDS = 3
     }
 }

@@ -268,7 +268,9 @@ class AppApiContractTest {
         val implemented = setOf(
             "/health", "/ready", "/api/v1/tree", "/api/v1/file", "/api/v1/file/move", "/api/v1/file/restore",
             "/api/v1/file/history", "/api/v1/file/diff", "/api/v1/file/revision", "/api/v1/file/links",
-            "/api/v1/search", "/api/v1/graph", "/api/v1/tags", "/api/v1/settings", "/api/v1/index/status",
+            "/api/v1/search", "/api/v1/graph",
+            "/api/v1/graph/communities", "/api/v1/graph/status", "/api/v1/graph/rebuild",
+            "/api/v1/tags", "/api/v1/settings", "/api/v1/index/status",
             "/api/v1/vaults", "/api/v1/vaults/{id}", "/api/v1/agents", "/api/v1/agents/{id}",
             "/api/v1/update/check", "/api/v1/update/apply",
             "/api/v1/metrics", "/api/v1/conflicts", "/api/v1/conflicts/resolve",

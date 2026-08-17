@@ -30,6 +30,7 @@ class VaultContext private constructor(
     val syncEngine: SyncEngine,
     private val syncGit: SyncGit,
     private val watcher: FileWatcher,
+    override val graph: dev.svod.engine.graphrag.GraphService,
 ) : VaultView, AutoCloseable {
 
     override val conflicts: ConflictStore get() = conflictStore
@@ -47,6 +48,8 @@ class VaultContext private constructor(
     override fun close() {
         runCatching { watcher.close() }
         runCatching { syncGit.close() }
+        // Before the index: a running graph build reads from it.
+        runCatching { graph.close() }
         runCatching { index.close() }
         runCatching { engine.close() }
     }
@@ -90,7 +93,18 @@ class VaultContext private constructor(
 
                 val watcher = FileWatcher(vault, engine, index, eventBus).start()
 
-                return VaultContext(vs.id, vs.name ?: vs.id, engine, index, conflicts, syncEngine, syncGit, watcher)
+                // Derived thematic graph. Disabled by default; start() is a no-op unless enabled, and
+                // a build never blocks startup or touches the Lucene index.
+                val gc = config.toGraphConfig()
+                val graph = dev.svod.engine.graphrag.GraphService(
+                    vault.resolve(".svod").resolve("graph"),
+                    engine,
+                    index,
+                    dev.svod.engine.graphrag.SummaryLlms.create(gc.summary),
+                    gc,
+                ).start()
+
+                return VaultContext(vs.id, vs.name ?: vs.id, engine, index, conflicts, syncEngine, syncGit, watcher, graph)
             } catch (t: Throwable) {
                 engine.close()
                 throw t

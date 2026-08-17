@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.23.0
+  version: 0.24.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
     access goes through the MCP endpoint, not this API. This contract is the single source of
@@ -262,6 +262,65 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Graph" }
+
+  /api/v1/graph/communities:
+    get:
+      tags: [graph]
+      summary: Thematic communities of the derived graph, with pre-computed summaries
+      description: >
+        ADDITIVE in 0.24.0. Communities come from the derived graph sidecar (wikilinks + embedding
+        similarity, clustered by Louvain). Summaries are written at BUILD time; this endpoint
+        consults no model. With `query` the communities are ranked by similarity to it, using the
+        embedder the search path already uses; without one they are returned largest-first. Returns
+        `state: NOT_BUILT` with an empty list when the feature is off or has never been built —
+        never an error.
+      operationId: graphCommunities
+      parameters:
+        - { name: query, in: query, required: false, schema: { type: string } }
+        - { name: level, in: query, required: false, schema: { type: integer }, description: "Hierarchy level; default the coarsest. Out of range is clamped." }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 20 } }
+      responses:
+        "200":
+          description: Communities
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GraphCommunities" }
+
+  /api/v1/graph/status:
+    get:
+      tags: [graph]
+      summary: Build state of the derived graph
+      description: >
+        ADDITIVE in 0.24.0. `stale` means the vault advanced past the HEAD the graph was built
+        against; results are still served. `vectorCoverage` below 1.0 means some notes had no
+        embeddings at build time, so their edges are wikilink-only.
+      operationId: graphStatus
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GraphStatus" }
+
+  /api/v1/graph/rebuild:
+    post:
+      tags: [graph]
+      summary: Start a background rebuild of the derived graph
+      description: >
+        ADDITIVE in 0.24.0. Returns immediately; poll /api/v1/graph/status for progress. 409 when
+        the feature is disabled or a build is already running.
+      operationId: graphRebuild
+      responses:
+        "202":
+          description: Build started
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GraphStatus" }
+        "409":
+          description: Disabled or already building
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/tags:
     get:
@@ -1328,6 +1387,57 @@ components:
             properties:
               source: { type: string }
               target: { type: string }
+
+    GraphCommunity:
+      type: object
+      required: [id, level, title, size, members]
+      properties:
+        id: { type: string, description: "Stable for an unchanged vault; ids shift if the corpus changes." }
+        level: { type: integer, description: "0 is the finest level of the hierarchy." }
+        title: { type: string, description: "LLM title when summarised, else a label derived from member paths." }
+        summary:
+          type: string
+          nullable: true
+          description: "Null when no summary provider was active at build time. The community is still usable."
+        size: { type: integer }
+        members:
+          type: array
+          items: { type: string }
+
+    GraphCommunities:
+      type: object
+      required: [state, stale, communities]
+      properties:
+        state: { type: string, enum: [NOT_BUILT, BUILDING, READY, ERROR] }
+        stale: { type: boolean }
+        communities:
+          type: array
+          items: { $ref: "#/components/schemas/GraphCommunity" }
+
+    GraphStatus:
+      type: object
+      required: [state, enabled]
+      properties:
+        state: { type: string, enum: [NOT_BUILT, BUILDING, READY, ERROR] }
+        enabled: { type: boolean }
+        head: { type: string, nullable: true, description: "HEAD the graph was built against." }
+        currentHead: { type: string, nullable: true }
+        stale: { type: boolean }
+        builtAt: { type: integer, format: int64, nullable: true }
+        noteCount: { type: integer }
+        edgeCount: { type: integer }
+        linkEdgeCount: { type: integer, description: "Edges from resolved wikilinks." }
+        simEdgeCount: { type: integer, description: "Edges inferred from embedding similarity." }
+        communityCount: { type: integer }
+        levelCount: { type: integer }
+        vectorCoverage:
+          type: number
+          format: double
+          description: "Fraction of notes that had vectors at build time. Below 1.0 ⇒ some edges are wikilink-only."
+        summaryProvider: { type: string }
+        summarisedCount: { type: integer }
+        error: { type: string, nullable: true }
+        progress: { type: string, nullable: true }
 
     FileLinks:
       type: object

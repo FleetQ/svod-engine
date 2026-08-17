@@ -78,6 +78,28 @@ data class GraphEdgeDto(val source: String, val target: String)
 @Serializable
 data class GraphDto(val nodes: List<GraphNodeDto>, val edges: List<GraphEdgeDto>, val unresolved: List<GraphEdgeDto>)
 
+/**
+ * One thematic community of the derived graph. [summary] is null when no summary provider was active
+ * at build time — the community is still fully usable, labelled by [title].
+ */
+@Serializable
+data class GraphCommunityDto(
+    val id: String,
+    val level: Int,
+    val title: String,
+    val summary: String? = null,
+    val size: Int,
+    val members: List<String>,
+)
+
+/** [stale] means the vault advanced past the build's HEAD; results are still served (design §8). */
+@Serializable
+data class GraphCommunitiesDto(
+    val state: String,
+    val stale: Boolean,
+    val communities: List<GraphCommunityDto>,
+)
+
 @Serializable
 data class OutlinkDto(val target: String, val resolved: String? = null)
 

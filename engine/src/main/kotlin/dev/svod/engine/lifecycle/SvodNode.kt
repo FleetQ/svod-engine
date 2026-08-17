@@ -109,7 +109,7 @@ class SvodNode private constructor(
                 val defaultId = vaults.defaultId()
                 val toolsByVault = vaults.contexts().associate { vc ->
                     val audit = AuditLog(vc.engine.root.resolve(".svod").resolve("audit").resolve("audit.log"))
-                    vc.id to SvodTools(vc.engine, vc.index, audit, rateLimiter, eventBus)
+                    vc.id to SvodTools(vc.engine, vc.index, audit, rateLimiter, eventBus, graph = vc.graph)
                 }
 
                 val ready = AtomicBoolean(false)

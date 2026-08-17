@@ -55,7 +55,36 @@ data class SvodConfig(
     val indexing: IndexingSettings = IndexingSettings(),
     /** When false (default), `messy/` drafts are quarantined out of default recall (search + context_pack). */
     val includeMessyInRecall: Boolean = false,
+    /** Derived thematic graph over the vault (communities + summaries). Off by default. */
+    val graph: GraphSettings = GraphSettings(),
 ) {
+    /**
+     * Configuration for the derived graph sidecar (`.svod/graph/`).
+     *
+     * **[enabled] defaults to false and [summaryProvider] to "none"**, mirroring [RerankerSettings]:
+     * a fresh install behaves exactly as before, and neither a graph build nor any model call can
+     * happen until the operator opts in.
+     */
+    @Serializable
+    data class GraphSettings(
+        val enabled: Boolean = false,
+        /** Similarity neighbours kept per note. 0 ⇒ wikilink edges only. */
+        val simEdgesPerNote: Int = 6,
+        /** Minimum cosine for a similarity edge; below this the pair is treated as unrelated. */
+        val simThreshold: Double = 0.75,
+        /** Communities smaller than this are never summarised (noise, and one LLM call each). */
+        val minCommunitySize: Int = 3,
+        /** How many of the coarsest hierarchy levels get summaries; bounds the LLM call count. */
+        val summariseTopLevels: Int = 1,
+        val summaryProvider: String = "none",
+        val summaryModel: String = "qwen2.5:7b-instruct",
+        /** Defaults to the embedder's Ollama endpoint when null. */
+        val summaryEndpoint: String? = null,
+        val summaryInputChars: Int = 12_000,
+        val summaryTimeoutSeconds: Int = 120,
+        /** Build once at startup when the sidecar is missing or stale. Off by default. */
+        val rebuildOnStartup: Boolean = false,
+    )
     /**
      * [blockStartup]=false (default) binds the App API immediately and builds the semantic index in
      * the background (keyword search works at once); =true keeps the legacy behavior of waiting for
@@ -301,6 +330,29 @@ data class SvodConfig(
             apiKey = reranker.apiKeyRef?.takeIf { it.isNotBlank() }?.let { dev.svod.engine.security.Secrets.resolve(it) },
             topK = reranker.topK,
             requestTimeoutSeconds = reranker.requestTimeoutSeconds,
+        )
+    }
+
+    fun toGraphConfig(): dev.svod.engine.graphrag.GraphConfig {
+        val provider = when (graph.summaryProvider.lowercase()) {
+            "ollama", "local-ollama" -> dev.svod.engine.graphrag.SummaryProvider.OLLAMA
+            else -> dev.svod.engine.graphrag.SummaryProvider.NONE
+        }
+        return dev.svod.engine.graphrag.GraphConfig(
+            enabled = graph.enabled,
+            simEdgesPerNote = graph.simEdgesPerNote,
+            simThreshold = graph.simThreshold,
+            minCommunitySize = graph.minCommunitySize,
+            summariseTopLevels = graph.summariseTopLevels,
+            summaryInputChars = graph.summaryInputChars,
+            rebuildOnStartup = graph.rebuildOnStartup,
+            summary = dev.svod.engine.graphrag.SummaryLlmConfig(
+                provider = provider,
+                model = graph.summaryModel,
+                // Reuse the embedder's Ollama endpoint by default — one server, one place to configure.
+                endpoint = graph.summaryEndpoint ?: embedder.endpoint ?: embedder.ollamaEndpoint,
+                requestTimeoutSeconds = graph.summaryTimeoutSeconds,
+            ),
         )
     }
 
