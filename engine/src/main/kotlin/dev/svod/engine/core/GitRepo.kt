@@ -195,6 +195,28 @@ class GitRepo private constructor(
         }
     }
 
+    /**
+     * True only when native `git status --porcelain` DEFINITIVELY reports a clean working tree.
+     *
+     * Any doubt — git missing, non-zero exit, timeout — answers false, so the caller falls back to
+     * doing the full work. The fail-safe direction is "do more", never "skip".
+     *
+     * Exists because jgit's `add`/`status` (what [commitAll] uses) run a `FileTreeIterator` that
+     * stats every tracked file: measured 15.3 s at boot on a 3,370-note vault, versus **20 ms** for
+     * the same question asked natively.
+     */
+    fun isDefinitelyClean(): Boolean = try {
+        val proc = ProcessBuilder(GIT_BIN, "status", "--porcelain")
+            .directory(repo.workTree)
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .start()
+        val out = proc.inputStream.use { it.readBytes().toString(StandardCharsets.UTF_8) }
+        if (!proc.waitFor(30, TimeUnit.SECONDS)) { proc.destroyForcibly(); false }
+        else proc.exitValue() == 0 && out.isBlank()
+    } catch (_: Exception) {
+        false
+    }
+
     private fun nativeLog(path: String?, max: Int): List<CommitInfo> {
         // %x1f (unit sep) between fields, %x1e (record sep) between commits — bytes that
         // never occur in commit metadata, so parsing survives multi-line messages.

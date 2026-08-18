@@ -88,6 +88,34 @@ class FileWatcherTest {
         }
     }
 
+    /**
+     * The risk introduced by hashing on (mtime, size) instead of on CONTENT.
+     *
+     * The watcher registers with FileHasher.LAST_MODIFIED_TIME because content hashing read every
+     * byte under the vault root at startup — 839 MB of Lucene index included — and cost 34.5 s of a
+     * ~52 s cold boot. The trade is that two writes are told apart by timestamp and size rather than
+     * by content, so this pins the case that would break first: a same-length rewrite, immediately
+     * after the first one.
+     */
+    @Test
+    fun `a same-length rewrite moments later is still ingested`() = runBlocking {
+        Rig(Files.createTempDirectory("svod-watch-")).use { rig ->
+            rig.watcher.start()
+            val note = rig.root.resolve("rewrite.md")
+            Files.writeString(note, "# R\naaaaaaaaaa")
+            val first = eventually(8_000) { rig.engine.read("rewrite.md") }
+            assertNotNull(first, "the first write must be ingested")
+
+            // Same byte length, different content — the pair a coarse hash could conflate.
+            Files.writeString(note, "# R\nbbbbbbbbbb")
+            val second = eventually(8_000) {
+                rig.engine.read("rewrite.md")?.takeIf { it.text.contains("bbbbbbbbbb") }
+            }
+            assertNotNull(second, "a same-length rewrite must not be mistaken for the previous content")
+            assertEquals("bbbbbbbbbb", second.text.lines().last())
+        }
+    }
+
     private suspend fun <T> eventually(timeoutMs: Long, block: suspend () -> T?): T? =
         withTimeoutOrNull(timeoutMs) { var r = block(); while (r == null) { delay(100); r = block() }; r }
 }

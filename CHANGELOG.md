@@ -3,6 +3,71 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.18.1 — 2026-08-18 (App API contract 0.27.0)
+
+Cold start: **~52 s → 13.4 s** on the operator's 3,096-note vault. Contract unchanged, no reindex,
+no behaviour change beyond speed.
+
+v1.18.0 added per-phase boot timings precisely so this could be aimed rather than guessed. The first
+reading named two phases and disproved the standing hypothesis on the way:
+
+| phase (`personal`) | before | after |
+|---|---|---|
+| engine open | 15,340 ms | **1,044–1,128 ms** |
+| file watcher start | 34,491 ms | **1,748–2,568 ms** |
+| index start | 1 ms | 2 ms |
+| graph start | 2,380 ms | 2,188–3,051 ms |
+| **`/ready`** | **~52 s** | **13.4 s** |
+
+### Fixed — the file watcher hashed 936 MB it never looks at
+
+`DirectoryWatcher` was registered with its default **content** hasher, which reads every byte under
+the watched root at registration. On this vault that is `.git` (97 MB) plus `.svod` (839 MB of Lucene
+index) — neither of which the watcher ever acts on, since the listener discards both by path.
+
+The tell was `work`: a **two-note** vault paid 4,717 ms, so the cost could not be about notes. Sizing
+it directly: 839 MB / 34.5 s ≈ 25 MB/s, and the three vaults' times track their `.svod` size almost
+exactly.
+
+Measured A/B on the real vault before choosing (warm cache, `watchAsync` registration):
+
+| | `personal` | `lukanet` | `work` |
+|---|---|---|---|
+| content hashing (was) | 6,395 ms | 393 ms | 810 ms |
+| **`FileHasher.LAST_MODIFIED_TIME`** | **152 ms** | **16 ms** | ~1 ms |
+| `fileHashing(false)` | 104 ms | 12 ms | 6 ms |
+
+Now hashes on (mtime, size). Deliberately **not** `fileHashing(false)`, which is marginally faster:
+hashing is what suppresses a duplicate event for a file that was touched but not changed, and the
+stat-based hasher keeps that for the price of a stat the watcher already does. Also deliberately
+still watching the vault ROOT rather than a hand-picked list of subdirectories — excluding
+`.git`/`.svod` by watching specific children was 9× faster too, but silently stops watching new
+top-level files and folders.
+
+The trade is that two writes are told apart by timestamp and size rather than by content, so there is
+a test pinning the case that would break first: a same-length rewrite immediately after the previous
+one.
+
+### Fixed — every boot ran a full-tree git commit to handle a rare crash
+
+`recover()` called `commitAll` unconditionally. Its jgit `add`/`status` run a `FileTreeIterator` that
+stats every tracked file — a cost this codebase had already documented and routed around for the
+write path, but not for boot. Native `git status --porcelain` answers the same question in **20 ms**
+against 15.3 s, so it is asked first and the walk is skipped when the tree is provably clean.
+
+**Recovery is not narrowed.** An edit made while the engine was down is an uncommitted working-tree
+change, `status` reports it, and the commit still happens. Only a definitively clean tree is skipped,
+and any failure to answer — git missing, non-zero exit, timeout — falls through to the full path. The
+fail-safe direction is "do more", never "skip". Guarded by `CrashRecoveryTest` plus a new
+`ColdStartTest` asserting that a file written while the engine was down is committed at the next open;
+both fail if the skip is made unconditional.
+
+### Not fixed
+
+`graph start` (~2–3 s) is now the largest remaining phase and was not touched.
+
+Suite 357 → **361**, 0 failures, 2 pre-existing skips.
+
 ## v1.18.0 — 2026-08-17 (App API contract 0.27.0)
 
 Hardening sprint, from an internal survey run against the live engine
