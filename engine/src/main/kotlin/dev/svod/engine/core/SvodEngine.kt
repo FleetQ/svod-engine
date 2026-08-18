@@ -506,6 +506,17 @@ class SvodEngine private constructor(
      */
     private fun recover() {
         cleanOrphanTmp()
+        // [commitAll] is the expensive part of opening a vault: jgit's add/status stat every tracked
+        // file, measured at 15.3 s on a 3,370-note vault and paid on EVERY boot to handle the rare
+        // case of an interrupted write. Native git status --porcelain answers the same question in
+        // ~20 ms, so ask that first and skip the walk when there is provably nothing to recover.
+        //
+        // This must not narrow what gets recovered: an edit made while the engine was down is an
+        // uncommitted working-tree change, status reports it, and the commit still happens. Only a
+        // definitively clean tree is skipped, and any failure to answer falls through to the full
+        // path — guarded by CrashRecoveryTest, which asserts a pre-existing uncommitted change is
+        // committed at open.
+        if (git.isDefinitelyClean()) return
         git.commitAll("recovery: complete interrupted write", Author.RECOVERY)
     }
 

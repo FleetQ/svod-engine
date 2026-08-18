@@ -5,6 +5,7 @@ import dev.svod.engine.events.EventBus
 import dev.svod.engine.events.EventTypes
 import dev.svod.engine.index.IndexService
 import io.methvin.watcher.DirectoryWatcher
+import io.methvin.watcher.hashing.FileHasher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -41,6 +42,17 @@ class FileWatcher(
     fun start(): FileWatcher {
         watcher = DirectoryWatcher.builder()
             .path(root)
+            // Hash by (mtime, size), not by CONTENT. The default content hasher reads every byte
+            // under the watched root at registration — including `.git` (97 MB) and `.svod` (839 MB
+            // of Lucene index on the operator's vault), neither of which this watcher ever acts on.
+            // Measured on that vault: registration 6,140 ms → 152 ms warm, and it was 34.5 s of a
+            // ~52 s cold boot, the single largest phase. A 2-note vault paid 4.7 s for the same
+            // reason, which is what showed the cost was the INDEX, not the notes.
+            //
+            // Deliberately not `fileHashing(false)` (104 ms, marginally faster): hashing is what
+            // suppresses a duplicate event for a file that was touched but not changed, and the
+            // stat-based hasher keeps that for the same price as the stat the watcher already does.
+            .fileHasher(FileHasher.LAST_MODIFIED_TIME)
             .listener { event ->
                 val p = event.path()
                 if (!isIgnored(p)) {
