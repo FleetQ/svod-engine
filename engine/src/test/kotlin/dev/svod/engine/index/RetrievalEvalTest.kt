@@ -58,9 +58,16 @@ class RetrievalEvalTest {
         return fx to fx.newIndex(embedder)
     }
 
-    private fun report(label: String, index: IndexService, queries: List<GoldenQuery>, mode: SearchMode): EvalMetrics {
+    private fun report(
+        label: String,
+        index: IndexService,
+        queries: List<GoldenQuery>,
+        mode: SearchMode,
+        record: MutableMap<String, List<String>>? = null,
+    ): EvalMetrics {
         val misses = mutableListOf<String>()
         val m = RetrievalEval.run(index, queries, mode) { q, ranked ->
+            record?.put(q.text, ranked)
             if (RetrievalEval.recallAt(ranked, q, 5) == 0.0) misses += RetrievalEval.explain(q, ranked)
         }
         println(m.format(label))
@@ -222,6 +229,10 @@ class RetrievalEvalTest {
         assumeTrue(config != null, "multilingual-e5-small not cached")
         val dir = System.getProperty("svod.eval.indexDir")
         assumeTrue(dir != null, "set -Dsvod.eval.indexDir to an already-built index")
+        // Separately gated: this opens the index with the DEFAULT e5 embedder, and pointing that at
+        // an index built by another model triggers a dimension change, which wipes the vectors and
+        // re-embeds the whole vault. It silently destroyed a 45-minute bge-m3 index exactly once.
+        assumeTrue(System.getProperty("svod.eval.diag") != null, "set -Dsvod.eval.diag to run the rank diagnostic")
 
         // Cross-lingual scored a flat 0.000 on the real vault, reranker included. A reranker can
         // only reorder what the first stage retrieved, so the question is whether the right note is
@@ -266,6 +277,9 @@ class RetrievalEvalTest {
         // Building the index for a real vault took ~45 minutes. `-Dsvod.eval.indexDir` points at an
         // existing one so a re-run (a new golden set, a different breakdown) costs minutes: the
         // service reconciles against HEAD and re-embeds nothing when the index is already current.
+        // Baseline ordering, kept so the reranked pass can prove it actually reranked. See the
+        // assertion below.
+        val fusedOrder = mutableMapOf<String, List<String>>()
         val indexDir = System.getProperty("svod.eval.indexDir")
             ?.let { Path.of(it) }
             ?: Files.createTempDirectory("svod-eval-index-")
@@ -274,6 +288,16 @@ class RetrievalEvalTest {
         val evalEmbedder: Embedder? = when {
             embedderId != null && embedderId.startsWith("ollama:") ->
                 if (OllamaEmbedder.isAvailable()) OllamaEmbedder(embedderId.removePrefix("ollama:"), OllamaEmbedder.DEFAULT_ENDPOINT) else null
+            // `openai:<endpoint>::<model>` — any OpenAI-compatible host (TEI on RunPod, Infinity,
+            // Together). This is the configuration being proposed, so it is the one to measure.
+            embedderId != null && embedderId.startsWith("openai:") -> {
+                val rest = embedderId.removePrefix("openai:")
+                val cut = rest.lastIndexOf("::")
+                OpenAiEmbedder(
+                    model = if (cut < 0) OpenAiEmbedder.DEFAULT_MODEL else rest.substring(cut + 2),
+                    endpoint = if (cut < 0) rest else rest.substring(0, cut),
+                )
+            }
             config != null -> OnnxLocalEmbedder.load(config, Path.of("/unused"))
             else -> null
         }
@@ -283,7 +307,7 @@ class RetrievalEvalTest {
             val embedder = evalEmbedder!!
             IndexService(Path.of(vault), indexDir, embedder).start().use { index ->
                 for (mode in listOf(SearchMode.HYBRID, SearchMode.KEYWORD, SearchMode.SEMANTIC)) {
-                    report("V/$mode", index, queries, mode)
+                    report("V/$mode", index, queries, mode, record = if (mode == SearchMode.HYBRID) fusedOrder else null)
                 }
                 reportGroups("V/HYBRID", index, queries, SearchMode.HYBRID)
             }
@@ -291,17 +315,56 @@ class RetrievalEvalTest {
             // The held-out check that matters: both findings were measured on a 27-note synthetic
             // corpus, and a real vault is the only place to see whether they survive contact with
             // 3000+ notes the corpus author never saw.
+            //
+            // `-Dsvod.eval.reranker=remote:<endpoint>[:<model>]` measures a hosted reranker instead
+            // of the in-process one. The local model is the only one that fits on a CPU and it is
+            // both slow (~11s live) and weak on Bulgarian, so comparing it against a GPU-hosted
+            // model is the actual open question, not a hypothetical.
+            val remoteSpec = System.getProperty("svod.eval.reranker")
             val rerankerDir = ModelManager.sharedCacheDir().resolve(OnnxLocalReranker.DEFAULT_MODEL)
-            if (Files.isRegularFile(rerankerDir.resolve(ModelManager.MODEL_FILE))) {
-                val rc = OnnxConfig(modelId = OnnxLocalReranker.DEFAULT_MODEL, localPath = rerankerDir)
-                OnnxLocalReranker.load(rc, Path.of("/unused")).use { reranker ->
+            val evalReranker: Reranker? = when {
+                remoteSpec != null && remoteSpec.startsWith("remote:") -> {
+                    val rest = remoteSpec.removePrefix("remote:")
+                    val cut = rest.lastIndexOf("::")
+                    val endpoint = if (cut < 0) rest else rest.substring(0, cut)
+                    val model = if (cut < 0) RemoteReranker.DEFAULT_MODEL else rest.substring(cut + 2)
+                    RemoteReranker(model, endpoint)
+                }
+                Files.isRegularFile(rerankerDir.resolve(ModelManager.MODEL_FILE)) ->
+                    OnnxLocalReranker.load(
+                        OnnxConfig(modelId = OnnxLocalReranker.DEFAULT_MODEL, localPath = rerankerDir),
+                        Path.of("/unused"),
+                    )
+                else -> null
+            }
+            if (evalReranker != null) {
+                println("V/ reranker: ${evalReranker.provider} / ${evalReranker.model}")
+                (evalReranker as? AutoCloseable ?: AutoCloseable {}).use { _ ->
+                    val reranker = evalReranker
                     // REUSES the index just built (the previous service is closed, so no lock
                     // conflict). Reranking changes only the ordering of results, never the index,
                     // and re-embedding a real vault a second time cost about 45 minutes for
                     // literally identical vectors.
                     IndexService(Path.of(vault), indexDir, embedder, reranker = reranker).start().use { index ->
-                        report("V/HYBRID reranked", index, queries, SearchMode.HYBRID)
+                        val rerankedOrder = mutableMapOf<String, List<String>>()
+                        report("V/HYBRID reranked", index, queries, SearchMode.HYBRID, record = rerankedOrder)
                         reportGroups("V/HYBRID reranked", index, queries, SearchMode.HYBRID)
+
+                        // A reranker that fails every call is INVISIBLE here: `maybeRerank` logs a
+                        // warning and returns the fused order, so the run still prints a complete,
+                        // plausible, entirely meaningless set of "reranking did not help" numbers.
+                        // That is exactly what a remote reranker did when TEI answered 413 to a
+                        // 50-document batch. The instrument must fail loudly when it measured
+                        // nothing, rather than reporting a null result it cannot distinguish from
+                        // a real one.
+                        val moved = queries.count { rerankedOrder[it.text] != fusedOrder[it.text] }
+                        assertTrue(
+                            moved > 0,
+                            "reranker changed no ordering across ${queries.size} queries — it almost " +
+                                "certainly failed on every call and degraded to the fused order; " +
+                                "check the log for 'rerank failed' before trusting any number above",
+                        )
+                        println("V/ reranker moved results for $moved/${queries.size} queries")
                     }
                 }
             } else {
