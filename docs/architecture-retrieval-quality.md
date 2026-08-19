@@ -319,13 +319,182 @@ fused candidates.
 The ship criterion (`reranked nDCG@10 > plain`) was written into the test before the numbers were
 known, so it could have said no. It said yes, decisively.
 
-**The cross-lingual result is the headline.** F1 — the capability gap the harness found in Unit 1 —
-is essentially closed by the second stage: recall@1 on cross-lingual queries goes 0.100 → 0.850.
-That is coherent with what a cross-encoder is: the bi-encoder must place a Bulgarian query and an
-English passage near each other in one shared space *before ever seeing them together*, while the
-cross-encoder reads the pair jointly and can align them directly. So the fix for F1 may not be a
-bigger embedder at all — it may be this second stage. Worth confirming on the real vault (leg V)
-before treating it as settled: 10 cross-lingual queries over a 27-note corpus is a strong signal,
-not a large sample.
+**The cross-lingual result looked like the headline — and it was wrong.** On the synthetic corpus,
+reranked cross-lingual recall@1 went 0.100 → 0.850, which read as "F1 is closed". The real vault
+says otherwise; see the correction below. Keep the synthetic numbers only as evidence about
+*ranking*, never about *retrieval*.
 
-F2 (fusion trailing its own best leg) is untouched by this work and still open.
+## Leg V — the real vault overturns two synthetic conclusions
+
+45 hand-labelled queries over the real `personal` vault (3384 notes), same golden-set discipline,
+labels written from reading the notes.
+
+```
+V/KEYWORD                                    n=45  R@1=0.074 R@5=0.189 nDCG@10=0.166
+V/HYBRID                                     n=45  R@1=0.122 R@5=0.296 nDCG@10=0.298
+V/SEMANTIC                                   n=45  R@1=0.167 R@5=0.311 nDCG@10=0.345
+V/HYBRID reranked                            n=45  R@1=0.274 R@5=0.385 nDCG@10=0.450
+
+V/HYBRID           [bg->bg]  n=14  nDCG@10=0.550     reranked 0.572
+V/HYBRID           [en->en]  n=18  nDCG@10=0.317     reranked 0.628
+V/HYBRID           [bg->en]  n=7   nDCG@10=0.000     reranked 0.131
+V/HYBRID           [en->bg]  n=6   nDCG@10=0.000     reranked 0.000
+```
+
+**Read the absolute numbers as a lower bound, not a score.** The golden set labels 1-2 notes per
+query out of 3384, and inspection of the misses shows search often returning a *different but
+reasonable* note — e.g. for "решихме ли да показваме цените с ДДС" the label is
+`memory/fact/ef93172c0cb6.md` while search returns `projects/skb2/docs/pricing-review-2026-04-11.md`.
+Sparse labels mechanically depress recall. What is trustworthy is the *comparisons*, since every
+mode is scored against the same labels.
+
+### C1 — the reranker is confirmed at scale
+
+nDCG@10 0.298 → 0.450, recall@1 0.122 → 0.274 on a vault the corpus author never saw. Independent
+of the synthetic corpus, on 3384 notes. It ships.
+
+### C2 — F2 is CONFIRMED, not resolved
+
+SEMANTIC (0.345) beats HYBRID (0.298) here too, so the first-stage inversion is real and reproduces
+at scale — it is not a synthetic artefact. The shipped configuration (hybrid + reranker, 0.450)
+still wins overall, but the defect underneath is real and remains unexplained.
+
+### C3 — the reranker does NOT fix cross-lingual, and the synthetic corpus could not have shown that
+
+Cross-lingual on the real vault is **0.000**, reranked included for en→bg. A rank diagnostic against
+the whole vault explains why:
+
+```
+diag [bg->bg]  n=14  found-in-top-500=13  median rank 1
+diag [en->en]  n=18  found-in-top-500=16  median rank 3
+diag [bg->en]  n=7   found-in-top-500=2   median rank 29
+diag [en->bg]  n=6   found-in-top-500=0   median rank —
+```
+
+For 11 of 13 cross-lingual queries the correct note is **not in the top 500 of 3384**. A reranker
+only reorders what the first stage retrieved, so it has nothing to work with. Widening the candidate
+window cannot fix this either.
+
+**Why the synthetic corpus said the opposite:** it holds 27 notes and the rerank window is 50. The
+window covered the entire corpus, so the reranker was always handed the right answer and only had
+to order it. That corpus can measure ranking; it is structurally incapable of measuring retrieval.
+This is the third time in this work that a correctly-computed number described the wrong subject —
+the same pattern as `wrong-subject-numbers`.
+
+**Consequence for the harness:** leg S's floors are ranking floors. Any claim about *recall* has to
+come from leg V. Recorded here because the mistake is very easy to repeat.
+
+### C3b — the eval was measuring an embedder this machine does not run
+
+The live engine reports `embedder: local-ollama / bge-m3 / 1024 dim`. Every number above it was
+produced with the cached ONNX `multilingual-e5-small`, because the leg-V helper hard-coded it. A
+fourth instance of the same failure: correct measurement, wrong subject. Leg V now takes
+`-Dsvod.eval.embedder=ollama:<model>`.
+
+Re-measured on the embedder actually in use:
+
+```
+V/KEYWORD                     n=45  R@1=0.074 R@5=0.189 nDCG@10=0.180
+V/HYBRID                      n=45  R@1=0.163 R@5=0.437 nDCG@10=0.390
+V/SEMANTIC                    n=45  R@1=0.189 R@5=0.411 nDCG@10=0.403
+V/HYBRID reranked             n=45  R@1=0.256 R@5=0.448 nDCG@10=0.483
+
+                     HYBRID    reranked
+  bg->bg             0.500     0.443     <-- WORSE
+  en->en             0.468     0.644
+  bg->en             0.112     0.267
+  en->bg             0.220     0.348
+```
+
+Three things follow.
+
+**The reranker is still worth it, but less so:** +0.093 nDCG here against +0.152 on e5-small. It is
+not merely compensating for a weak embedder.
+
+**F2 is confirmed a third time, on a third embedder:** SEMANTIC 0.403 > HYBRID 0.390. The
+first-stage inversion is not a property of any one model.
+
+**The reranker HURTS Bulgarian→Bulgarian** — nDCG 0.500 → 0.443, recall@1 0.310 → 0.179. This is
+the model-research caveat that was recorded as UNVERIFIED at selection time: mmarco-mMiniLMv2 is
+fine-tuned on 14 languages and **Bulgarian is not one of them**. Cross-lingual transfer through the
+XLM-R backbone is clearly not enough for the language the vault is half written in. The aggregate
+hides it; only the per-direction split shows it. Candidate fix is a reranker actually trained on
+Bulgarian (`bge-reranker-v2-m3` covers it, at 568M and a latency budget this one was chosen to
+avoid) — a measured trade, not a guess, and not taken here.
+
+### C4 — a bigger embedder does not fix it either (refuted, and it would have been expensive)
+
+Ranking the correct note against all 3384, note-level, per model
+(`CrossLingualEmbedderTest`, opt-in):
+
+| direction | e5-small median rank | e5-base median rank |
+|---|---|---|
+| bg→bg | 1 | 1 |
+| en→en | 2 | **7** (worse) |
+| bg→en | 290 | 115 |
+| en→bg | 217 | **491** (worse) |
+
+Twice the parameters, twice the disk, and a full re-embed of every user's vault — for no consistent
+gain, and a regression in two of four directions. The "upgrade the embedder" hypothesis is refuted.
+
+Loading e5-base also exposed a real defect in our own code: `OnnxLocalEmbedder` hard-coded
+`includeTokenTypes = true`, so any export without a `token_type_ids` input failed with a bare
+`Input mismatch, looking for: [input_ids, attention_mask]`. It is now `OnnxConfig.includeTokenTypes`,
+because that is a property of the export, not of the architecture — the same landmine already
+documented for the reranker, biting in a second place.
+
+### C5 — cross-lingual retrieval is a KNOWN LIMITATION, and the fix is a feature decision
+
+What is established:
+
+- The **cross-encoder can do it** — it scores a Bulgarian query against the matching English passage
+  above an unrelated one (`OnnxRerankerTest`).
+- The **bi-encoder cannot get the candidate anywhere near the window**, at either model size.
+- Widening the window is not viable: catching a median rank of ~200-300 needs a rerank window of
+  several hundred pairs, i.e. seconds per query on CPU.
+
+So the remaining options both put a translation step in the search path — translate the query and
+search both languages, or index notes in both. Each needs an LLM available at query or index time,
+which is a product decision about latency and the offline story, not a defect fix. Not taken here.
+Documented instead, with the numbers, so the decision starts from evidence.
+
+## F2 — refuted twice, symptom removed by the second stage
+
+F2 was "HYBRID scores below its own SEMANTIC leg". Both proposed causes turned out to be wrong, and
+the sweep that refuted them is kept in `FusionWeightSweepTest` (opt-in, `-Dsvod.eval.sweep`) so the
+next person can re-run rather than re-argue.
+
+**Refuted #1 — per-leg weighting.** The documented mechanism said equal RRF weights let a weaker
+keyword leg dilute a stronger semantic one. Measured, weighting does essentially nothing:
+
+```
+semanticWeight=1.00  nDCG@10=0.786  R@5=0.811   cross-nDCG@10=0.213
+semanticWeight=1.50  nDCG@10=0.786  R@5=0.811   cross-nDCG@10=0.213
+semanticWeight=2.00  nDCG@10=0.786  R@5=0.811   cross-nDCG@10=0.213
+semanticWeight=5.00  nDCG@10=0.803  R@5=0.811   cross-nDCG@10=0.277
+```
+
+Identical to three decimals up to 2.0, and even at 5.0 still below SEMANTIC's 0.808, with recall@5
+never moving at all. `Rrf.fuse` therefore carries **no** weight parameter — shipping a knob for a
+refuted idea is worse than not having tried.
+
+**Refuted #2 — chunk duplication.** The next guess was that fusion returns more chunks from the same
+note, so ten hits surface fewer distinct notes. Measured, it is the other way round: HYBRID returns
+6.76 distinct notes per 10 chunks, SEMANTIC only 6.30 — and SEMANTIC still has the higher recall.
+
+**What actually resolves it: the reranker.** In the shipped configuration HYBRID beats each of its
+own legs:
+
+```
+reranked HYBRID    nDCG@10=0.904  R@5=0.905
+reranked SEMANTIC  nDCG@10=0.894  R@5=0.905
+reranked KEYWORD   nDCG@10=0.743  R@5=0.757
+```
+
+`leg S+R` asserts `reranked HYBRID >= max(reranked legs)` **strictly**. The un-reranked path keeps
+its `HYBRID_MAY_TRAIL_BEST_LEG_BY = 0.03` tolerance, because there the inversion is real —
+and leg V confirms it survives at 3384 notes (C2).
+
+**Still unknown:** *why* first-stage fusion trails its better leg, given that neither weighting nor
+chunk duplication explains it. Open, with the tooling in place to attack it. It does not decide
+shipped quality, because the second stage sits above it — but calling it "resolved" would be wrong.

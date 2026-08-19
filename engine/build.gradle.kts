@@ -166,6 +166,6 @@ tasks.test {
     systemProperty("svod.ollama.it", System.getProperty("svod.ollama.it", "false"))
     // Opt-in flags for the large-vault perf/soak test (forwarded to the forked test JVM), and for
     // the real-vault retrieval eval (svod.eval.*) whose golden set lives outside the repo.
-    for (p in listOf("svod.perf", "svod.notes", "svod.writers", "svod.eval.vault", "svod.eval.golden"))
+    for (p in listOf("svod.perf", "svod.notes", "svod.writers", "svod.eval.vault", "svod.eval.golden", "svod.eval.sweep", "svod.eval.indexDir", "svod.eval.embedders", "svod.eval.embedder"))
         System.getProperty(p)?.let { systemProperty(p, it) }
 }

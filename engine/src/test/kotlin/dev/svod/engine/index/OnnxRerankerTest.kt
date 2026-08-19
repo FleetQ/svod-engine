@@ -14,7 +14,7 @@ import kotlin.test.assertTrue
 class OnnxRerankerTest {
 
     private fun configOrSkip(): OnnxConfig {
-        val cache = Path.of(System.getProperty("user.home"), ".cache", "svod-models", OnnxLocalReranker.DEFAULT_MODEL)
+        val cache = ModelManager.sharedCacheDir().resolve(OnnxLocalReranker.DEFAULT_MODEL)
         val ready = Files.isRegularFile(cache.resolve(ModelManager.MODEL_FILE)) &&
             Files.isRegularFile(cache.resolve(ModelManager.TOKENIZER_FILE))
         assumeTrue(ready, "reranker model not cached at $cache — skipping cross-encoder test")

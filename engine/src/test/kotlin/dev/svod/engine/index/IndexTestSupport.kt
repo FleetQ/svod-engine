@@ -86,7 +86,7 @@ class IndexFixture : AutoCloseable {
 
 /** The pre-cached e5-small config, or null when the model isn't available (test skips). */
 fun cachedE5ConfigOrNull(): OnnxConfig? {
-    val cache = Path.of(System.getProperty("user.home"), ".cache", "svod-models", "multilingual-e5-small")
+    val cache = ModelManager.sharedCacheDir().resolve("multilingual-e5-small")
     val ready = Files.isRegularFile(cache.resolve(ModelManager.MODEL_FILE)) &&
         Files.isRegularFile(cache.resolve(ModelManager.TOKENIZER_FILE))
     return if (ready) OnnxConfig(localPath = cache) else null

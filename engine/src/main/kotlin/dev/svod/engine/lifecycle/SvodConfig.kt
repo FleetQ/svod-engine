@@ -216,7 +216,10 @@ data class SvodConfig(
      */
     @Serializable
     data class RerankerSettings(
-        val provider: String = "none",
+        // Default ON since the eval showed the second stage is worth it (nDCG@10 0.786 -> 0.904,
+        // cross-lingual 0.213 -> 0.900). It loads in the background and stays inactive until the
+        // model is present, so the cost is a one-off download, never a slower boot.
+        val provider: String = "local-onnx",
         val endpoint: String? = null,
         val model: String? = null,
         val apiKeyRef: String? = null,

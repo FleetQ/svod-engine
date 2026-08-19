@@ -19,15 +19,28 @@ import java.nio.file.Path
  */
 object GoldenSetFile {
 
+    /**
+     * A `# Section ...` comment opens a reporting group that applies to every query below it, so a
+     * hand-written file can carry its own breakdown (language direction, difficulty) without a
+     * second format. Other `#` lines are plain comments.
+     */
     fun load(path: Path): List<GoldenQuery> {
         require(Files.isRegularFile(path)) { "golden set not found: $path" }
-        val queries = Files.readAllLines(path)
-            .map { it.trim() }
-            .filter { it.isNotEmpty() && !it.startsWith("#") }
-            .mapIndexed { i, line -> parse(line, i + 1) }
+        var group = ""
+        val queries = mutableListOf<GoldenQuery>()
+        Files.readAllLines(path).forEachIndexed { i, raw ->
+            val line = raw.trim()
+            when {
+                line.isEmpty() -> Unit
+                line.startsWith("#") -> SECTION.find(line)?.let { group = it.groupValues[1].trim() }
+                else -> queries += parse(line, i + 1).copy(group = group)
+            }
+        }
         require(queries.isNotEmpty()) { "golden set $path has no queries" }
         return queries
     }
+
+    private val SECTION = Regex("^#\\s*Section\\s*\\d*\\s*[-–:]?\\s*(.+)$", RegexOption.IGNORE_CASE)
 
     private fun parse(line: String, lineNo: Int): GoldenQuery {
         val obj = try {

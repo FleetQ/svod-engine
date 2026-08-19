@@ -32,6 +32,8 @@ data class RerankerConfig(
  */
 object Rerankers {
 
+    private val log = org.slf4j.LoggerFactory.getLogger(Rerankers::class.java)
+
     // Computed (not a compile-time constant) so native-image does NOT auto-register the class.
     private val ONNX_FQCN = listOf("dev.svod.engine.index", "OnnxLocalReranker").joinToString(".")
 
@@ -44,14 +46,53 @@ object Rerankers {
             config.apiKey,
             Duration.ofSeconds(config.requestTimeoutSeconds.toLong()),
         )
-        // A reranker that cannot load must not take the vault down with it: ranking is an
-        // optimisation, search staying up is not. Degrade to the fused order, loudly in the log.
-        RerankerProvider.LOCAL_ONNX -> try {
+        // Loaded in the BACKGROUND. The first run downloads a ~471 MB model, and doing that on the
+        // vault-open path would turn a ~13 s cold start into minutes of nothing. Until it is ready
+        // (or if it never becomes ready) the reranker reports inactive and search serves the fused
+        // order — ranking is an optimisation, search staying up is not.
+        RerankerProvider.LOCAL_ONNX -> LazyReranker(config.model, OnnxLocalReranker.PROVIDER) {
             loadOnnxLocal(config.onnx, vaultRoot.resolve(".svod").resolve("models"))
-        } catch (e: Exception) {
-            org.slf4j.LoggerFactory.getLogger(Rerankers::class.java)
-                .warn("local-onnx reranker unavailable ({}); search continues with the fused order", e.toString())
-            NoneReranker
+        }
+    }
+
+    /**
+     * Loads a reranker on a background thread and stays INACTIVE until it is ready.
+     *
+     * [isActive] is what the search path checks, so an unready (or permanently failed) reranker
+     * simply means results keep their fused order — no exception per query, no boot delay, and no
+     * user-visible failure beyond a log line. The settings view still reports the intended provider
+     * and model, with `active: false`, which is what makes "still downloading" distinguishable from
+     * "switched off".
+     */
+    private class LazyReranker(
+        override val model: String,
+        override val provider: String,
+        loader: () -> Reranker,
+    ) : Reranker, AutoCloseable {
+
+        @Volatile private var delegate: Reranker? = null
+        @Volatile private var closed = false
+
+        private val loading = Thread({
+            try {
+                val loaded = loader()
+                if (closed) loaded.let { (it as? AutoCloseable)?.close() } else delegate = loaded
+            } catch (e: Exception) {
+                log.warn("local-onnx reranker unavailable ({}); search continues with the fused order", e.toString())
+            }
+        }, "svod-reranker-load").apply { isDaemon = true; start() }
+
+        override val isActive: Boolean get() = delegate != null
+
+        override fun rerank(query: String, docs: List<String>): List<Float> =
+            (delegate ?: error("reranker is still loading")).rerank(query, docs)
+
+        override fun close() {
+            closed = true
+            // Brief join only: a download in flight must not hold vault close hostage. The `closed`
+            // flag is what stops a late arrival from leaking — the loader closes it instead.
+            runCatching { loading.join(2000) }
+            (delegate as? AutoCloseable)?.let { runCatching { it.close() } }
         }
     }
 

@@ -26,6 +26,15 @@ data class OnnxConfig(
      * the model is downloaded on first run into `.svod/models/<modelId>/` and cached.
      */
     val localPath: Path? = null,
+    /**
+     * Whether the ONNX graph expects a `token_type_ids` input.
+     *
+     * This is a property of the EXPORT, not of the architecture: the e5-small export used here
+     * requires it, while the e5-base export of the same model family does not, and passing it to a
+     * graph that lacks it fails with a bare `Input mismatch, looking for: [input_ids,
+     * attention_mask]`. Wrong either way, so it has to be per model rather than a constant.
+     */
+    val includeTokenTypes: Boolean = true,
 )
 
 /** Top-level embedder configuration, provider-selected. */

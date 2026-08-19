@@ -59,8 +59,8 @@ class OnnxLocalEmbedder private constructor(
                 .optTranslatorFactory(TextEmbeddingTranslatorFactory())
                 .optArgument("pooling", "mean")
                 .optArgument("normalize", "true")
-                // This e5 ONNX export expects token_type_ids; send zeros (single-sequence).
-                .optArgument("includeTokenTypes", "true")
+                // Per EXPORT, not per architecture — see OnnxConfig.includeTokenTypes.
+                .optArgument("includeTokenTypes", config.includeTokenTypes.toString())
                 .build()
             val zoo: ZooModel<String, FloatArray> = criteria.loadModel()
             val probeDim = zoo.newPredictor().use { it.predict("query: dimension probe").size }

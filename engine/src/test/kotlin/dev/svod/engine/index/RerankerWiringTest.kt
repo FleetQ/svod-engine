@@ -57,15 +57,27 @@ class RerankerWiringTest {
     }
 
     @Test
-    fun `a local model that cannot load degrades to no reranking instead of failing the vault`() {
+    fun `a local model that cannot load never becomes active, and never blocks the caller`() {
         // Ranking is an optimisation; search staying up is not. An unknown model id has no pin, so
-        // ModelManager cannot resolve it — the vault must still open.
+        // ModelManager cannot resolve it — the vault must still open, promptly.
+        // Asserted on BEHAVIOUR, not identity: loading is asynchronous, so `create` returns a
+        // pending reranker and it is `isActive` that the search path consults.
         val vault = Files.createTempDirectory("svod-rerank-wiring-")
         val config = RerankerConfig(
             provider = RerankerProvider.LOCAL_ONNX,
             onnx = OnnxConfig(modelId = "no-such-model-anywhere"),
         )
-        assertEquals(NoneReranker, Rerankers.create(config, vault))
+        val start = System.nanoTime()
+        val reranker = Rerankers.create(config, vault)
+        val elapsedMs = (System.nanoTime() - start) / 1_000_000
+        assertTrue(elapsedMs < 1_000, "create() blocked for ${elapsedMs}ms — model loading must not be on the caller's thread")
+
+        // Give the background loader time to fail, then confirm it stays inactive rather than
+        // flipping active or throwing into a search.
+        val deadline = System.currentTimeMillis() + 5_000
+        while (System.currentTimeMillis() < deadline && !reranker.isActive) Thread.sleep(25)
+        assertTrue(!reranker.isActive, "a reranker whose model cannot load must never report itself active")
+        (reranker as? AutoCloseable)?.close()
     }
 
     @Test

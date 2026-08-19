@@ -803,6 +803,11 @@ class IndexService(
         if (!exec.awaitTermination(30, TimeUnit.SECONDS)) exec.shutdownNow()
         index.close()
         reader.close()
+        // The embedder and reranker are NOT closed here: they are handed in, so whoever created
+        // them closes them (VaultContext in production, the test itself in tests). Closing an
+        // injected dependency here double-closes the ONNX session for every caller that owns one.
+        // The one exception stays [setEmbedder], where the caller hands over a replacement and the
+        // instance being replaced has no other owner left.
     }
 
     private companion object {

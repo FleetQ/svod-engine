@@ -40,12 +40,14 @@ class RetrievalEvalTest {
         const val S_CROSSLINGUAL_RECALL5 = 0.27 // measured 0.300
 
         /**
-         * How far HYBRID is currently allowed to sit below its own best leg.
+         * How far UN-RERANKED HYBRID is allowed to sit below its own best leg (~0.022 today:
+         * 0.786 vs SEMANTIC's 0.808).
          *
-         * It should be zero: fusion that loses to one of its inputs is not earning its complexity.
-         * Measured today it is ~0.022 below SEMANTIC (0.786 vs 0.808), because plain RRF weights a
-         * weaker keyword leg equally. Pinned as a ceiling on the KNOWN gap rather than asserted
-         * away — this catches further degradation while the real fix (leg weighting) is open work.
+         * The cause is NOT understood. Two candidates were measured and refuted: per-leg weighting
+         * changes nothing up to weight 2.0, and HYBRID actually returns MORE distinct notes per ten
+         * chunks than SEMANTIC, not fewer (`FusionWeightSweepTest`). What removes the symptom is the
+         * reranker, and the reranked path asserts the strict inequality instead of this tolerance.
+         * Kept as a ceiling on a known, unexplained gap so it cannot widen unnoticed.
          */
         const val HYBRID_MAY_TRAIL_BEST_LEG_BY = 0.03
     }
@@ -66,6 +68,13 @@ class RetrievalEvalTest {
         // getting what instead. Printed even on a pass: a floor can hold while a query rots.
         misses.forEach { println(it) }
         return m
+    }
+
+    /** Same measurement, split by the golden set's own groups — an average can hide a dead subset. */
+    private fun reportGroups(label: String, index: IndexService, queries: List<GoldenQuery>, mode: SearchMode) {
+        queries.filter { it.group.isNotEmpty() }.groupBy { it.group }.forEach { (group, qs) ->
+            println("  " + RetrievalEval.run(index, qs, mode).format("$label [$group]"))
+        }
     }
 
     @Test
@@ -154,7 +163,7 @@ class RetrievalEvalTest {
     fun `leg S+R - the reranker must beat plain fusion or it does not ship`() {
         val embedderConfig = cachedE5ConfigOrNull()
         assumeTrue(embedderConfig != null, "multilingual-e5-small not cached — skipping reranker eval")
-        val rerankerDir = Path.of(System.getProperty("user.home"), ".cache", "svod-models", OnnxLocalReranker.DEFAULT_MODEL)
+        val rerankerDir = ModelManager.sharedCacheDir().resolve(OnnxLocalReranker.DEFAULT_MODEL)
         assumeTrue(
             Files.isRegularFile(rerankerDir.resolve(ModelManager.MODEL_FILE)),
             "reranker model not cached — skipping reranker eval",
@@ -184,8 +193,58 @@ class RetrievalEvalTest {
                                 after.ndcgAt10 > before.ndcgAt10,
                                 "reranked nDCG@10 ${after.ndcgAt10} did not beat plain fusion ${before.ndcgAt10}",
                             )
+
+                            // F2 was "HYBRID scores below its own best leg". In the shipped
+                            // configuration it no longer does, so this is a strict gate rather than
+                            // the tolerance the un-reranked leg still carries. Per-leg weighting was
+                            // tried first and measured to do nothing (see FusionWeightSweepTest);
+                            // what actually fixed it is the second stage.
+                            val legs = listOf(SearchMode.KEYWORD, SearchMode.SEMANTIC).map { mode ->
+                                RetrievalEval.run(reranked, GoldenCorpus.queries, mode).ndcgAt10
+                            }
+                            assertTrue(
+                                after.ndcgAt10 >= legs.max() - 1e-9,
+                                "reranked HYBRID ${after.ndcgAt10} is below its best reranked leg ${legs.max()} — F2 has regressed",
+                            )
                         }
                     }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `leg V diagnostic - where does the right note actually rank`() {
+        val vault = System.getProperty("svod.eval.vault")
+        val golden = System.getProperty("svod.eval.golden")
+        assumeTrue(vault != null && golden != null, "set -Dsvod.eval.vault and -Dsvod.eval.golden")
+        val config = cachedE5ConfigOrNull()
+        assumeTrue(config != null, "multilingual-e5-small not cached")
+        val dir = System.getProperty("svod.eval.indexDir")
+        assumeTrue(dir != null, "set -Dsvod.eval.indexDir to an already-built index")
+
+        // Cross-lingual scored a flat 0.000 on the real vault, reranker included. A reranker can
+        // only reorder what the first stage retrieved, so the question is whether the right note is
+        // just BELOW the candidate window (fixable by widening it) or nowhere in the ranking at all
+        // (an embedding problem no window size can fix). This asks the index directly.
+        val queries = GoldenSetFile.load(Path.of(golden))
+        OnnxLocalEmbedder.load(config!!, Path.of("/unused")).use { embedder ->
+            IndexService(Path.of(vault), Path.of(dir), embedder).start().use { index ->
+                for (group in queries.mapNotNull { it.group.ifEmpty { null } }.distinct()) {
+                    val ranks = queries.filter { it.group == group }.map { q ->
+                        val ranked = RetrievalEval.rankedPaths(
+                            index.search(SearchQuery(q.text, mode = SearchMode.SEMANTIC, limit = 500)).hits,
+                        )
+                        q to ranked.indexOfFirst { it in q.relevant }
+                    }
+                    val found = ranks.filter { it.second >= 0 }
+                    println(
+                        "diag [%s] n=%d found-in-500=%d median-rank=%s".format(
+                            group, ranks.size, found.size,
+                            found.map { it.second + 1 }.sorted().let { if (it.isEmpty()) "-" else it[it.size / 2].toString() },
+                        ),
+                    )
+                    ranks.filter { it.second < 0 }.forEach { println("    never in 500: q='${it.first.text}'") }
                 }
             }
         }
@@ -197,17 +256,56 @@ class RetrievalEvalTest {
         val golden = System.getProperty("svod.eval.golden")
         assumeTrue(vault != null && golden != null, "set -Dsvod.eval.vault and -Dsvod.eval.golden to run the real-vault eval")
         val config = cachedE5ConfigOrNull()
-        assumeTrue(config != null, "multilingual-e5-small not cached — skipping vault eval")
 
         val queries = GoldenSetFile.load(Path.of(golden))
         // The vault is READ-ONLY here: IndexService reads through GitReader and the index goes to a
         // temp dir, so SvodEngine never opens and nothing commits into the user's repo.
-        val indexDir = Files.createTempDirectory("svod-eval-index-")
-        OnnxLocalEmbedder.load(config!!, Path.of("/unused")).use { embedder ->
+        // `-Dsvod.eval.embedder=ollama:<model>` measures the embedder the target engine actually
+        // runs. Defaulting to the cached e5 once produced a full set of numbers about a model this
+        // machine's engine does not use — the metric was right and its subject was wrong.
+        // Building the index for a real vault took ~45 minutes. `-Dsvod.eval.indexDir` points at an
+        // existing one so a re-run (a new golden set, a different breakdown) costs minutes: the
+        // service reconciles against HEAD and re-embeds nothing when the index is already current.
+        val indexDir = System.getProperty("svod.eval.indexDir")
+            ?.let { Path.of(it) }
+            ?: Files.createTempDirectory("svod-eval-index-")
+        val embedderId = System.getProperty("svod.eval.embedder")
+        println("V/ index dir: $indexDir  embedder: ${embedderId ?: "multilingual-e5-small (default)"}")
+        val evalEmbedder: Embedder? = when {
+            embedderId != null && embedderId.startsWith("ollama:") ->
+                if (OllamaEmbedder.isAvailable()) OllamaEmbedder(embedderId.removePrefix("ollama:"), OllamaEmbedder.DEFAULT_ENDPOINT) else null
+            config != null -> OnnxLocalEmbedder.load(config, Path.of("/unused"))
+            else -> null
+        }
+        assumeTrue(evalEmbedder != null, "no eval embedder available (cache multilingual-e5-small or set -Dsvod.eval.embedder=ollama:<model>)")
+
+        (evalEmbedder as? AutoCloseable ?: AutoCloseable {}).use { _ ->
+            val embedder = evalEmbedder!!
             IndexService(Path.of(vault), indexDir, embedder).start().use { index ->
                 for (mode in listOf(SearchMode.HYBRID, SearchMode.KEYWORD, SearchMode.SEMANTIC)) {
                     report("V/$mode", index, queries, mode)
                 }
+                reportGroups("V/HYBRID", index, queries, SearchMode.HYBRID)
+            }
+
+            // The held-out check that matters: both findings were measured on a 27-note synthetic
+            // corpus, and a real vault is the only place to see whether they survive contact with
+            // 3000+ notes the corpus author never saw.
+            val rerankerDir = ModelManager.sharedCacheDir().resolve(OnnxLocalReranker.DEFAULT_MODEL)
+            if (Files.isRegularFile(rerankerDir.resolve(ModelManager.MODEL_FILE))) {
+                val rc = OnnxConfig(modelId = OnnxLocalReranker.DEFAULT_MODEL, localPath = rerankerDir)
+                OnnxLocalReranker.load(rc, Path.of("/unused")).use { reranker ->
+                    // REUSES the index just built (the previous service is closed, so no lock
+                    // conflict). Reranking changes only the ordering of results, never the index,
+                    // and re-embedding a real vault a second time cost about 45 minutes for
+                    // literally identical vectors.
+                    IndexService(Path.of(vault), indexDir, embedder, reranker = reranker).start().use { index ->
+                        report("V/HYBRID reranked", index, queries, SearchMode.HYBRID)
+                        reportGroups("V/HYBRID reranked", index, queries, SearchMode.HYBRID)
+                    }
+                }
+            } else {
+                println("V/ reranker model not cached — skipping the reranked comparison")
             }
         }
         // No assertions: floors on private, changing data would fail for reasons unrelated to code.
