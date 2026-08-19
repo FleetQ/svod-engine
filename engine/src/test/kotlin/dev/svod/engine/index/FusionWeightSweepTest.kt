@@ -34,6 +34,36 @@ class FusionWeightSweepTest {
     }
 
     @Test
+    fun `rerank latency against realistic passage length`() {
+        assumeTrue(System.getProperty("svod.eval.sweep") != null, "set -Dsvod.eval.sweep to run the sweep")
+        val rrDir = ModelManager.sharedCacheDir().resolve(OnnxLocalReranker.DEFAULT_MODEL)
+        assumeTrue(java.nio.file.Files.isRegularFile(rrDir.resolve(ModelManager.MODEL_FILE)), "reranker not cached")
+
+        // The shipped latency gate measured 50 pairs of ~25-token passages and reported 262ms. Real
+        // chunks run to 512 tokens, and a live search went from 3.6s to 19.7s once reranking was on.
+        // Cost is linear in pairs and roughly linear in tokens, so both knobs get measured here
+        // instead of assumed.
+        val word = "backup certificate container rotation incident postgres restore alert disk "
+        OnnxLocalReranker.load(
+            OnnxConfig(modelId = OnnxLocalReranker.DEFAULT_MODEL, localPath = rrDir), Path.of("/unused"),
+        ).use { rr ->
+            rr.rerank("warmup", listOf(word.repeat(10)))
+            // If the tokenizer's truncation options are actually applied, everything past ~512
+            // tokens costs nothing and 20000 chars times the same as 2000. If they are NOT, cost
+            // grows with the raw text and attention makes it superlinear — which would explain a
+            // live search at 19.7s when 50 pairs of 2000 chars measure under two seconds.
+            for (chars in listOf(200, 800, 2000, 20000)) {
+                for (topK in listOf(10, 20, 50)) {
+                    val docs = (1..topK).map { word.repeat(chars / word.length + 1).take(chars) }
+                    val t0 = System.nanoTime()
+                    rr.rerank("what filled the disk", docs)
+                    println("latency chars=%-5d topK=%-3d -> %d ms".format(chars, topK, (System.nanoTime() - t0) / 1_000_000))
+                }
+            }
+        }
+    }
+
+    @Test
     fun `does the second stage close F2 - reranked hybrid against each reranked leg`() {
         assumeTrue(System.getProperty("svod.eval.sweep") != null, "set -Dsvod.eval.sweep to run the fusion sweep")
         val config = cachedE5ConfigOrNull()
