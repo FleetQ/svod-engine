@@ -44,7 +44,9 @@ class RemoteReranker(
             put("texts", JsonArray(docs.map { kotlinx.serialization.json.JsonPrimitive(it) }))
             if (model.isNotBlank() && model != "none") put("model", model)
         }
-        val request = HttpRequest.newBuilder(URI.create("$endpoint/rerank"))
+        // trimEnd('/') to match OpenAiEmbedder: a hand-written endpoint with a trailing slash would
+        // otherwise POST to `host//rerank`, which most servers 404.
+        val request = HttpRequest.newBuilder(URI.create("${endpoint.trimEnd('/')}/rerank"))
             .timeout(requestTimeout)
             .header("Content-Type", "application/json")
             .apply { if (!apiKey.isNullOrBlank()) header("Authorization", "Bearer $apiKey") }

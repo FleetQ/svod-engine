@@ -81,6 +81,28 @@ class RerankerWiringTest {
     }
 
     @Test
+    fun `a remote endpoint with a trailing slash does not produce a doubled path`() {
+        // Endpoints are typed by hand into a config file, so a trailing slash is a matter of time.
+        // OpenAiEmbedder already trims; RemoteReranker did not, and `host//rerank` 404s on TEI.
+        val calls = mutableListOf<String>()
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { ex ->
+            calls += ex.requestURI.path
+            val body = """[{"index":0,"score":0.9}]""".toByteArray()
+            ex.sendResponseHeaders(200, body.size.toLong())
+            ex.responseBody.use { it.write(body) }
+        }
+        server.start()
+        try {
+            val base = "http://127.0.0.1:${server.address.port}/"
+            RemoteReranker("m", base).rerank("q", listOf("d"))
+            assertEquals(listOf("/rerank"), calls, "endpoint path was doubled by the trailing slash")
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
     fun `none and remote still resolve as before`() {
         val vault = Files.createTempDirectory("svod-rerank-wiring-")
         assertEquals(NoneReranker, Rerankers.create(RerankerConfig(), vault))
