@@ -66,12 +66,16 @@ class OnnxRerankerTest {
     }
 
     @Test
-    fun `reranks 50 pairs within the interactive latency budget`() {
+    fun `rerank cost for 50 realistic passages stays within its ceiling`() {
         OnnxLocalReranker.load(configOrSkip(), Path.of("/unused")).use { rr ->
-            val docs = (1..50).map {
-                "Note $it: a paragraph of ordinary operational prose about backups, certificates, " +
-                    "containers and the various ways an evening can be ruined by a full disk."
-            }
+            // Realistic length on purpose. The previous version of this test used ~25-token
+            // passages, reported 262ms, passed — and live search with reranking on was 20x slower
+            // than without. A latency gate fed unrealistic input is worse than no gate: it reports
+            // green about a situation that never happens.
+            val paragraph = "The host hit one hundred percent on the root filesystem at 02:00 and " +
+                "everything went read-only. Disk usage pointed at the container directory: one " +
+                "chatty service had written forty-one gigabytes of JSON logs since the last rebuild. "
+            val docs = (1..50).map { paragraph.repeat(20).take(OnnxLocalReranker.MAX_PASSAGE_CHARS) }
             rr.rerank("warm up the predictor", docs) // JIT + first-call graph setup
 
             val start = System.nanoTime()
@@ -79,10 +83,11 @@ class OnnxRerankerTest {
             val millis = (System.nanoTime() - start) / 1_000_000
 
             assertEquals(50, scores.size)
-            println("rerank 50 pairs: ${millis}ms")
-            // The budget the model was chosen against. This is a real gate: a reranker that misses
-            // it does not belong on an interactive search path, however good its ranking is.
-            assertTrue(millis < LATENCY_BUDGET_MS, "50 pairs took ${millis}ms, budget is ${LATENCY_BUDGET_MS}ms")
+            println("rerank 50 realistic pairs: ${millis}ms")
+            // A REGRESSION ceiling, not a claim of interactivity: ~1.8s measured here is nowhere
+            // near interactive, which is exactly why the provider ships disabled. The ceiling is
+            // generous because CI hardware varies; it exists to catch a step change in cost.
+            assertTrue(millis < COST_CEILING_MS, "50 realistic pairs took ${millis}ms, ceiling is ${COST_CEILING_MS}ms")
         }
     }
 
@@ -117,6 +122,12 @@ class OnnxRerankerTest {
     }
 
     private companion object {
-        const val LATENCY_BUDGET_MS = 300L
+        /**
+         * Regression ceiling for 50 passages of [OnnxLocalReranker.MAX_PASSAGE_CHARS], measured at
+         * ~1.8s on an M-series CPU. Not a latency budget — nothing about 1.8s is interactive, which
+         * is why the provider ships disabled. Generous enough to survive CI hardware variance and
+         * tight enough to catch the cost doubling.
+         */
+        const val COST_CEILING_MS = 4000L
     }
 }

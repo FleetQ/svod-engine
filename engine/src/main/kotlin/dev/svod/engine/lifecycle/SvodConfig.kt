@@ -216,10 +216,20 @@ data class SvodConfig(
      */
     @Serializable
     data class RerankerSettings(
-        // Default ON since the eval showed the second stage is worth it (nDCG@10 0.786 -> 0.904,
-        // cross-lingual 0.213 -> 0.900). It loads in the background and stays inactive until the
-        // model is present, so the cost is a one-off download, never a slower boot.
-        val provider: String = "local-onnx",
+        /*
+         * Default OFF — on quality it earns its place (real-vault nDCG@10 0.390 -> 0.483), and on
+         * latency it does not, by a wide margin.
+         *
+         * Measured on the live engine, same query, warm: 0.5s without, ~11s with (51s / 37s / 11s /
+         * 11s across four consecutive runs). Isolated, 50 pairs of 2000-character passages cost
+         * 1.8s, so roughly 5s of the live cost is NOT accounted for and was not chased down. Either
+         * way a 20x slower interactive search is not shippable as a default.
+         *
+         * Turn it on per vault when the trade suits the use: batch or agent queries where a second
+         * of latency buys a better answer. Reducing `topK` scales the cost about linearly (50 pairs
+         * 1789ms, 20 pairs 720ms, 10 pairs 365ms) and is the first knob to reach for.
+         */
+        val provider: String = "none",
         val endpoint: String? = null,
         val model: String? = null,
         val apiKeyRef: String? = null,

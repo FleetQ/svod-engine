@@ -290,6 +290,37 @@ The graph's inputs were read off the artefact itself (`input_ids`, `attention_ma
 `token_type_ids`). Copying the embedder's `includeTokenTypes = true` would have failed — the e5
 export needs it, this one has no such input.
 
+### A11b. Latency killed default-on — measured on the live engine
+
+The `LATENCY_BUDGET_MS = 300` gate in `OnnxRerankerTest` passed at 262ms. It fed 50 pairs of
+**~25-token** passages. Real chunks run to hundreds of tokens, so the gate was measuring something
+that does not occur.
+
+Honest numbers, 50 pairs, by passage length:
+
+```
+chars=200    topK=10    47ms   topK=20   101ms   topK=50    266ms
+chars=800    topK=10   149ms   topK=20   362ms   topK=50    747ms
+chars=2000   topK=10   365ms   topK=20   720ms   topK=50   1789ms
+chars=20000  topK=10   743ms   topK=20  1581ms   topK=50   3632ms
+```
+
+Everything past ~2000 chars is text the model never sees (the tokenizer stops at `MAX_SEQ_LEN`), so
+passages are now cut to `MAX_PASSAGE_CHARS` before tokenizing. That removed real waste and did
+**not** fix the live problem.
+
+On the live engine, same query, four consecutive runs: **51s → 37s → 11.4s → 10.9s**, against
+**0.43-0.83s warm with the reranker off**. Roughly 20× slower interactive search. Truncation did not
+move it; memory pressure is not the cause (engine RSS 315 MB, 37% system memory free); part of the
+cost warms away, which points at ONNX Runtime memory-mapping the 471 MB model — the engine opens one
+reranker **per vault**, and this machine has three.
+
+**About 5 seconds of the steady-state cost is unexplained.** Isolated, the same 50 pairs cost 1.8s.
+That gap was not chased to ground and is recorded as open rather than papered over.
+
+Default is therefore `none`. Quality earns it; latency does not. `topK` scales cost close to
+linearly and is the first knob for anyone enabling it.
+
 ### A12. Default off (D3)
 
 `NoneReranker` stays the default. No hot-swap path is added: the reranker is resolved at vault-open
