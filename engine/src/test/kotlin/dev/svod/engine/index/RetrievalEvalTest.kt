@@ -286,6 +286,16 @@ class RetrievalEvalTest {
         val embedderId = System.getProperty("svod.eval.embedder")
         println("V/ index dir: $indexDir  embedder: ${embedderId ?: "multilingual-e5-small (default)"}")
         val evalEmbedder: Embedder? = when {
+            // `ollama+e5:<model>` is the CONTROL arm: it forces e5's prefixes onto a model that does
+            // not want them, reproducing the old hardcoded behaviour so the fix can be measured as a
+            // difference rather than asserted. Nothing in production takes this path.
+            embedderId != null && embedderId.startsWith("ollama+e5:") ->
+                if (OllamaEmbedder.isAvailable()) OllamaEmbedder(
+                    embedderId.removePrefix("ollama+e5:"),
+                    OllamaEmbedder.DEFAULT_ENDPOINT,
+                    passagePrefix = ModelPrefixes.E5_PASSAGE,
+                    queryPrefix = ModelPrefixes.E5_QUERY,
+                ) else null
             embedderId != null && embedderId.startsWith("ollama:") ->
                 if (OllamaEmbedder.isAvailable()) OllamaEmbedder(embedderId.removePrefix("ollama:"), OllamaEmbedder.DEFAULT_ENDPOINT) else null
             // `openai:<endpoint>::<model>` — any OpenAI-compatible host (TEI on RunPod, Infinity,

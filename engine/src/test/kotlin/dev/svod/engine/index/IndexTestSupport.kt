@@ -21,6 +21,7 @@ class FakeEmbedder(
     override val model: String,
     override val dim: Int = 64,
     private val delayMs: Long = 0,
+    override val passagePrefix: String = "",
 ) : Embedder {
     val passageCalls = AtomicInteger(0)
     val queryCalls = AtomicInteger(0)

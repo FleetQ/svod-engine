@@ -9,7 +9,7 @@ import java.nio.file.Path
  * Versioned index metadata, persisted as JSON beside the Lucene index.
  *
  * Drives two reconciliation triggers:
- *  - [schemaVersion]/[embeddingModel]/[embeddingDim] mismatch ⇒ full reindex (migration)
+ *  - [schemaVersion]/[embeddingModel]/[embeddingDim]/[passagePrefix] mismatch ⇒ full reindex (migration)
  *  - [headCommit] vs git HEAD divergence ⇒ incremental sync / self-heal
  */
 @Serializable
@@ -18,6 +18,18 @@ data class IndexMeta(
     val embeddingModel: String,
     val embeddingDim: Int,
     val headCommit: String? = null,
+    /**
+     * The prefix the indexed passages were embedded with. Part of the compatibility key because it
+     * changes the vectors: an index built with "passage: " cannot be searched by queries embedded
+     * without it, and that mismatch is silent — retrieval simply gets worse.
+     *
+     * Defaults to e5's "passage: " on purpose. Every index written before this field existed was
+     * built by an embedder that hardcoded it, so the default states what those indexes actually
+     * contain rather than what a fresh one would. That makes the migration precise: an e5 vault
+     * keeps its vectors, and only a vault whose model does not want the prefix (bge-m3 via Ollama)
+     * re-embeds.
+     */
+    val passagePrefix: String = ModelPrefixes.E5_PASSAGE,
 ) {
     /**
      * True if the index is compatible (no reindex needed) with the active embedder. A [dim] of 0 is
@@ -25,8 +37,9 @@ data class IndexMeta(
      * existing index (same model) rather than forcing a wipe; the real dim is recorded after the
      * first successful embed.
      */
-    fun compatibleWith(schemaVersion: Int, model: String, dim: Int): Boolean =
+    fun compatibleWith(schemaVersion: Int, model: String, dim: Int, passagePrefix: String): Boolean =
         this.schemaVersion == schemaVersion && embeddingModel == model &&
+            this.passagePrefix == passagePrefix &&
             (embeddingDim == dim || dim == 0 || embeddingDim == 0)
 
     companion object {

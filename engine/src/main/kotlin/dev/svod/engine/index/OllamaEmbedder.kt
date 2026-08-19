@@ -23,8 +23,12 @@ class OllamaEmbedder(
     private val endpoint: String = DEFAULT_ENDPOINT,
     private val requestTimeout: Duration = Duration.ofSeconds(120),
     private val maxRetries: Int = DEFAULT_MAX_RETRIES,
-    private val passagePrefix: String = "passage: ",
-    private val queryPrefix: String = "query: ",
+    /**
+     * Derived from [model], not hardcoded: this embedder is model-agnostic, and it applied e5's
+     * prefixes to every model — including bge-m3, which is trained without them. See [ModelPrefixes].
+     */
+    override val passagePrefix: String = ModelPrefixes.passagePrefix(model),
+    internal val queryPrefix: String = ModelPrefixes.queryPrefix(model),
     /**
      * How long Ollama keeps the model resident after a request. Ollama's server default is `5m`
      * (confirmed against a live server), so on a personal vault the first search of a session

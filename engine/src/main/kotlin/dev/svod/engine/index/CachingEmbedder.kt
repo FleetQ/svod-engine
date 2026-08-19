@@ -42,6 +42,8 @@ class CachingEmbedder(
 
     override val isActive: Boolean get() = delegate.isActive
 
+    override val passagePrefix: String get() = delegate.passagePrefix
+
     override fun knownDim(): Int = delegate.knownDim()
 
     override fun embedPassages(texts: List<String>): List<FloatArray> = delegate.embedPassages(texts)

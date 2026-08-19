@@ -164,7 +164,7 @@ class IndexService(
         // knownDim() never does a network probe (a cold remote endpoint must not block/crash boot);
         // IndexMeta.compatibleWith treats an unknown (0) dimension as a wildcard, so a remote whose
         // dim isn't probed yet resumes against its existing index instead of wiping it.
-        if (meta != null && !meta.compatibleWith(schemaVersion, emb.model, emb.knownDim())) {
+        if (meta != null && !meta.compatibleWith(schemaVersion, emb.model, emb.knownDim(), emb.passagePrefix)) {
             // This is the ONLY restart path that re-embeds the whole vault. It is expensive (re-hits a
             // remote/GPU embedder for every chunk), so name the exact reason — that line is how an
             // operator diagnoses a vault that unexpectedly re-embeds on every boot.
@@ -199,6 +199,9 @@ class IndexService(
     private fun incompatibilityReason(meta: IndexMeta, emb: Embedder): String = when {
         meta.schemaVersion != schemaVersion -> "schema changed ${meta.schemaVersion} → $schemaVersion"
         meta.embeddingModel != emb.model -> "model changed '${meta.embeddingModel}' → '${emb.model}'"
+        meta.passagePrefix != emb.passagePrefix ->
+            "passage prefix changed '${meta.passagePrefix}' → '${emb.passagePrefix}' " +
+                "(this model is not trained with e5's prefixes)"
         else -> "embedding dimension changed ${meta.embeddingDim} → ${emb.knownDim()}"
     }
 
@@ -788,7 +791,7 @@ class IndexService(
         Files.createDirectories(indexDir)
         // knownDim() (not dim) so the keyword-first pass never triggers a remote probe; it is 0 until
         // the first successful embed, then the post-embed saveMeta records the real dimension.
-        IndexMeta.save(metaFile, IndexMeta(schemaVersion, embedder.model, embedder.knownDim(), head))
+        IndexMeta.save(metaFile, IndexMeta(schemaVersion, embedder.model, embedder.knownDim(), head, embedder.passagePrefix))
     }
 
     private fun saveMetaCurrent() = saveMeta(IndexMeta.load(metaFile)?.headCommit)
