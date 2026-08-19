@@ -268,8 +268,64 @@ The eval run reports rerank latency alongside quality. Model choice: small multi
 (~100-150M), target ≤300ms for 50 pairs on M-series CPU. If measured latency blows the budget, the
 fallback is a smaller `rerankTopK`, then a smaller model — not shipping a slow default.
 
+### A9b. The DJL cross-encoder translator does not work — measured, not assumed
+
+`CrossEncoderTranslator` is the obvious choice and it fails at inference on DJL 0.30.0:
+
+```
+ai.djl.translate.TranslateException: UnsupportedOperationException: Data type not supported: uint32
+  at ai.djl.onnxruntime.engine.OrtUtils.toTensor(OrtUtils.java:67)
+```
+
+Its tensors reach ONNX Runtime as **uint32**, which `OrtUtils` rejects. So the reranker builds its
+inputs itself (`PairScoringTranslator` in `OnnxLocalReranker.kt`): explicit **int64** `input_ids` +
+`attention_mask`, named (ONNX binds by name, not position), padded by hand to the longest member of
+the batch with the model's own pad id (1, from its `config.json`).
+
+Returning `null` from `getBatchifier()` hands the whole list to `batchProcessInput`, so a batch pads
+to its longest member rather than to `MAX_SEQ_LEN` — several times less compute per query for
+typical chunk sizes.
+
+The graph's inputs were read off the artefact itself (`input_ids`, `attention_mask`, **no**
+`token_type_ids`). Copying the embedder's `includeTokenTypes = true` would have failed — the e5
+export needs it, this one has no such input.
+
 ### A12. Default off (D3)
 
 `NoneReranker` stays the default. No hot-swap path is added: the reranker is resolved at vault-open
 (`lifecycle/VaultContext.kt:81-88`) and that stays true. Adding `setReranker()` + an HTTP control
 endpoint is deliberately out of scope — it is a separate feature with its own concurrency questions.
+
+**This decision is now the weakest part of the design and should be revisited by a human.** D3 said
+"default off, revisit once the golden set shows the win". The win is far larger than expected (see
+below). What still argues for off is cost, not quality: a 471 MB first-run download and ~262 ms
+added to every search. That trade belongs to the product owner, not to this document.
+
+---
+
+## Unit 2 results — the reranker earns its place, and closes F1
+
+Measured 2026-08-19, same corpus and golden set, `mmarco-mMiniLMv2-L12-H384-v1` over the top 50
+fused candidates.
+
+| | plain fusion | reranked | delta |
+|---|---|---|---|
+| nDCG@10, all 37 queries | 0.786 | **0.904** | +0.118 |
+| recall@1, all 37 | 0.622 | **0.743** | +0.121 |
+| nDCG@10, cross-lingual | 0.213 | **0.900** | **+0.687** |
+| recall@1, cross-lingual | 0.100 | **0.850** | +0.750 |
+| 50 pairs, M-series CPU | — | **262 ms** | budget 300 ms |
+
+The ship criterion (`reranked nDCG@10 > plain`) was written into the test before the numbers were
+known, so it could have said no. It said yes, decisively.
+
+**The cross-lingual result is the headline.** F1 — the capability gap the harness found in Unit 1 —
+is essentially closed by the second stage: recall@1 on cross-lingual queries goes 0.100 → 0.850.
+That is coherent with what a cross-encoder is: the bi-encoder must place a Bulgarian query and an
+English passage near each other in one shared space *before ever seeing them together*, while the
+cross-encoder reads the pair jointly and can align them directly. So the fix for F1 may not be a
+bigger embedder at all — it may be this second stage. Worth confirming on the real vault (leg V)
+before treating it as settled: 10 cross-lingual queries over a 27-note corpus is a strong signal,
+not a large sample.
+
+F2 (fusion trailing its own best leg) is untouched by this work and still open.

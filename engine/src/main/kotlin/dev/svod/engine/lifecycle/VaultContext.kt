@@ -84,7 +84,7 @@ class VaultContext private constructor(
                     blockStartup = config.indexing.blockStartup,
                     maxThreads = ec.maxThreads,
                     batchSize = ec.batchSize,
-                    reranker = dev.svod.engine.index.Rerankers.create(rc),
+                    reranker = dev.svod.engine.index.Rerankers.create(rc, vault),
                     rerankTopK = rc.topK,
                     includeMessyInRecall = config.includeMessyInRecall,
                 )
