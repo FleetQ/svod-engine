@@ -67,6 +67,14 @@ class IndexFixture : AutoCloseable {
 
     fun newIndex(embedder: Embedder): IndexService = IndexService(root, indexDir, embedder).start()
 
+    /**
+     * A second index over the same vault, with its own directory and reranker. Lets one test
+     * compare reranked against un-reranked results over an identical corpus — the reranker is
+     * constructor-injected and cannot be swapped on a live index.
+     */
+    fun newIndex(embedder: Embedder, reranker: Reranker, dirName: String): IndexService =
+        IndexService(root, root.resolve(".svod").resolve(dirName), embedder, reranker = reranker).start()
+
     override fun close() {
         engine.close()
     }

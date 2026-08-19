@@ -151,6 +151,47 @@ class RetrievalEvalTest {
     }
 
     @Test
+    fun `leg S+R - the reranker must beat plain fusion or it does not ship`() {
+        val embedderConfig = cachedE5ConfigOrNull()
+        assumeTrue(embedderConfig != null, "multilingual-e5-small not cached — skipping reranker eval")
+        val rerankerDir = Path.of(System.getProperty("user.home"), ".cache", "svod-models", OnnxLocalReranker.DEFAULT_MODEL)
+        assumeTrue(
+            Files.isRegularFile(rerankerDir.resolve(ModelManager.MODEL_FILE)),
+            "reranker model not cached — skipping reranker eval",
+        )
+        val rerankerConfig = OnnxConfig(modelId = OnnxLocalReranker.DEFAULT_MODEL, localPath = rerankerDir)
+
+        OnnxLocalEmbedder.load(embedderConfig!!, Path.of("/unused")).use { embedder ->
+            OnnxLocalReranker.load(rerankerConfig, Path.of("/unused")).use { reranker ->
+                val fx = IndexFixture.create()
+                runBlocking { GoldenCorpus.notes.forEach { (path, content) -> fx.seed(path, content) } }
+                fx.use {
+                    fx.newIndex(embedder).use { plain ->
+                        fx.newIndex(embedder, reranker, "index-reranked").use { reranked ->
+                            val before = report("S+R/HYBRID plain", plain, GoldenCorpus.queries, SearchMode.HYBRID)
+                            val after = report("S+R/HYBRID reranked", reranked, GoldenCorpus.queries, SearchMode.HYBRID)
+                            val crossBefore = report("S+R/cross plain", plain, GoldenCorpus.crossLingualQueries, SearchMode.HYBRID)
+                            val crossAfter = report("S+R/cross reranked", reranked, GoldenCorpus.crossLingualQueries, SearchMode.HYBRID)
+
+                            println("S+R delta: nDCG@10 %+.3f, cross-lingual nDCG@10 %+.3f"
+                                .format(after.ndcgAt10 - before.ndcgAt10, crossAfter.ndcgAt10 - crossBefore.ndcgAt10))
+
+                            // The ship criterion, stated before the numbers were known: a second
+                            // stage that costs a model download and ~260ms per query has to earn
+                            // it. If this fails, the reranker does not ship — the eval exists
+                            // precisely so that answer can be "no".
+                            assertTrue(
+                                after.ndcgAt10 > before.ndcgAt10,
+                                "reranked nDCG@10 ${after.ndcgAt10} did not beat plain fusion ${before.ndcgAt10}",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     fun `leg V - real vault eval`() {
         val vault = System.getProperty("svod.eval.vault")
         val golden = System.getProperty("svod.eval.golden")

@@ -357,12 +357,22 @@ data class SvodConfig(
     fun toRerankerConfig(): RerankerConfig {
         val provider = when (reranker.provider.lowercase()) {
             "remote", "remote-tei", "tei" -> RerankerProvider.REMOTE
+            "local-onnx", "onnx-local" -> RerankerProvider.LOCAL_ONNX
             else -> RerankerProvider.NONE
         }
+        // `model` means different things per provider: a remote endpoint's model name vs a local
+        // model id that ModelManager must have a pin for. Defaulting it per provider keeps a
+        // provider switch from silently carrying the other one's model across.
+        val defaultModel = when (provider) {
+            RerankerProvider.LOCAL_ONNX -> dev.svod.engine.index.OnnxLocalReranker.DEFAULT_MODEL
+            else -> dev.svod.engine.index.RemoteReranker.DEFAULT_MODEL
+        }
+        val model = reranker.model ?: defaultModel
         return RerankerConfig(
             provider = provider,
             endpoint = reranker.endpoint ?: dev.svod.engine.index.RemoteReranker.DEFAULT_ENDPOINT,
-            model = reranker.model ?: dev.svod.engine.index.RemoteReranker.DEFAULT_MODEL,
+            model = model,
+            onnx = dev.svod.engine.index.OnnxConfig(modelId = model),
             // API key is a Secrets reference only — resolved here, never accepted/stored raw.
             apiKey = reranker.apiKeyRef?.takeIf { it.isNotBlank() }?.let { dev.svod.engine.security.Secrets.resolve(it) },
             topK = reranker.topK,
@@ -434,7 +444,7 @@ data class SvodConfig(
         fun redactRemote(remote: String): String = URL_USERINFO.replace(remote) { it.groupValues[1] }
 
         val PROVIDERS = listOf("onnx-local", "local-onnx", "ollama", "local-ollama", "remote-openai", "openai", "none")
-        val RERANKER_PROVIDERS = listOf("none", "remote", "remote-tei", "tei")
+        val RERANKER_PROVIDERS = listOf("none", "remote", "remote-tei", "tei", "local-onnx", "onnx-local")
         val ROLES = listOf("READ_ONLY", "WRITE")
 
         private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
