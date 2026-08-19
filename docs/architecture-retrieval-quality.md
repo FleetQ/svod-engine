@@ -130,10 +130,22 @@ conclusion** — the next step is comparing e5-small against e5-base on the same
 HYBRID (0.786) sits *below* SEMANTIC (0.808) overall, and far below it on the cross-lingual controls
 (0.408 vs 0.533). The default search mode is worse than one of its own inputs.
 
-Mechanism is plain: plain RRF weights both legs equally, so a weaker keyword leg dilutes a stronger
-semantic one. The same effect is visible in leg P, where the deliberately meaningless `FakeEmbedder`
-leg drags HYBRID (0.557) below KEYWORD (0.694) — which is also the reason leg P carries only a loose
-semantic floor.
+**Measured** (not in dispute): HYBRID nDCG@10 < SEMANTIC nDCG@10, on the full set and on every
+cross-lingual subset. The same shape appears in leg P, where the deliberately meaningless
+`FakeEmbedder` leg drags HYBRID (0.557) below KEYWORD (0.694) — which is also why leg P carries only
+a loose semantic floor.
+
+**Mechanism** — supported by the code's arithmetic, not yet traced through a specific query, so
+call it a well-founded hypothesis rather than a proven cause. `Rrf.fuse` (`index/Rrf.kt`) adds
+`1/(60 + rank + 1)` per list with **no per-leg weight**, and `search()` passes both legs as equals
+(`IndexService.kt:521`) with `cand = maxOf(limit * 5, 50)`. So a note ranked #1 by semantic but
+absent from the keyword leg's 50 candidates scores `1/61 = 0.0164`, while a note ranked #3 by
+*both* legs scores `2 × 1/63 = 0.0317` and outranks it. Agreement between legs beats strength in
+one leg, by construction — which is exactly the wrong trade when one leg is much better than the
+other on a given query.
+
+Confirming it properly means tracing the queries where HYBRID lost rank against the two leg
+orderings. That is a follow-up, not a claim being made here.
 
 Not fixed here: Unit 1 builds the scoreboard, it does not tune the ranker. Recorded as the first
 piece of work the scoreboard justifies — leg weighting, or score-aware fusion, measured against
@@ -212,21 +224,33 @@ artefact, and treat arm64-int8 as a later optimisation once the quality question
 `TextEmbeddingTranslatorFactory` (`OnnxLocalEmbedder.kt:54-65`) maps one text → vector. A
 cross-encoder maps (query, passage) → one logit.
 
-Good news from the research: **no hand-written `Translator` is needed.** DJL supports reranking
-through the same factory with a different input type and one argument:
+No hand-written `Translator` is needed — but not for the reason the model research gave. That
+report suggested `TextEmbeddingTranslatorFactory` + `optArgument("reranking", true)`, from a DJL
+discussion thread. **Verified against the DJL 0.30.0 jars actually on the classpath** (`javap` over
+`tokenizers-0.30.0.jar` and `api-0.30.0.jar`), the real API is better:
 
-```kotlin
-Criteria.builder()
-    .setTypes(StringPair::class.java, FloatArray::class.java)
-    .optModelPath(dir).optEngine("OnnxRuntime")
-    .optTranslatorFactory(TextEmbeddingTranslatorFactory())
-    .optArgument("reranking", true)
-    .optArgument("sigmoid", false)   // raw logit; ordering is all we need
+```
+ai.djl.huggingface.translator.CrossEncoderTranslator
+    implements Translator<ai.djl.util.StringPair, float[]>
+  static Builder builder(HuggingFaceTokenizer)
+  Builder: optSigmoid(boolean), optIncludeTokenTypes(boolean), optBatchifier(Batchifier)
+  NDList batchProcessInput(ctx, List<StringPair>)
+  List<float[]> batchProcessOutput(ctx, NDList)
 ```
 
-`StringPair` is DJL's (query, passage) type and the factory routes to the tokenizer's text-pair
-encode path. Source: DJL discussion #3085. This is to be confirmed against the DJL 0.30.0 API on
-the classpath before relying on it — the report is second-hand.
+Three things this changes:
+
+1. There is a **purpose-built cross-encoder translator**; the embedding factory is the wrong tool.
+   There is **no `CrossEncoderTranslatorFactory`** in 0.30.0 (checked — only TextEmbedding,
+   TextClassification, TokenClassification, FillMask, QuestionAnswering factories exist), so the
+   translator is constructed explicitly and passed via `Criteria.optTranslator(...)`, not
+   `optTranslatorFactory(...)`.
+2. `batchProcessInput`/`batchProcessOutput` exist, so A10's "one batched predict for ≤50 pairs" is
+   supported natively rather than needing a hand-rolled loop.
+3. `optIncludeTokenTypes` is a landmine: XLM-RoBERTa models (which
+   `mmarco-mMiniLMv2-L12-H384-v1` is) have **no `token_type_ids` input**, while BERT-family models
+   do. Passing token types to a graph that lacks that input fails at inference. Verify against the
+   exported ONNX graph's inputs before wiring.
 
 `ModelManager.BUNDLED` is `id → dim`, which is embedder-shaped and does not describe a reranker;
 reranker pins get their own map rather than overloading that one. Whether `resolve()`'s
