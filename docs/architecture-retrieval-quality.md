@@ -529,3 +529,104 @@ and leg V confirms it survives at 3384 notes (C2).
 **Still unknown:** *why* first-stage fusion trails its better leg, given that neither weighting nor
 chunk duplication explains it. Open, with the tooling in place to attack it. It does not decide
 shipped quality, because the second stage sits above it — but calling it "resolved" would be wrong.
+
+---
+
+## Unit 3 — hosted models on RunPod: the measurement that decides the embedder
+
+The user authorised sending note content off-machine ("напускането на бележките не е проблем") and
+provided RunPod access, which turns the two open items into questions that can be *measured* rather
+than argued: F1 (cross-lingual is an embedder problem) and the reranker's latency ceiling.
+
+Two TEI 1.8 pods, one GPU each, both destroyed after the run:
+
+| pod | model | endpoint shape |
+|---|---|---|
+| `svod-embed` | `BAAI/bge-m3` (1024-dim) | `POST /v1/embeddings` (OpenAI-compatible) |
+| `svod-rerank` | `BAAI/bge-reranker-v2-m3` | `POST /rerank` |
+
+### D1 — the reranker was never running, and the metrics could not tell
+
+The first hosted run returned reranked numbers **byte-identical** to un-reranked ones in every
+group. That reads as a clean null result. It was not one — TEI answered every call with
+
+```
+HTTP 413: batch size 50 > maximum allowed batch size 32
+```
+
+because `rerankTopK` is 50 and TEI caps a request at 32 texts. `maybeRerank` catches the failure,
+logs a warning, and returns the fused order, which is correct behaviour for production and fatal
+for an instrument: "the reranker changed nothing" and "the reranker never ran" produce the same
+table.
+
+Fixed in two places, and the second matters more than the first:
+
+- `RemoteReranker` splits into batches of `maxBatch` (32).
+- Leg V records the fused ordering and **asserts the reranked pass moved at least one query**. This
+  is the third instance in this branch of a correctly-computed number attached to the wrong subject;
+  it is the first one the harness now catches by itself.
+
+### D2 — results on the real vault (45 golden queries, 3384 notes, 79,359 chunks)
+
+| first stage | reranker | nDCG@10 | R@5 | bg→bg | en→en | bg→en | en→bg |
+|---|---|---|---|---|---|---|---|
+| e5-small (local, shipped default) | — | 0.305 | 0.319 | 0.551 | 0.335 | **0.000** | **0.000** |
+| e5-small (local) | bge-reranker-v2-m3 | 0.431 | 0.389 | 0.606 | 0.573 | 0.083 | 0.000 |
+| bge-m3 (RunPod) | — | 0.476 | 0.452 | 0.670 | 0.477 | 0.174 | 0.372 |
+| bge-m3 (RunPod) | bge-reranker-v2-m3 | **0.542** | **0.489** | 0.630 | 0.561 | **0.339** | **0.517** |
+
+Group sizes: bg→bg n=14, en→en n=18, bg→en n=7, en→bg n=6. Small groups — read them as direction,
+not as precision.
+
+### D3 — F1 is CONFIRMED and the fix is the embedder, not the reranker
+
+Cross-lingual retrieval under the shipped default is a **hard zero** on this vault: across 13
+cross-language queries, not one relevant note appears anywhere in the top 10. Swapping only the
+embedder moves bg→en to 0.174 and en→bg to 0.372 — from "never works" to "often works".
+
+The reranker cannot substitute for that. On the e5-small first stage it lifts cross-lingual from
+0.000 to 0.083 and 0.000, i.e. essentially nothing, because a reranker only reorders the candidate
+window and the right note was never in it. On the bge-m3 first stage the same reranker roughly
+doubles cross-lingual again (0.174→0.339, 0.372→0.517), because now there is something to reorder.
+
+**Order matters: fix the first stage, then rerank. Reranking a first stage that never retrieves the
+note is measurably worthless** — and the 27-note synthetic corpus could not have shown this, because
+a 50-candidate window over 27 notes always contains the answer.
+
+### D4 — F2 confirmed on a fourth embedder
+
+`HYBRID 0.476` sits below `SEMANTIC 0.510` again, as it did on e5-small, e5-base and Ollama bge-m3.
+Four embedders, same inversion, both refuted causes still refuted. The second stage still masks it
+(reranked HYBRID 0.542 beats every un-reranked leg), and the cause is still unknown.
+
+### D5 — latency still rules the reranker out of the inline path
+
+Measured against the live pod at the passage length the reranker actually sends (2000 chars, top-50
+in two batches):
+
+```
+rerank top-50: 5.62s / 7.45s / 2.32s
+embed 1 query: 0.80s / 0.21s / 0.21s
+```
+
+Better than the local ONNX model's ~11s, and still seconds. A GPU did not rescue it, so the reranker
+stays **default off** (D3/A12) — the ceiling is the model's size and the round trip, not the CPU.
+The query-embedding cost is the separate, smaller price of a hosted embedder: 0.2–0.8s added to
+every search that currently pays milliseconds locally.
+
+### D6 — unexplained: hosted bge-m3 scores higher than local Ollama bge-m3
+
+The earlier leg V run against Ollama's `bge-m3` measured first-stage nDCG@10 **0.390**; TEI serving
+the same model name measures **0.476** on the same golden set and vault. Ollama serves quantized
+GGUF weights while TEI serves the full-precision safetensors, so quantization loss is the obvious
+suspect — **hypothesis, not a finding**. Confirming it needs one local Ollama rebuild against this
+golden set and costs no GPU time. If it holds, "we support bge-m3" is not one statement: users on
+Ollama would be getting materially worse retrieval than the model name implies.
+
+### D7 — what this decides
+
+- The default embedder is the single largest quality lever measured in this whole sprint
+  (nDCG 0.305 → 0.476, and cross-lingual from zero to working). It is worth more than the reranker.
+- Hosting is not required to get it — `bge-m3` also runs locally via Ollama. The remote path's value
+  is that it makes a 1024-dim model available without local CPU/RAM, at 0.2–0.8s per query.
+- The reranker remains off by default and is worth enabling only where seconds are acceptable.
