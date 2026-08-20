@@ -164,7 +164,7 @@ class IndexService(
         // knownDim() never does a network probe (a cold remote endpoint must not block/crash boot);
         // IndexMeta.compatibleWith treats an unknown (0) dimension as a wildcard, so a remote whose
         // dim isn't probed yet resumes against its existing index instead of wiping it.
-        if (meta != null && !meta.compatibleWith(schemaVersion, emb.model, emb.knownDim())) {
+        if (meta != null && !meta.compatibleWith(schemaVersion, emb.model, emb.knownDim(), emb.passagePrefix)) {
             // This is the ONLY restart path that re-embeds the whole vault. It is expensive (re-hits a
             // remote/GPU embedder for every chunk), so name the exact reason — that line is how an
             // operator diagnoses a vault that unexpectedly re-embeds on every boot.
@@ -199,6 +199,9 @@ class IndexService(
     private fun incompatibilityReason(meta: IndexMeta, emb: Embedder): String = when {
         meta.schemaVersion != schemaVersion -> "schema changed ${meta.schemaVersion} → $schemaVersion"
         meta.embeddingModel != emb.model -> "model changed '${meta.embeddingModel}' → '${emb.model}'"
+        meta.passagePrefix != emb.passagePrefix ->
+            "passage prefix changed '${meta.passagePrefix}' → '${emb.passagePrefix}' " +
+                "(the prefix is part of the embedded text, so the stored vectors no longer match)"
         else -> "embedding dimension changed ${meta.embeddingDim} → ${emb.knownDim()}"
     }
 
@@ -518,7 +521,11 @@ class IndexService(
         val ordered: List<Pair<String, Double>> = when {
             !active || q.mode == SearchMode.KEYWORD -> keyword.map { it.first to it.second.toDouble() }
             q.mode == SearchMode.SEMANTIC -> semantic.map { it.first to it.second.toDouble() }
-            else -> Rrf.fuse(listOf(kwIds, semIds)).entries.map { it.key to it.value }
+            // The semantic leg carries more weight than the keyword leg — see
+            // Rrf.DEFAULT_SEMANTIC_WEIGHT for the measurement. Equal weighting made HYBRID score
+            // below its own semantic leg on a real vault.
+            else -> Rrf.fuse(listOf(kwIds, semIds), listOf(1.0, Rrf.DEFAULT_SEMANTIC_WEIGHT))
+                .entries.map { it.key to it.value }
         }
 
         val ranked = maybeRerank(q.text, ordered)
@@ -788,7 +795,7 @@ class IndexService(
         Files.createDirectories(indexDir)
         // knownDim() (not dim) so the keyword-first pass never triggers a remote probe; it is 0 until
         // the first successful embed, then the post-embed saveMeta records the real dimension.
-        IndexMeta.save(metaFile, IndexMeta(schemaVersion, embedder.model, embedder.knownDim(), head))
+        IndexMeta.save(metaFile, IndexMeta(schemaVersion, embedder.model, embedder.knownDim(), head, embedder.passagePrefix))
     }
 
     private fun saveMetaCurrent() = saveMeta(IndexMeta.load(metaFile)?.headCommit)
@@ -803,6 +810,11 @@ class IndexService(
         if (!exec.awaitTermination(30, TimeUnit.SECONDS)) exec.shutdownNow()
         index.close()
         reader.close()
+        // The embedder and reranker are NOT closed here: they are handed in, so whoever created
+        // them closes them (VaultContext in production, the test itself in tests). Closing an
+        // injected dependency here double-closes the ONNX session for every caller that owns one.
+        // The one exception stays [setEmbedder], where the caller hands over a replacement and the
+        // instance being replaced has no other owner left.
     }
 
     private companion object {

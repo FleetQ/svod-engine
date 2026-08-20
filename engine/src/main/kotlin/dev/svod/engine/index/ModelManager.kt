@@ -40,9 +40,29 @@ object ModelManager {
             tokenizerUrl = "https://huggingface.co/Xenova/multilingual-e5-small/resolve/main/tokenizer.json",
             tokenizerSha256 = "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39",
         ),
+        // Cross-encoder reranker (opt-in second stage), Apache-2.0, first-party ONNX export.
+        // The fp32 graph is pinned deliberately: the repo's quantized exports are architecture
+        // specific (model_qint8_arm64 / model_quint8_avx2), and a pin that only loads on Apple
+        // Silicon is a trap for every other machine. int8 is a later, per-arch optimisation.
+        "mmarco-mMiniLMv2-L12-H384-v1" to Pinned(
+            modelUrl = "https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1/resolve/main/onnx/model.onnx",
+            modelSha256 = "3e9a03ed1e966f7c5288dd4230e3d6a9bf5e3a170a06f1f4241c5bca12c6487c",
+            tokenizerUrl = "https://huggingface.co/cross-encoder/mmarco-mMiniLMv2-L12-H384-v1/resolve/main/tokenizer.json",
+            tokenizerSha256 = "62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb75626",
+        ),
     )
 
-    /** Directory containing [MODEL_FILE] + [TOKENIZER_FILE], ready for DJL to load. */
+    /** Shared, user-level model cache. Models are identical across vaults; copies of them are not. */
+    fun sharedCacheDir(): Path = Path.of(System.getProperty("user.home"), ".cache", "svod-models")
+
+    /**
+     * Directory containing [MODEL_FILE] + [TOKENIZER_FILE], ready for DJL to load.
+     *
+     * Downloads land in the SHARED cache, not in [modelsDir]. Per-vault copies made sense while the
+     * only model was a ~120 MB embedder; with a ~471 MB reranker as well, three vaults meant well
+     * over a gigabyte of byte-identical files. [modelsDir] is still honoured when it already holds
+     * the model, so installs that downloaded before this change keep working and re-download nothing.
+     */
     fun resolve(config: OnnxConfig, modelsDir: Path): Path {
         config.localPath?.let { dir ->
             require(Files.isRegularFile(dir.resolve(MODEL_FILE)) && Files.isRegularFile(dir.resolve(TOKENIZER_FILE))) {
@@ -50,8 +70,11 @@ object ModelManager {
             }
             return dir
         }
+        val legacy = modelsDir.resolve(config.modelId)
+        if (Files.isRegularFile(legacy.resolve(MODEL_FILE)) && Files.isRegularFile(legacy.resolve(TOKENIZER_FILE))) return legacy
+
         val pin = PINS[config.modelId] ?: error("no pinned download for model '${config.modelId}'; supply OnnxConfig.localPath")
-        val dir = modelsDir.resolve(config.modelId)
+        val dir = sharedCacheDir().resolve(config.modelId)
         Files.createDirectories(dir)
         ensureFile(dir.resolve(MODEL_FILE), pin.modelUrl, pin.modelSha256)
         ensureFile(dir.resolve(TOKENIZER_FILE), pin.tokenizerUrl, pin.tokenizerSha256)

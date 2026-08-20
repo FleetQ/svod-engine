@@ -216,6 +216,19 @@ data class SvodConfig(
      */
     @Serializable
     data class RerankerSettings(
+        /*
+         * Default OFF — on quality it earns its place (real-vault nDCG@10 0.390 -> 0.483), and on
+         * latency it does not, by a wide margin.
+         *
+         * Measured on the live engine, same query, warm: 0.5s without, ~11s with (51s / 37s / 11s /
+         * 11s across four consecutive runs). Isolated, 50 pairs of 2000-character passages cost
+         * 1.8s, so roughly 5s of the live cost is NOT accounted for and was not chased down. Either
+         * way a 20x slower interactive search is not shippable as a default.
+         *
+         * Turn it on per vault when the trade suits the use: batch or agent queries where a second
+         * of latency buys a better answer. Reducing `topK` scales the cost about linearly (50 pairs
+         * 1789ms, 20 pairs 720ms, 10 pairs 365ms) and is the first knob to reach for.
+         */
         val provider: String = "none",
         val endpoint: String? = null,
         val model: String? = null,
@@ -357,12 +370,22 @@ data class SvodConfig(
     fun toRerankerConfig(): RerankerConfig {
         val provider = when (reranker.provider.lowercase()) {
             "remote", "remote-tei", "tei" -> RerankerProvider.REMOTE
+            "local-onnx", "onnx-local" -> RerankerProvider.LOCAL_ONNX
             else -> RerankerProvider.NONE
         }
+        // `model` means different things per provider: a remote endpoint's model name vs a local
+        // model id that ModelManager must have a pin for. Defaulting it per provider keeps a
+        // provider switch from silently carrying the other one's model across.
+        val defaultModel = when (provider) {
+            RerankerProvider.LOCAL_ONNX -> dev.svod.engine.index.OnnxLocalReranker.DEFAULT_MODEL
+            else -> dev.svod.engine.index.RemoteReranker.DEFAULT_MODEL
+        }
+        val model = reranker.model ?: defaultModel
         return RerankerConfig(
             provider = provider,
             endpoint = reranker.endpoint ?: dev.svod.engine.index.RemoteReranker.DEFAULT_ENDPOINT,
-            model = reranker.model ?: dev.svod.engine.index.RemoteReranker.DEFAULT_MODEL,
+            model = model,
+            onnx = dev.svod.engine.index.OnnxConfig(modelId = model),
             // API key is a Secrets reference only — resolved here, never accepted/stored raw.
             apiKey = reranker.apiKeyRef?.takeIf { it.isNotBlank() }?.let { dev.svod.engine.security.Secrets.resolve(it) },
             topK = reranker.topK,
@@ -434,7 +457,7 @@ data class SvodConfig(
         fun redactRemote(remote: String): String = URL_USERINFO.replace(remote) { it.groupValues[1] }
 
         val PROVIDERS = listOf("onnx-local", "local-onnx", "ollama", "local-ollama", "remote-openai", "openai", "none")
-        val RERANKER_PROVIDERS = listOf("none", "remote", "remote-tei", "tei")
+        val RERANKER_PROVIDERS = listOf("none", "remote", "remote-tei", "tei", "local-onnx", "onnx-local")
         val ROLES = listOf("READ_ONLY", "WRITE")
 
         private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }

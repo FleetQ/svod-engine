@@ -28,6 +28,8 @@ class OpenAiEmbedder(
     private val apiKey: String? = null,
     private val requestTimeout: Duration = Duration.ofSeconds(60),
     private val maxRetries: Int = DEFAULT_MAX_RETRIES,
+    /** Max inputs per request; TEI's own default and the safe floor across embedding servers. */
+    private val maxBatch: Int = DEFAULT_MAX_BATCH,
 ) : Embedder {
 
     private val http: HttpClient = HttpClient.newBuilder()
@@ -60,10 +62,18 @@ class OpenAiEmbedder(
     }
 
     private fun embed(inputs: List<String>): List<FloatArray> {
+        // TEI answers HTTP 413 above its max client batch (default 32) — the failure that silently
+        // disabled the reranker. IndexService already caps its own batches at 32, so this is a net
+        // rather than a live fix: it makes the limit the transport's business, so a future caller
+        // embedding an unbatched list degrades to more requests instead of a hard 413.
+        if (inputs.size > maxBatch) return inputs.chunked(maxBatch).flatMap { embed(it) }
         val body = json.encodeToString(EmbedRequest.serializer(), EmbedRequest(model, inputs))
         val builder = HttpRequest.newBuilder(URI.create("${endpoint.trimEnd('/')}/v1/embeddings"))
             .timeout(requestTimeout)
             .header("Content-Type", "application/json")
+            // RunPod (and other Cloudflare-fronted hosts) answer 403 "error code: 1010" to the JDK
+            // client's default `Java-http-client/NN` agent. Measured against a live RunPod TEI pod.
+            .header("User-Agent", USER_AGENT)
         if (!apiKey.isNullOrBlank()) builder.header("Authorization", "Bearer $apiKey")
         val request = builder.POST(HttpRequest.BodyPublishers.ofString(body)).build()
 
@@ -99,8 +109,17 @@ class OpenAiEmbedder(
     }
 
     companion object {
+        /**
+         * Cloudflare-fronted inference hosts (RunPod's proxy among them) reject the JDK
+         * client's default Java-http-client agent with 403 "error code: 1010". Sending a
+         * conventional agent is what makes those endpoints reachable at all. Measured against
+         * a live RunPod TEI pod: 403 without it, 200 with it.
+         */
+        const val USER_AGENT = "Svod/1.0 (+https://svod.dev)"
+
         const val DEFAULT_MODEL = "text-embedding-3-small"
         const val DEFAULT_ENDPOINT = "https://api.openai.com"
+        const val DEFAULT_MAX_BATCH = 32
         const val DEFAULT_MAX_RETRIES = 3
         private const val BASE_BACKOFF_MS = 1_000L
         private const val MAX_BACKOFF_MS = 16_000L

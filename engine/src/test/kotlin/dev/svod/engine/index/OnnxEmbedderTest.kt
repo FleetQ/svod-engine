@@ -22,7 +22,7 @@ class OnnxEmbedderTest {
     }
 
     private fun onnxConfigOrSkip(): OnnxConfig {
-        val cache = Path.of(System.getProperty("user.home"), ".cache", "svod-models", "multilingual-e5-small")
+        val cache = ModelManager.sharedCacheDir().resolve("multilingual-e5-small")
         val ready = Files.isRegularFile(cache.resolve(ModelManager.MODEL_FILE)) &&
             Files.isRegularFile(cache.resolve(ModelManager.TOKENIZER_FILE))
         assumeTrue(ready, "e5-small model not cached at $cache — skipping ONNX test")

@@ -28,6 +28,7 @@ class SvodNodeTest {
         appApiPort = 0,
         mcpPort = 0,
         embedder = SvodConfig.EmbedderSettings(provider = "none"),
+        reranker = SvodConfig.RerankerSettings(provider = "none"),
         agents = listOf(SvodConfig.AgentSettings("t", "scribe", "WRITE")),
     )
 

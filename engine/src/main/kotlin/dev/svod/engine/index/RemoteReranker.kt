@@ -28,6 +28,8 @@ class RemoteReranker(
     private val apiKey: String? = null,
     private val requestTimeout: Duration = Duration.ofSeconds(30),
     private val maxRetries: Int = DEFAULT_MAX_RETRIES,
+    /** Max texts per request; TEI's own default and the safe floor across rerank servers. */
+    private val maxBatch: Int = DEFAULT_MAX_BATCH,
 ) : Reranker {
 
     private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()
@@ -38,15 +40,27 @@ class RemoteReranker(
 
     override fun rerank(query: String, docs: List<String>): List<Float> {
         if (docs.isEmpty()) return emptyList()
+        // Servers cap how many texts one request may carry — TEI's default is 32 and it answers
+        // HTTP 413 above it, which is exactly what a topK of 50 hit against a live pod. The cap is
+        // the SERVER's business, so the client splits instead of assuming, and the caller's topK
+        // stays a retrieval decision rather than a protocol detail.
+        if (docs.size > maxBatch) {
+            return docs.chunked(maxBatch).flatMap { rerank(query, it) }
+        }
         val body = buildJsonObject {
             put("query", query)
             // TEI uses `texts`; include `model` for servers that require it (Jina/Cohere ignore extras).
             put("texts", JsonArray(docs.map { kotlinx.serialization.json.JsonPrimitive(it) }))
             if (model.isNotBlank() && model != "none") put("model", model)
         }
-        val request = HttpRequest.newBuilder(URI.create("$endpoint/rerank"))
+        // trimEnd('/') to match OpenAiEmbedder: a hand-written endpoint with a trailing slash would
+        // otherwise POST to `host//rerank`, which most servers 404.
+        val request = HttpRequest.newBuilder(URI.create("${endpoint.trimEnd('/')}/rerank"))
             .timeout(requestTimeout)
             .header("Content-Type", "application/json")
+            // RunPod (and other Cloudflare-fronted hosts) answer 403 "error code: 1010" to the JDK
+            // client's default `Java-http-client/NN` agent. Measured against a live RunPod TEI pod.
+            .header("User-Agent", USER_AGENT)
             .apply { if (!apiKey.isNullOrBlank()) header("Authorization", "Bearer $apiKey") }
             .POST(HttpRequest.BodyPublishers.ofString(json.encodeToString(JsonObject.serializer(), body)))
             .build()
@@ -95,6 +109,16 @@ class RemoteReranker(
     }
 
     companion object {
+        /**
+         * Cloudflare-fronted inference hosts (RunPod's proxy among them) reject the JDK
+         * client's default Java-http-client agent with 403 "error code: 1010". Sending a
+         * conventional agent is what makes those endpoints reachable at all. Measured against
+         * a live RunPod TEI pod: 403 without it, 200 with it.
+         */
+        const val DEFAULT_MAX_BATCH = 32
+
+        const val USER_AGENT = "Svod/1.0 (+https://svod.dev)"
+
         const val DEFAULT_MODEL = "BAAI/bge-reranker-base"
         const val DEFAULT_ENDPOINT = "http://127.0.0.1:8080"
         const val DEFAULT_MAX_RETRIES = 2

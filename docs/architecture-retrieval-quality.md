@@ -268,8 +268,475 @@ The eval run reports rerank latency alongside quality. Model choice: small multi
 (~100-150M), target ≤300ms for 50 pairs on M-series CPU. If measured latency blows the budget, the
 fallback is a smaller `rerankTopK`, then a smaller model — not shipping a slow default.
 
+### A9b. The DJL cross-encoder translator does not work — measured, not assumed
+
+`CrossEncoderTranslator` is the obvious choice and it fails at inference on DJL 0.30.0:
+
+```
+ai.djl.translate.TranslateException: UnsupportedOperationException: Data type not supported: uint32
+  at ai.djl.onnxruntime.engine.OrtUtils.toTensor(OrtUtils.java:67)
+```
+
+Its tensors reach ONNX Runtime as **uint32**, which `OrtUtils` rejects. So the reranker builds its
+inputs itself (`PairScoringTranslator` in `OnnxLocalReranker.kt`): explicit **int64** `input_ids` +
+`attention_mask`, named (ONNX binds by name, not position), padded by hand to the longest member of
+the batch with the model's own pad id (1, from its `config.json`).
+
+Returning `null` from `getBatchifier()` hands the whole list to `batchProcessInput`, so a batch pads
+to its longest member rather than to `MAX_SEQ_LEN` — several times less compute per query for
+typical chunk sizes.
+
+The graph's inputs were read off the artefact itself (`input_ids`, `attention_mask`, **no**
+`token_type_ids`). Copying the embedder's `includeTokenTypes = true` would have failed — the e5
+export needs it, this one has no such input.
+
+### A11b. Latency killed default-on — measured on the live engine
+
+The `LATENCY_BUDGET_MS = 300` gate in `OnnxRerankerTest` passed at 262ms. It fed 50 pairs of
+**~25-token** passages. Real chunks run to hundreds of tokens, so the gate was measuring something
+that does not occur.
+
+Honest numbers, 50 pairs, by passage length:
+
+```
+chars=200    topK=10    47ms   topK=20   101ms   topK=50    266ms
+chars=800    topK=10   149ms   topK=20   362ms   topK=50    747ms
+chars=2000   topK=10   365ms   topK=20   720ms   topK=50   1789ms
+chars=20000  topK=10   743ms   topK=20  1581ms   topK=50   3632ms
+```
+
+Everything past ~2000 chars is text the model never sees (the tokenizer stops at `MAX_SEQ_LEN`), so
+passages are now cut to `MAX_PASSAGE_CHARS` before tokenizing. That removed real waste and did
+**not** fix the live problem.
+
+On the live engine, same query, four consecutive runs: **51s → 37s → 11.4s → 10.9s**, against
+**0.43-0.83s warm with the reranker off**. Roughly 20× slower interactive search. Truncation did not
+move it; memory pressure is not the cause (engine RSS 315 MB, 37% system memory free); part of the
+cost warms away, which points at ONNX Runtime memory-mapping the 471 MB model — the engine opens one
+reranker **per vault**, and this machine has three.
+
+**About 5 seconds of the steady-state cost is unexplained.** Isolated, the same 50 pairs cost 1.8s.
+That gap was not chased to ground and is recorded as open rather than papered over.
+
+Default is therefore `none`. Quality earns it; latency does not. `topK` scales cost close to
+linearly and is the first knob for anyone enabling it.
+
 ### A12. Default off (D3)
 
 `NoneReranker` stays the default. No hot-swap path is added: the reranker is resolved at vault-open
 (`lifecycle/VaultContext.kt:81-88`) and that stays true. Adding `setReranker()` + an HTTP control
 endpoint is deliberately out of scope — it is a separate feature with its own concurrency questions.
+
+**This decision is now the weakest part of the design and should be revisited by a human.** D3 said
+"default off, revisit once the golden set shows the win". The win is far larger than expected (see
+below). What still argues for off is cost, not quality: a 471 MB first-run download and ~262 ms
+added to every search. That trade belongs to the product owner, not to this document.
+
+---
+
+## Unit 2 results — the reranker earns its place, and closes F1
+
+Measured 2026-08-19, same corpus and golden set, `mmarco-mMiniLMv2-L12-H384-v1` over the top 50
+fused candidates.
+
+| | plain fusion | reranked | delta |
+|---|---|---|---|
+| nDCG@10, all 37 queries | 0.786 | **0.904** | +0.118 |
+| recall@1, all 37 | 0.622 | **0.743** | +0.121 |
+| nDCG@10, cross-lingual | 0.213 | **0.900** | **+0.687** |
+| recall@1, cross-lingual | 0.100 | **0.850** | +0.750 |
+| 50 pairs, M-series CPU | — | **262 ms** | budget 300 ms |
+
+The ship criterion (`reranked nDCG@10 > plain`) was written into the test before the numbers were
+known, so it could have said no. It said yes, decisively.
+
+**The cross-lingual result looked like the headline — and it was wrong.** On the synthetic corpus,
+reranked cross-lingual recall@1 went 0.100 → 0.850, which read as "F1 is closed". The real vault
+says otherwise; see the correction below. Keep the synthetic numbers only as evidence about
+*ranking*, never about *retrieval*.
+
+## Leg V — the real vault overturns two synthetic conclusions
+
+45 hand-labelled queries over the real `personal` vault (3384 notes), same golden-set discipline,
+labels written from reading the notes.
+
+```
+V/KEYWORD                                    n=45  R@1=0.074 R@5=0.189 nDCG@10=0.166
+V/HYBRID                                     n=45  R@1=0.122 R@5=0.296 nDCG@10=0.298
+V/SEMANTIC                                   n=45  R@1=0.167 R@5=0.311 nDCG@10=0.345
+V/HYBRID reranked                            n=45  R@1=0.274 R@5=0.385 nDCG@10=0.450
+
+V/HYBRID           [bg->bg]  n=14  nDCG@10=0.550     reranked 0.572
+V/HYBRID           [en->en]  n=18  nDCG@10=0.317     reranked 0.628
+V/HYBRID           [bg->en]  n=7   nDCG@10=0.000     reranked 0.131
+V/HYBRID           [en->bg]  n=6   nDCG@10=0.000     reranked 0.000
+```
+
+**Read the absolute numbers as a lower bound, not a score.** The golden set labels 1-2 notes per
+query out of 3384, and inspection of the misses shows search often returning a *different but
+reasonable* note — e.g. for "решихме ли да показваме цените с ДДС" the label is
+`memory/fact/ef93172c0cb6.md` while search returns `projects/skb2/docs/pricing-review-2026-04-11.md`.
+Sparse labels mechanically depress recall. What is trustworthy is the *comparisons*, since every
+mode is scored against the same labels.
+
+### C1 — the reranker is confirmed at scale
+
+nDCG@10 0.298 → 0.450, recall@1 0.122 → 0.274 on a vault the corpus author never saw. Independent
+of the synthetic corpus, on 3384 notes. It ships.
+
+### C2 — F2 is CONFIRMED, not resolved
+
+SEMANTIC (0.345) beats HYBRID (0.298) here too, so the first-stage inversion is real and reproduces
+at scale — it is not a synthetic artefact. The shipped configuration (hybrid + reranker, 0.450)
+still wins overall, but the defect underneath is real and remains unexplained.
+
+### C3 — the reranker does NOT fix cross-lingual, and the synthetic corpus could not have shown that
+
+Cross-lingual on the real vault is **0.000**, reranked included for en→bg. A rank diagnostic against
+the whole vault explains why:
+
+```
+diag [bg->bg]  n=14  found-in-top-500=13  median rank 1
+diag [en->en]  n=18  found-in-top-500=16  median rank 3
+diag [bg->en]  n=7   found-in-top-500=2   median rank 29
+diag [en->bg]  n=6   found-in-top-500=0   median rank —
+```
+
+For 11 of 13 cross-lingual queries the correct note is **not in the top 500 of 3384**. A reranker
+only reorders what the first stage retrieved, so it has nothing to work with. Widening the candidate
+window cannot fix this either.
+
+**Why the synthetic corpus said the opposite:** it holds 27 notes and the rerank window is 50. The
+window covered the entire corpus, so the reranker was always handed the right answer and only had
+to order it. That corpus can measure ranking; it is structurally incapable of measuring retrieval.
+This is the third time in this work that a correctly-computed number described the wrong subject —
+the same pattern as `wrong-subject-numbers`.
+
+**Consequence for the harness:** leg S's floors are ranking floors. Any claim about *recall* has to
+come from leg V. Recorded here because the mistake is very easy to repeat.
+
+### C3b — the eval was measuring an embedder this machine does not run
+
+The live engine reports `embedder: local-ollama / bge-m3 / 1024 dim`. Every number above it was
+produced with the cached ONNX `multilingual-e5-small`, because the leg-V helper hard-coded it. A
+fourth instance of the same failure: correct measurement, wrong subject. Leg V now takes
+`-Dsvod.eval.embedder=ollama:<model>`.
+
+Re-measured on the embedder actually in use:
+
+```
+V/KEYWORD                     n=45  R@1=0.074 R@5=0.189 nDCG@10=0.180
+V/HYBRID                      n=45  R@1=0.163 R@5=0.437 nDCG@10=0.390
+V/SEMANTIC                    n=45  R@1=0.189 R@5=0.411 nDCG@10=0.403
+V/HYBRID reranked             n=45  R@1=0.256 R@5=0.448 nDCG@10=0.483
+
+                     HYBRID    reranked
+  bg->bg             0.500     0.443     <-- WORSE
+  en->en             0.468     0.644
+  bg->en             0.112     0.267
+  en->bg             0.220     0.348
+```
+
+Three things follow.
+
+**The reranker is still worth it, but less so:** +0.093 nDCG here against +0.152 on e5-small. It is
+not merely compensating for a weak embedder.
+
+**F2 is confirmed a third time, on a third embedder:** SEMANTIC 0.403 > HYBRID 0.390. The
+first-stage inversion is not a property of any one model.
+
+**The reranker HURTS Bulgarian→Bulgarian** — nDCG 0.500 → 0.443, recall@1 0.310 → 0.179. This is
+the model-research caveat that was recorded as UNVERIFIED at selection time: mmarco-mMiniLMv2 is
+fine-tuned on 14 languages and **Bulgarian is not one of them**. Cross-lingual transfer through the
+XLM-R backbone is clearly not enough for the language the vault is half written in. The aggregate
+hides it; only the per-direction split shows it. Candidate fix is a reranker actually trained on
+Bulgarian (`bge-reranker-v2-m3` covers it, at 568M and a latency budget this one was chosen to
+avoid) — a measured trade, not a guess, and not taken here.
+
+### C4 — a bigger embedder does not fix it either (refuted, and it would have been expensive)
+
+Ranking the correct note against all 3384, note-level, per model
+(`CrossLingualEmbedderTest`, opt-in):
+
+| direction | e5-small median rank | e5-base median rank |
+|---|---|---|
+| bg→bg | 1 | 1 |
+| en→en | 2 | **7** (worse) |
+| bg→en | 290 | 115 |
+| en→bg | 217 | **491** (worse) |
+
+Twice the parameters, twice the disk, and a full re-embed of every user's vault — for no consistent
+gain, and a regression in two of four directions. The "upgrade the embedder" hypothesis is refuted.
+
+Loading e5-base also exposed a real defect in our own code: `OnnxLocalEmbedder` hard-coded
+`includeTokenTypes = true`, so any export without a `token_type_ids` input failed with a bare
+`Input mismatch, looking for: [input_ids, attention_mask]`. It is now `OnnxConfig.includeTokenTypes`,
+because that is a property of the export, not of the architecture — the same landmine already
+documented for the reranker, biting in a second place.
+
+### C5 — cross-lingual retrieval is a KNOWN LIMITATION, and the fix is a feature decision
+
+What is established:
+
+- The **cross-encoder can do it** — it scores a Bulgarian query against the matching English passage
+  above an unrelated one (`OnnxRerankerTest`).
+- The **bi-encoder cannot get the candidate anywhere near the window**, at either model size.
+- Widening the window is not viable: catching a median rank of ~200-300 needs a rerank window of
+  several hundred pairs, i.e. seconds per query on CPU.
+
+So the remaining options both put a translation step in the search path — translate the query and
+search both languages, or index notes in both. Each needs an LLM available at query or index time,
+which is a product decision about latency and the offline story, not a defect fix. Not taken here.
+Documented instead, with the numbers, so the decision starts from evidence.
+
+## F2 — refuted twice, symptom removed by the second stage
+
+F2 was "HYBRID scores below its own SEMANTIC leg". Both proposed causes turned out to be wrong, and
+the sweep that refuted them is kept in `FusionWeightSweepTest` (opt-in, `-Dsvod.eval.sweep`) so the
+next person can re-run rather than re-argue.
+
+**Refuted #1 — per-leg weighting.** The documented mechanism said equal RRF weights let a weaker
+keyword leg dilute a stronger semantic one. Measured, weighting does essentially nothing:
+
+```
+semanticWeight=1.00  nDCG@10=0.786  R@5=0.811   cross-nDCG@10=0.213
+semanticWeight=1.50  nDCG@10=0.786  R@5=0.811   cross-nDCG@10=0.213
+semanticWeight=2.00  nDCG@10=0.786  R@5=0.811   cross-nDCG@10=0.213
+semanticWeight=5.00  nDCG@10=0.803  R@5=0.811   cross-nDCG@10=0.277
+```
+
+Identical to three decimals up to 2.0, and even at 5.0 still below SEMANTIC's 0.808, with recall@5
+never moving at all. `Rrf.fuse` therefore carries **no** weight parameter — shipping a knob for a
+refuted idea is worse than not having tried.
+
+**Refuted #2 — chunk duplication.** The next guess was that fusion returns more chunks from the same
+note, so ten hits surface fewer distinct notes. Measured, it is the other way round: HYBRID returns
+6.76 distinct notes per 10 chunks, SEMANTIC only 6.30 — and SEMANTIC still has the higher recall.
+
+**What actually resolves it: the reranker.** In the shipped configuration HYBRID beats each of its
+own legs:
+
+```
+reranked HYBRID    nDCG@10=0.904  R@5=0.905
+reranked SEMANTIC  nDCG@10=0.894  R@5=0.905
+reranked KEYWORD   nDCG@10=0.743  R@5=0.757
+```
+
+`leg S+R` asserts `reranked HYBRID >= max(reranked legs)` **strictly**. The un-reranked path keeps
+its `HYBRID_MAY_TRAIL_BEST_LEG_BY = 0.03` tolerance, because there the inversion is real —
+and leg V confirms it survives at 3384 notes (C2).
+
+**Still unknown:** *why* first-stage fusion trails its better leg, given that neither weighting nor
+chunk duplication explains it. Open, with the tooling in place to attack it. It does not decide
+shipped quality, because the second stage sits above it — but calling it "resolved" would be wrong.
+
+> **SUPERSEDED — see Unit 4.** Weighting *does* explain it. The refutation above is sound about the
+> synthetic corpus and wrong about the product: it was measured where both legs are strong, and F2
+> only appears where they are not. On the real vault a semantic weight of 3.0 lifts HYBRID from
+> 0.460 to 0.515 and back above its own semantic leg. The paragraph is kept as written because the
+> mistake — refuting a hypothesis on data that could not exhibit the effect — is the lesson.
+
+
+---
+
+## Unit 3 — hosted models on RunPod: the measurement that decides the embedder
+
+The user authorised sending note content off-machine ("напускането на бележките не е проблем") and
+provided RunPod access, which turns the two open items into questions that can be *measured* rather
+than argued: F1 (cross-lingual is an embedder problem) and the reranker's latency ceiling.
+
+Two TEI 1.8 pods, one GPU each, both destroyed after the run:
+
+| pod | model | endpoint shape |
+|---|---|---|
+| `svod-embed` | `BAAI/bge-m3` (1024-dim) | `POST /v1/embeddings` (OpenAI-compatible) |
+| `svod-rerank` | `BAAI/bge-reranker-v2-m3` | `POST /rerank` |
+
+### D1 — the reranker was never running, and the metrics could not tell
+
+The first hosted run returned reranked numbers **byte-identical** to un-reranked ones in every
+group. That reads as a clean null result. It was not one — TEI answered every call with
+
+```
+HTTP 413: batch size 50 > maximum allowed batch size 32
+```
+
+because `rerankTopK` is 50 and TEI caps a request at 32 texts. `maybeRerank` catches the failure,
+logs a warning, and returns the fused order, which is correct behaviour for production and fatal
+for an instrument: "the reranker changed nothing" and "the reranker never ran" produce the same
+table.
+
+Fixed in two places, and the second matters more than the first:
+
+- `RemoteReranker` splits into batches of `maxBatch` (32).
+- Leg V records the fused ordering and **asserts the reranked pass moved at least one query**. This
+  is the third instance in this branch of a correctly-computed number attached to the wrong subject;
+  it is the first one the harness now catches by itself.
+
+### D2 — results on the real vault (45 golden queries, 3384 notes, 79,359 chunks)
+
+| first stage | reranker | nDCG@10 | R@5 | bg→bg | en→en | bg→en | en→bg |
+|---|---|---|---|---|---|---|---|
+| e5-small (local, shipped default) | — | 0.305 | 0.319 | 0.551 | 0.335 | **0.000** | **0.000** |
+| e5-small (local) | bge-reranker-v2-m3 | 0.431 | 0.389 | 0.606 | 0.573 | 0.083 | 0.000 |
+| bge-m3 (RunPod) | — | 0.476 | 0.452 | 0.670 | 0.477 | 0.174 | 0.372 |
+| bge-m3 (RunPod) | bge-reranker-v2-m3 | **0.542** | **0.489** | 0.630 | 0.561 | **0.339** | **0.517** |
+
+Group sizes: bg→bg n=14, en→en n=18, bg→en n=7, en→bg n=6. Small groups — read them as direction,
+not as precision.
+
+### D3 — F1 is CONFIRMED and the fix is the embedder, not the reranker
+
+Cross-lingual retrieval under the shipped default is a **hard zero** on this vault: across 13
+cross-language queries, not one relevant note appears anywhere in the top 10. Swapping only the
+embedder moves bg→en to 0.174 and en→bg to 0.372 — from "never works" to "often works".
+
+The reranker cannot substitute for that. On the e5-small first stage it lifts cross-lingual from
+0.000 to 0.083 and 0.000, i.e. essentially nothing, because a reranker only reorders the candidate
+window and the right note was never in it. On the bge-m3 first stage the same reranker roughly
+doubles cross-lingual again (0.174→0.339, 0.372→0.517), because now there is something to reorder.
+
+**Order matters: fix the first stage, then rerank. Reranking a first stage that never retrieves the
+note is measurably worthless** — and the 27-note synthetic corpus could not have shown this, because
+a 50-candidate window over 27 notes always contains the answer.
+
+### D4 — F2 confirmed on a fourth embedder
+
+`HYBRID 0.476` sits below `SEMANTIC 0.510` again, as it did on e5-small, e5-base and Ollama bge-m3.
+Four embedders, same inversion, both refuted causes still refuted. The second stage still masks it
+(reranked HYBRID 0.542 beats every un-reranked leg), and the cause is still unknown.
+
+### D5 — latency still rules the reranker out of the inline path
+
+Measured against the live pod at the passage length the reranker actually sends (2000 chars, top-50
+in two batches):
+
+```
+rerank top-50: 5.62s / 7.45s / 2.32s
+embed 1 query: 0.80s / 0.21s / 0.21s
+```
+
+Better than the local ONNX model's ~11s, and still seconds. A GPU did not rescue it, so the reranker
+stays **default off** (D3/A12) — the ceiling is the model's size and the round trip, not the CPU.
+The query-embedding cost is the separate, smaller price of a hosted embedder: 0.2–0.8s added to
+every search that currently pays milliseconds locally.
+
+### D6 — unexplained: hosted bge-m3 scores higher than local Ollama bge-m3
+
+The earlier leg V run against Ollama's `bge-m3` measured first-stage nDCG@10 **0.390**; TEI serving
+the same model name measures **0.476** on the same golden set and vault. Ollama serves quantized
+GGUF weights while TEI serves the full-precision safetensors, so quantization loss is the obvious
+suspect — **hypothesis, not a finding**. Confirming it needs one local Ollama rebuild against this
+golden set and costs no GPU time. If it holds, "we support bge-m3" is not one statement: users on
+Ollama would be getting materially worse retrieval than the model name implies.
+
+### D7 — what this decides
+
+- The default embedder is the single largest quality lever measured in this whole sprint
+  (nDCG 0.305 → 0.476, and cross-lingual from zero to working). It is worth more than the reranker.
+- Hosting is not required to get it — `bge-m3` also runs locally via Ollama. The remote path's value
+  is that it makes a 1024-dim model available without local CPU/RAM, at 0.2–0.8s per query.
+- The reranker remains off by default and is worth enabling only where seconds are acceptable.
+
+---
+
+## Unit 4 — F2 resolved: the leg weight was refuted on the wrong corpus
+
+F2 (HYBRID scoring below its own SEMANTIC leg) survived two refutations and was carried for the
+whole sprint as "cause unknown". It has a cause, and the reason it stayed hidden is the same
+mistake this project keeps making: a correct measurement about the wrong subject.
+
+### E1 — the k hypothesis, refuted by measurement
+
+RRF adds `1/(k + rank + 1)`. At k=60 the gap between rank 1 and rank 50 is small (1/61 vs 1/111),
+so appearing in *both* lists outweighs being *first* in one — and with a keyword leg scoring 0.18
+against semantic's 0.52, that treats agreement with a weak leg as strong evidence. Plausible, and
+wrong. Swept on the real vault:
+
+```
+SEMANTIC only      nDCG@10=0.520
+RRF k=0            nDCG@10=0.435      <- less co-occurrence bias, WORSE
+RRF k=10           nDCG@10=0.475
+RRF k=20           nDCG@10=0.476      <- best k, still below the semantic leg
+RRF k=60           nDCG@10=0.463      (production)
+RRF k=120          nDCG@10=0.463
+```
+
+No value of k rescues fusion. Reducing the co-occurrence advantage makes things worse, because at
+small k the keyword leg's *top* hit competes directly with the semantic leg's top hit. Both extremes
+let the weak leg do damage. **Refuted.**
+
+### E2 — the leg weight, refuted on a corpus that could not show it
+
+The sweep that concluded "weighting does nothing" ran on the 27-note synthetic corpus, where both
+legs are strong (KEYWORD nDCG@10 0.69) and every relevant note is inside the candidate window by
+construction. On the real vault the legs are wildly unequal, and weighting is decisive:
+
+```
+k=60          bge-m3   e5-small          (SEMANTIC alone = 0.520 / 0.356)
+weight  1.0    0.463     0.311           <- shipped behaviour: F2
+weight  2.0    0.542     0.350
+weight  3.0    0.552     0.355
+weight  5.0    0.547     0.364
+weight 10.0    0.550     0.384
+```
+
+Two different first stages, same shape. `Rrf` now carries `DEFAULT_SEMANTIC_WEIGHT = 3.0`, taken
+from the low end of a plateau that runs 2–10 rather than either curve's peak — see E3 for why the
+low end.
+
+Confirmed through the production search path, not just the sweep's own fusion helper — leg V on the
+same vault, before and after the constant changed:
+
+```
+weight 1.0    HYBRID nDCG@10=0.460   SEMANTIC nDCG@10=0.492    <- F2
+weight 3.0    HYBRID nDCG@10=0.515   SEMANTIC nDCG@10=0.490    <- fixed
+```
+
+**Read the sweep table above as relative, not absolute.** The sweep pulls 50 chunks per leg and
+takes the top 10 distinct *paths*; production takes the top 10 *chunks* and then deduplicates, which
+can yield fewer than 10 notes. Same methodology at every weight, so the comparison between weights
+holds — but its absolute numbers run higher than production's, and only the leg V figures above
+describe what a user gets.
+
+On the user's live configuration that is **nDCG@10 0.460 → 0.515** and R@1 0.170 → 0.259, on top of
+the prefix fix, from a one-line change to a constant that had never been measured against real data.
+
+### E3 — the weight helps only where the semantic leg is the stronger one
+
+Stated plainly, because it is a real limitation and not a footnote. The constant assumes semantic >
+keyword. Where that is false the weight amplifies the weaker signal:
+
+```
+                              SEMANTIC   KEYWORD   HYBRID w=1   HYBRID w=3
+real vault, bge-m3 (leg V)      0.490     0.176       0.460        0.515   ← +0.055
+real vault, e5-small (sweep)    0.356     0.179       0.311        0.355   ← +0.044
+synthetic corpus, real e5       0.808     0.694       0.786        0.786   ←  0.000
+synthetic corpus, bag-of-words  0.471     0.694       0.627        0.600   ← -0.027
+```
+
+The two rows where it helps are the two real-vault rows; the row where it hurts is the one where the
+semantic leg is the *weaker* of the two. That is the honest boundary of this change, and the reason
+3.0 is taken from the bottom of the plateau instead of the top: where the assumption fails, a
+smaller weight does less damage.
+
+**Evidence limit, stated rather than glossed:** this is one vault, one golden set of 45 queries
+written by the same agent that then measured against it, and two embedders. A strongly lexical
+vault (code, identifiers, exact names) could plausibly invert the leg ordering. No configuration
+knob has been added, because no measured case needs one — if such a vault appears, that is the
+moment to add it, not before.
+
+### E4 — leg P could not have caught any of this
+
+Leg P is the hermetic CI gate, and its embedder was `FakeEmbedder`, which hashes the whole string:
+its vectors are noise. So leg P's HYBRID floors measured *BM25 fused with noise*, and any change
+that trusted the semantic leg more was guaranteed to fail them regardless of merit — as the weight
+change duly did.
+
+Replaced with `BagOfWordsEmbedder`: hashed tokens plus a 3-char prefix slot, L2-normalised, still
+model-free and CI-safe, but carrying actual signal (SEMANTIC nDCG@10 0.372 → 0.471). Floors
+re-baselined upward (R@5 0.62 → 0.66, nDCG 0.53 → 0.57) against the new, meaningful numbers.
+
+This is the third instrument defect in this sprint — after the reranker that silently never ran and
+the diagnostic that silently wiped indexes — and they share one shape: **the measurement could not
+distinguish "no effect" from "not measured".**

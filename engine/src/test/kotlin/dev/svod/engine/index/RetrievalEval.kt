@@ -24,6 +24,12 @@ data class GoldenQuery(
     val text: String,
     val gains: Map<String, Int>,
     val why: String = "",
+    /**
+     * Reporting bucket (e.g. a language direction). An aggregate is exactly what hid the
+     * cross-lingual collapse on the synthetic corpus until the subsets were reported separately —
+     * a golden set that knows its own groups makes that failure harder to repeat.
+     */
+    val group: String = "",
 ) {
     val relevant: Set<String> get() = gains.filterValues { it > 0 }.keys
 }

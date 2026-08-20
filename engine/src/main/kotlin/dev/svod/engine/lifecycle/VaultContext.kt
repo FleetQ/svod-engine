@@ -31,6 +31,12 @@ class VaultContext private constructor(
     private val syncGit: SyncGit,
     private val watcher: FileWatcher,
     override val graph: dev.svod.engine.graphrag.GraphService,
+    /**
+     * Created here, so closed here. Both may hold native ONNX handles, and IndexService must not
+     * close what was handed to it — every other caller owns its own instance.
+     */
+    private val embedder: dev.svod.engine.index.Embedder,
+    private val reranker: dev.svod.engine.index.Reranker,
 ) : VaultView, AutoCloseable {
 
     override val conflicts: ConflictStore get() = conflictStore
@@ -52,6 +58,9 @@ class VaultContext private constructor(
         runCatching { graph.close() }
         runCatching { index.close() }
         runCatching { engine.close() }
+        // After the index: a search in flight may still be using them.
+        (embedder as? AutoCloseable)?.let { runCatching { it.close() } }
+        (reranker as? AutoCloseable)?.let { runCatching { it.close() } }
     }
 
     companion object {
@@ -79,12 +88,13 @@ class VaultContext private constructor(
                 val ec = config.toEmbedderConfig()
                 val embedder = Embedders.create(ec, vault)
                 val rc = config.toRerankerConfig()
+                val reranker = dev.svod.engine.index.Rerankers.create(rc, vault)
                 val index = IndexService(
                     vault, vault.resolve(".svod").resolve("index"), embedder,
                     blockStartup = config.indexing.blockStartup,
                     maxThreads = ec.maxThreads,
                     batchSize = ec.batchSize,
-                    reranker = dev.svod.engine.index.Rerankers.create(rc),
+                    reranker = reranker,
                     rerankTopK = rc.topK,
                     includeMessyInRecall = config.includeMessyInRecall,
                 )
@@ -131,7 +141,10 @@ class VaultContext private constructor(
                     graph.onIndexSynced()
                 }
 
-                return VaultContext(vs.id, vs.name ?: vs.id, engine, index, conflicts, syncEngine, syncGit, watcher, graph)
+                return VaultContext(
+                    vs.id, vs.name ?: vs.id, engine, index, conflicts, syncEngine, syncGit, watcher, graph,
+                    embedder, reranker,
+                )
             } catch (t: Throwable) {
                 engine.close()
                 throw t
