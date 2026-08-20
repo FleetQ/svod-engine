@@ -9,10 +9,19 @@ import kotlin.test.Test
  * Measures what fusion weighting would do, WITHOUT changing the search path.
  *
  * F2 (see docs/architecture-retrieval-quality.md) is that HYBRID scores below its own SEMANTIC leg
- * because `Rrf.fuse` weights both legs equally, so agreement between legs beats strength in one.
+ * because `Rrf.fuse` weighted both legs equally, so agreement between legs beat strength in one.
  * The sweep pulls each leg's ranking out of the index separately and fuses them here at different
  * weights, so the question "would weighting help, and by how much" is answered by measurement
  * before any production constant moves.
+ *
+ * It did help — `Rrf.DEFAULT_SEMANTIC_WEIGHT` is 3.0 because of these sweeps. Note WHICH sweep:
+ * `sweep semantic leg weight` runs on the synthetic corpus and shows almost nothing, and that null
+ * result was believed for the whole sprint. `sweep semantic leg weight on a real vault` shows the
+ * effect plainly. A sweep is only as good as the data under it.
+ *
+ * The sweeps take the top 10 distinct PATHS out of 50 chunks per leg, while production takes the
+ * top 10 CHUNKS and then deduplicates. Their absolute numbers therefore run above production's —
+ * compare weights against each other here, and read leg V for what a user actually gets.
  *
  * Opt-in (`-Dsvod.eval.sweep`): it is an exploration tool, not a gate, and it has no business
  * spending CI time on a question that is already decided.
@@ -20,9 +29,9 @@ import kotlin.test.Test
 class FusionWeightSweepTest {
 
     /**
-     * RRF with a per-leg weight, kept HERE rather than in [Rrf]. The sweep below showed weighting
-     * does not move the numbers, so production carries no weight parameter for a refuted idea —
-     * but the tool that refuted it stays, so the next person can re-run rather than re-argue.
+     * RRF with a per-leg weight, kept HERE so the sweep can vary k as well, which production does
+     * not. [Rrf.fuse] now takes weights itself — the "weighting is a refuted idea" note that used to
+     * live on this function was true only of the synthetic corpus it was measured on.
      */
     private fun <T> weightedFuse(rankedLists: List<List<T>>, weights: List<Double>, k: Int = Rrf.DEFAULT_K): List<T> {
         val scores = HashMap<T, Double>()

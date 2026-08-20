@@ -530,6 +530,13 @@ and leg V confirms it survives at 3384 notes (C2).
 chunk duplication explains it. Open, with the tooling in place to attack it. It does not decide
 shipped quality, because the second stage sits above it — but calling it "resolved" would be wrong.
 
+> **SUPERSEDED — see Unit 4.** Weighting *does* explain it. The refutation above is sound about the
+> synthetic corpus and wrong about the product: it was measured where both legs are strong, and F2
+> only appears where they are not. On the real vault a semantic weight of 3.0 lifts HYBRID from
+> 0.460 to 0.515 and back above its own semantic leg. The paragraph is kept as written because the
+> mistake — refuting a hypothesis on data that could not exhibit the effect — is the lesson.
+
+
 ---
 
 ## Unit 3 — hosted models on RunPod: the measurement that decides the embedder
