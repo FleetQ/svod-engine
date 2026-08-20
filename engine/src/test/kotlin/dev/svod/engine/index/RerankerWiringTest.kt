@@ -110,4 +110,76 @@ class RerankerWiringTest {
         assertEquals("remote", remote.provider)
         assertTrue(remote.isActive)
     }
+
+    @Test
+    fun `a rerank larger than the server's batch cap is split, and the order is preserved`() {
+        // The defect this guards: TEI caps a request at 32 texts and answers HTTP 413 above it,
+        // while rerankTopK is 50. Every call failed, maybeRerank swallowed it and returned the
+        // fused order, and the eval printed a full set of "reranking did not help" numbers that
+        // were really "reranking never ran".
+        //
+        // The server here REJECTS an oversized batch exactly as TEI does, so this test fails
+        // against the unbatched client rather than merely observing the batched one.
+        val batchSizes = mutableListOf<Int>()
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { ex ->
+            val body = ex.requestBody.readBytes().decodeToString()
+            val n = Regex("\"texts\"\\s*:\\s*\\[(.*)]", RegexOption.DOT_MATCHES_ALL)
+                .find(body)?.groupValues?.get(1)?.count { it == '"' }?.div(2) ?: 0
+            batchSizes += n
+            val payload = if (n > 32) {
+                ex.sendResponseHeaders(413, 0); ex.responseBody.use { }; return@createContext
+            } else {
+                // Score descending by index so the caller cannot accidentally look correct by
+                // returning the input order.
+                (0 until n).joinToString(",", "[", "]") { """{"index":$it,"score":${1.0 - it / 100.0}}""" }
+            }
+            val bytes = payload.toByteArray()
+            ex.sendResponseHeaders(200, bytes.size.toLong())
+            ex.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val endpoint = "http://127.0.0.1:${server.address.port}"
+            val docs = (1..50).map { "document number $it" }
+            val out = RemoteReranker("m", endpoint).rerank("q", docs)
+
+            assertEquals(listOf(32, 18), batchSizes, "50 documents must go out as 32 + 18, never as one 50")
+            assertEquals(50, out.size, "every document must get a score, across both batches")
+            // Scores come back positionally aligned with `docs`. The stub scores each batch from
+            // 1.0 downward, so the second batch restarting at 1.0 is what proves the results were
+            // concatenated in order rather than sorted, overwritten, or silently truncated.
+            assertEquals(1.0f, out[0], "first document of the first batch")
+            assertEquals(1.0f - 31 / 100.0f, out[31], "last document of the first batch")
+            assertEquals(1.0f, out[32], "the second batch must start a new score sequence here")
+            assertEquals(1.0f - 17 / 100.0f, out[49], "last document of the second batch")
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `a batch at exactly the cap is sent as one request`() {
+        // Off-by-one guard: chunking at <= maxBatch would send 32 as 32+0 or split needlessly.
+        val batchSizes = mutableListOf<Int>()
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { ex ->
+            val body = ex.requestBody.readBytes().decodeToString()
+            val n = Regex("\"texts\"\\s*:\\s*\\[(.*)]", RegexOption.DOT_MATCHES_ALL)
+                .find(body)?.groupValues?.get(1)?.count { it == '"' }?.div(2) ?: 0
+            batchSizes += n
+            val payload = (0 until n).joinToString(",", "[", "]") { """{"index":$it,"score":0.5}""" }
+            val bytes = payload.toByteArray()
+            ex.sendResponseHeaders(200, bytes.size.toLong())
+            ex.responseBody.use { it.write(bytes) }
+        }
+        server.start()
+        try {
+            val endpoint = "http://127.0.0.1:${server.address.port}"
+            RemoteReranker("m", endpoint).rerank("q", (1..32).map { "doc $it" })
+            assertEquals(listOf(32), batchSizes, "exactly the cap must be one request")
+        } finally {
+            server.stop(0)
+        }
+    }
 }
