@@ -148,7 +148,7 @@ class SvodNode private constructor(
                 val vaultCreator = VaultController(vaults, configStore, workScope, eventBus, hostId)
                 val agentController = AgentController(configStore, registry, config.host)
                 val updateService = UpdateService(
-                    currentAppVersion = "1.18.1",
+                    currentAppVersion = "1.19.0",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 val api = AppApiServer(
