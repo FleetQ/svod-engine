@@ -99,7 +99,10 @@ jobs:
         with:
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: false
-          generate_release_notes: true
+          # ONE job generates the body. All three matrix jobs publish into the same release, and
+          # each one with this set to true regenerated the notes and appended them — every release
+          # from at least v1.17.0 to v1.19.0 shipped its changelog printed three times.
+          generate_release_notes: ${{ matrix.label == 'linux-x64' }}
           files: |
             engine/SvodEngine-${{ matrix.label }}.tar.gz
             engine/SvodEngine-${{ matrix.label }}.zip
