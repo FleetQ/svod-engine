@@ -39,10 +39,16 @@ data class IndexMeta(
      */
     fun compatibleWith(schemaVersion: Int, model: String, dim: Int, passagePrefix: String): Boolean =
         this.schemaVersion == schemaVersion && embeddingModel == model &&
-            // A stored dim of 0 means this index holds no vectors at all (BM25-only), and a prefix
-            // only ever shows up inside a vector — so comparing it there would wipe every
-            // lexical-only vault on upgrade for a difference that cannot exist in its data.
-            (embeddingDim == 0 || this.passagePrefix == passagePrefix) &&
+            // Skip the prefix check ONLY for a genuinely vector-less index, so upgrading a
+            // lexical-only vault does not re-index it for a difference its data cannot contain.
+            //
+            // The test is the MODEL, not the dimension. A stored dim of 0 does not mean "no
+            // vectors": a remote embedder reports 0 until its first successful embed, so a fully
+            // populated Ollama vault persists dim 0 on any boot that had nothing to embed. Reading
+            // that as "no vectors" skipped the migration for two live vaults and then recorded a
+            // prefix they were not built with — leaving passages prefixed, queries not, and no way
+            // back, which is the exact silent mismatch this field exists to prevent.
+            (embeddingModel == NoneEmbedder.model || this.passagePrefix == passagePrefix) &&
             (embeddingDim == dim || dim == 0 || embeddingDim == 0)
 
     companion object {

@@ -81,6 +81,32 @@ class ModelPrefixTest {
         )
     }
 
+
+    @Test
+    fun `an unprobed remote dimension is not mistaken for an index without vectors`() {
+        // The bug this pins, caught only by deploying to a live machine.
+        //
+        // A remote embedder reports knownDim() == 0 until its first successful embed, and saveMeta
+        // records knownDim() — so a FULLY POPULATED Ollama vault persists "embeddingDim": 0 on any
+        // boot that had nothing to embed. Skipping the prefix check on dim == 0 therefore skipped
+        // the migration for two live vaults whose passages really were prefixed, and then wrote
+        // passagePrefix "" into their metadata — leaving passages prefixed, queries not, and the
+        // metadata asserting they matched. Silent, and self-sealing: it could never correct itself.
+        //
+        // The discriminator has to be the MODEL. "none" is the only thing that means no vectors.
+        val unprobed = IndexMeta(1, "bge-m3", 0, "abc", passagePrefix = "passage: ")
+        assertFalse(
+            unprobed.compatibleWith(1, "bge-m3", 0, passagePrefix = ""),
+            "a vault whose dimension is merely unprobed still has prefixed vectors and MUST migrate",
+        )
+
+        // ...while the dimension wildcard itself still works: same prefix, unprobed dim, no wipe.
+        assertTrue(
+            unprobed.compatibleWith(1, "bge-m3", 0, passagePrefix = "passage: "),
+            "an unprobed remote must still resume against its own index",
+        )
+    }
+
     @Test
     fun `changing only the prefix re-embeds the vault`() = runBlocking {
         IndexFixture.create().use { fx ->
