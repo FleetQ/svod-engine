@@ -39,7 +39,10 @@ data class IndexMeta(
      */
     fun compatibleWith(schemaVersion: Int, model: String, dim: Int, passagePrefix: String): Boolean =
         this.schemaVersion == schemaVersion && embeddingModel == model &&
-            this.passagePrefix == passagePrefix &&
+            // A stored dim of 0 means this index holds no vectors at all (BM25-only), and a prefix
+            // only ever shows up inside a vector — so comparing it there would wipe every
+            // lexical-only vault on upgrade for a difference that cannot exist in its data.
+            (embeddingDim == 0 || this.passagePrefix == passagePrefix) &&
             (embeddingDim == dim || dim == 0 || embeddingDim == 0)
 
     companion object {

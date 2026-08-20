@@ -630,3 +630,106 @@ Ollama would be getting materially worse retrieval than the model name implies.
 - Hosting is not required to get it — `bge-m3` also runs locally via Ollama. The remote path's value
   is that it makes a 1024-dim model available without local CPU/RAM, at 0.2–0.8s per query.
 - The reranker remains off by default and is worth enabling only where seconds are acceptable.
+
+---
+
+## Unit 4 — F2 resolved: the leg weight was refuted on the wrong corpus
+
+F2 (HYBRID scoring below its own SEMANTIC leg) survived two refutations and was carried for the
+whole sprint as "cause unknown". It has a cause, and the reason it stayed hidden is the same
+mistake this project keeps making: a correct measurement about the wrong subject.
+
+### E1 — the k hypothesis, refuted by measurement
+
+RRF adds `1/(k + rank + 1)`. At k=60 the gap between rank 1 and rank 50 is small (1/61 vs 1/111),
+so appearing in *both* lists outweighs being *first* in one — and with a keyword leg scoring 0.18
+against semantic's 0.52, that treats agreement with a weak leg as strong evidence. Plausible, and
+wrong. Swept on the real vault:
+
+```
+SEMANTIC only      nDCG@10=0.520
+RRF k=0            nDCG@10=0.435      <- less co-occurrence bias, WORSE
+RRF k=10           nDCG@10=0.475
+RRF k=20           nDCG@10=0.476      <- best k, still below the semantic leg
+RRF k=60           nDCG@10=0.463      (production)
+RRF k=120          nDCG@10=0.463
+```
+
+No value of k rescues fusion. Reducing the co-occurrence advantage makes things worse, because at
+small k the keyword leg's *top* hit competes directly with the semantic leg's top hit. Both extremes
+let the weak leg do damage. **Refuted.**
+
+### E2 — the leg weight, refuted on a corpus that could not show it
+
+The sweep that concluded "weighting does nothing" ran on the 27-note synthetic corpus, where both
+legs are strong (KEYWORD nDCG@10 0.69) and every relevant note is inside the candidate window by
+construction. On the real vault the legs are wildly unequal, and weighting is decisive:
+
+```
+k=60          bge-m3   e5-small          (SEMANTIC alone = 0.520 / 0.356)
+weight  1.0    0.463     0.311           <- shipped behaviour: F2
+weight  2.0    0.542     0.350
+weight  3.0    0.552     0.355
+weight  5.0    0.547     0.364
+weight 10.0    0.550     0.384
+```
+
+Two different first stages, same shape. `Rrf` now carries `DEFAULT_SEMANTIC_WEIGHT = 3.0`, taken
+from the low end of a plateau that runs 2–10 rather than either curve's peak — see E3 for why the
+low end.
+
+Confirmed through the production search path, not just the sweep's own fusion helper — leg V on the
+same vault, before and after the constant changed:
+
+```
+weight 1.0    HYBRID nDCG@10=0.460   SEMANTIC nDCG@10=0.492    <- F2
+weight 3.0    HYBRID nDCG@10=0.515   SEMANTIC nDCG@10=0.490    <- fixed
+```
+
+**Read the sweep table above as relative, not absolute.** The sweep pulls 50 chunks per leg and
+takes the top 10 distinct *paths*; production takes the top 10 *chunks* and then deduplicates, which
+can yield fewer than 10 notes. Same methodology at every weight, so the comparison between weights
+holds — but its absolute numbers run higher than production's, and only the leg V figures above
+describe what a user gets.
+
+On the user's live configuration that is **nDCG@10 0.460 → 0.515** and R@1 0.170 → 0.259, on top of
+the prefix fix, from a one-line change to a constant that had never been measured against real data.
+
+### E3 — the weight helps only where the semantic leg is the stronger one
+
+Stated plainly, because it is a real limitation and not a footnote. The constant assumes semantic >
+keyword. Where that is false the weight amplifies the weaker signal:
+
+```
+                              SEMANTIC   KEYWORD   HYBRID w=1   HYBRID w=3
+real vault, bge-m3 (leg V)      0.490     0.176       0.460        0.515   ← +0.055
+real vault, e5-small (sweep)    0.356     0.179       0.311        0.355   ← +0.044
+synthetic corpus, real e5       0.808     0.694       0.786        0.786   ←  0.000
+synthetic corpus, bag-of-words  0.471     0.694       0.627        0.600   ← -0.027
+```
+
+The two rows where it helps are the two real-vault rows; the row where it hurts is the one where the
+semantic leg is the *weaker* of the two. That is the honest boundary of this change, and the reason
+3.0 is taken from the bottom of the plateau instead of the top: where the assumption fails, a
+smaller weight does less damage.
+
+**Evidence limit, stated rather than glossed:** this is one vault, one golden set of 45 queries
+written by the same agent that then measured against it, and two embedders. A strongly lexical
+vault (code, identifiers, exact names) could plausibly invert the leg ordering. No configuration
+knob has been added, because no measured case needs one — if such a vault appears, that is the
+moment to add it, not before.
+
+### E4 — leg P could not have caught any of this
+
+Leg P is the hermetic CI gate, and its embedder was `FakeEmbedder`, which hashes the whole string:
+its vectors are noise. So leg P's HYBRID floors measured *BM25 fused with noise*, and any change
+that trusted the semantic leg more was guaranteed to fail them regardless of merit — as the weight
+change duly did.
+
+Replaced with `BagOfWordsEmbedder`: hashed tokens plus a 3-char prefix slot, L2-normalised, still
+model-free and CI-safe, but carrying actual signal (SEMANTIC nDCG@10 0.372 → 0.471). Floors
+re-baselined upward (R@5 0.62 → 0.66, nDCG 0.53 → 0.57) against the new, meaningful numbers.
+
+This is the third instrument defect in this sprint — after the reranker that silently never ran and
+the diagnostic that silently wiped indexes — and they share one shape: **the measurement could not
+distinguish "no effect" from "not measured".**

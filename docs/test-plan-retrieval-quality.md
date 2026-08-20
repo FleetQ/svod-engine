@@ -111,6 +111,53 @@ Leg S, same corpus and queries, with and without the reranker:
   checksum behaviour).
 - Reranker absent from disk and no network → falls back to `NoneReranker`, search unaffected.
 
+## Unit 3 — hosted models, and the defects the eval itself was hiding
+
+### T12. The eval must fail when it measured nothing
+
+The remote reranker failed every call (TEI's 32-text batch cap against a `rerankTopK` of 50) and
+`maybeRerank` degraded silently to the fused order, so leg V printed a full set of reranked metrics
+identical to the un-reranked ones. "No effect" and "never ran" were indistinguishable.
+
+- Leg V records the fused ordering and asserts the reranked pass moved at least one query.
+- Verified negatively by construction: the assertion is precisely what the broken run would have
+  tripped, and that run is what motivated it.
+
+### T13. Batching is the client's job
+
+- `RemoteReranker` splits requests at `maxBatch` (32) — covered against a local `HttpServer`.
+- `OpenAiEmbedder` carries the same split. `IndexService` already caps at 32 and is its only caller,
+  so this is a net rather than a live fix, and it is documented as such rather than claimed as a bug
+  that was biting.
+
+### T14. Input prefixes match the model (`ModelPrefixTest`)
+
+The silent one: `OllamaEmbedder` applied e5's `query: ` / `passage: ` to every model, including
+bge-m3, which BGE's own README says needs no instruction. Retrieval still worked — just worse, with
+nothing in any log.
+
+- `ModelPrefixes` returns e5's prefixes for e5 names and none for bge/nomic/others.
+- The Ollama request body for bge-m3 contains neither prefix; for e5 it does.
+- `IndexMeta.compatibleWith` treats a prefix change as incompatible, so the vectors are rebuilt.
+- Metadata written before the field existed defaults to `"passage: "` — the truthful description of
+  what those indexes contain — so e5 vaults do NOT re-embed and mis-embedded vaults do.
+- A prefix change re-embeds every chunk (`FakeEmbedder`, no model needed).
+- **Negative verification run**: forcing `isE5` to return true fails exactly the two tests that
+  assert the fix, and leaves the three migration tests green.
+
+### T15. The leg V diagnostic may not destroy an index
+
+It opened any index with the *default* e5 embedder, which triggers a dimension change and a silent
+full re-embed; it wiped every cached bge-m3 eval index on this machine. Now gated behind
+`-Dsvod.eval.diag` in addition to `-Dsvod.eval.indexDir`.
+
+### T16. F2 — the RRF `k` sweep (exploration, not a gate)
+
+`sweep the RRF k constant on a real vault` measures fused quality across k ∈ {0…120} against each
+leg alone. It exists to test the third hypothesis — that k=60 makes leg *agreement* outweigh leg
+*strength*, which would also explain why the weight sweep changed nothing. Opt-in, real vault, no
+production constant moves until it is measured.
+
 ## Out of scope
 
 - No `setReranker()` hot-swap, so no test for it.

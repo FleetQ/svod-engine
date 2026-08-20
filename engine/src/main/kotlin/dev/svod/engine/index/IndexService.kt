@@ -201,7 +201,7 @@ class IndexService(
         meta.embeddingModel != emb.model -> "model changed '${meta.embeddingModel}' → '${emb.model}'"
         meta.passagePrefix != emb.passagePrefix ->
             "passage prefix changed '${meta.passagePrefix}' → '${emb.passagePrefix}' " +
-                "(this model is not trained with e5's prefixes)"
+                "(the prefix is part of the embedded text, so the stored vectors no longer match)"
         else -> "embedding dimension changed ${meta.embeddingDim} → ${emb.knownDim()}"
     }
 
@@ -521,7 +521,11 @@ class IndexService(
         val ordered: List<Pair<String, Double>> = when {
             !active || q.mode == SearchMode.KEYWORD -> keyword.map { it.first to it.second.toDouble() }
             q.mode == SearchMode.SEMANTIC -> semantic.map { it.first to it.second.toDouble() }
-            else -> Rrf.fuse(listOf(kwIds, semIds)).entries.map { it.key to it.value }
+            // The semantic leg carries more weight than the keyword leg — see
+            // Rrf.DEFAULT_SEMANTIC_WEIGHT for the measurement. Equal weighting made HYBRID score
+            // below its own semantic leg on a real vault.
+            else -> Rrf.fuse(listOf(kwIds, semIds), listOf(1.0, Rrf.DEFAULT_SEMANTIC_WEIGHT))
+                .entries.map { it.key to it.value }
         }
 
         val ranked = maybeRerank(q.text, ordered)

@@ -169,4 +169,156 @@ class FusionWeightSweepTest {
             }
         }
     }
+
+    /**
+     * The third hypothesis for F2, and the first that explains why weighting could not fix it.
+     *
+     * RRF adds `1/(k + rank + 1)` per list. With k=60 the gap between rank 1 and rank 50 is tiny
+     * (1/61 vs 1/111), so *appearing in both lists at all* is worth far more than *being first in
+     * one*: a chunk at rank 10 in both legs scores 2/70 = 0.0286 and beats a chunk ranked FIRST by
+     * semantic but absent from keyword, at 1/61 = 0.0164.
+     *
+     * That is a reasonable prior when the legs are comparable. Here they are not — on the real vault
+     * the keyword leg scores nDCG@10 0.180 against semantic's 0.510 — so agreement with a weak leg
+     * is being treated as strong evidence.
+     *
+     * It also explains why the weight sweep changed nothing: a per-leg weight multiplies the
+     * semantic leg's contribution, but the co-occurrence term contains the semantic leg too, so it
+     * scales along with it. At weight 5.0 a semantic-only rank-1 chunk scores 5/61 = 0.082 while
+     * rank 10 in both scores 1/70 + 5/70 = 0.086 — still losing. `k` changes the shape of the
+     * curve; a weight only changes its scale.
+     *
+     * Measured on the real vault (leg V's properties), because F2 was confirmed there and the
+     * synthetic corpus has already misled this investigation once.
+     */
+    @Test
+    fun `sweep the RRF k constant on a real vault`() {
+        assumeTrue(System.getProperty("svod.eval.sweep") != null, "set -Dsvod.eval.sweep to run the fusion sweep")
+        val vault = System.getProperty("svod.eval.vault")
+        val golden = System.getProperty("svod.eval.golden")
+        val indexDir = System.getProperty("svod.eval.indexDir")
+        assumeTrue(
+            vault != null && golden != null && indexDir != null,
+            "set -Dsvod.eval.vault, -Dsvod.eval.golden and -Dsvod.eval.indexDir (an already-built index)",
+        )
+        val embedderId = System.getProperty("svod.eval.embedder")
+        val evalEmbedder: Embedder? = when {
+            embedderId != null && embedderId.startsWith("ollama:") ->
+                if (OllamaEmbedder.isAvailable()) {
+                    OllamaEmbedder(embedderId.removePrefix("ollama:"), OllamaEmbedder.DEFAULT_ENDPOINT)
+                } else {
+                    null
+                }
+            else -> cachedE5ConfigOrNull()?.let { OnnxLocalEmbedder.load(it, Path.of("/unused")) }
+        }
+        assumeTrue(evalEmbedder != null, "no eval embedder available")
+
+        val queries = GoldenSetFile.load(Path.of(golden))
+        (evalEmbedder as? AutoCloseable ?: AutoCloseable {}).use { _ ->
+            IndexService(Path.of(vault), Path.of(indexDir), evalEmbedder!!).start().use { index ->
+                // Production fuses the top 50 candidates per leg, then takes `limit`. Asking each
+                // leg for 50 reproduces exactly those inputs.
+                val legs = queries.map { q ->
+                    val kw = index.search(SearchQuery(q.text, mode = SearchMode.KEYWORD, limit = 50)).hits
+                    val sem = index.search(SearchQuery(q.text, mode = SearchMode.SEMANTIC, limit = 50)).hits
+                    val paths = (kw + sem).associate { it.chunkId to it.path }
+                    Triple(q, kw.map { it.chunkId } to sem.map { it.chunkId }, paths)
+                }
+
+                fun score(label: String, rank: (List<String>, List<String>) -> List<String>) {
+                    var nd = 0.0
+                    var r5 = 0.0
+                    var r1 = 0.0
+                    for ((q, ids, paths) in legs) {
+                        val ranked = rank(ids.first, ids.second).mapNotNull { paths[it] }.distinct().take(10)
+                        nd += RetrievalEval.ndcgAt(ranked, q, 10)
+                        r5 += RetrievalEval.recallAt(ranked, q, 5)
+                        r1 += RetrievalEval.recallAt(ranked, q, 1)
+                    }
+                    val n = legs.size
+                    println("%-18s nDCG@10=%.3f R@5=%.3f R@1=%.3f".format(label, nd / n, r5 / n, r1 / n))
+                }
+
+                // The two references F2 is defined against.
+                score("SEMANTIC only") { _, sem -> sem }
+                score("KEYWORD only") { kw, _ -> kw }
+                // k=0 is pure reciprocal rank: rank 1 in a leg scores 1.0 and nothing outranks it.
+                for (k in listOf(0, 1, 2, 5, 10, 20, 40, 60, 120)) {
+                    score("RRF k=" + k) { kw, sem -> weightedFuse(listOf(kw, sem), listOf(1.0, 1.0), k) }
+                }
+            }
+        }
+    }
+
+    /**
+     * The weight sweep, repeated on the REAL vault.
+     *
+     * `sweep semantic leg weight` runs on the 27-note synthetic corpus, where both legs are strong
+     * (KEYWORD nDCG@10 0.743 after reranking) and every relevant note is inside the candidate
+     * window by construction. That is where "weighting does nothing" was concluded — and the same
+     * corpus has already produced two conclusions that the real vault overturned.
+     *
+     * On the real vault the legs are wildly unequal: SEMANTIC 0.520 against KEYWORD 0.182. If F2 is
+     * "fusion mixes in a leg that is mostly wrong here", then down-weighting that leg is the direct
+     * test, and it has never actually been run against this data.
+     */
+    @Test
+    fun `sweep semantic leg weight on a real vault`() {
+        assumeTrue(System.getProperty("svod.eval.sweep") != null, "set -Dsvod.eval.sweep to run the fusion sweep")
+        val vault = System.getProperty("svod.eval.vault")
+        val golden = System.getProperty("svod.eval.golden")
+        val indexDir = System.getProperty("svod.eval.indexDir")
+        assumeTrue(
+            vault != null && golden != null && indexDir != null,
+            "set -Dsvod.eval.vault, -Dsvod.eval.golden and -Dsvod.eval.indexDir (an already-built index)",
+        )
+        val embedderId = System.getProperty("svod.eval.embedder")
+        val evalEmbedder: Embedder? = when {
+            embedderId != null && embedderId.startsWith("ollama:") ->
+                if (OllamaEmbedder.isAvailable()) {
+                    OllamaEmbedder(embedderId.removePrefix("ollama:"), OllamaEmbedder.DEFAULT_ENDPOINT)
+                } else {
+                    null
+                }
+            else -> cachedE5ConfigOrNull()?.let { OnnxLocalEmbedder.load(it, Path.of("/unused")) }
+        }
+        assumeTrue(evalEmbedder != null, "no eval embedder available")
+
+        val queries = GoldenSetFile.load(Path.of(golden))
+        (evalEmbedder as? AutoCloseable ?: AutoCloseable {}).use { _ ->
+            IndexService(Path.of(vault), Path.of(indexDir), evalEmbedder!!).start().use { index ->
+                val legs = queries.map { q ->
+                    val kw = index.search(SearchQuery(q.text, mode = SearchMode.KEYWORD, limit = 50)).hits
+                    val sem = index.search(SearchQuery(q.text, mode = SearchMode.SEMANTIC, limit = 50)).hits
+                    val paths = (kw + sem).associate { it.chunkId to it.path }
+                    Triple(q, kw.map { it.chunkId } to sem.map { it.chunkId }, paths)
+                }
+
+                fun score(label: String, rank: (List<String>, List<String>) -> List<String>) {
+                    var nd = 0.0
+                    var r5 = 0.0
+                    var r1 = 0.0
+                    for ((q, ids, paths) in legs) {
+                        val ranked = rank(ids.first, ids.second).mapNotNull { paths[it] }.distinct().take(10)
+                        nd += RetrievalEval.ndcgAt(ranked, q, 10)
+                        r5 += RetrievalEval.recallAt(ranked, q, 5)
+                        r1 += RetrievalEval.recallAt(ranked, q, 1)
+                    }
+                    val n = legs.size
+                    println("%-26s nDCG@10=%.3f R@5=%.3f R@1=%.3f".format(label, nd / n, r5 / n, r1 / n))
+                }
+
+                score("SEMANTIC only") { _, sem -> sem }
+                // k=60 is production's constant; k=20 was the best of the k sweep. Weighting is swept
+                // at both, so the answer cannot be an artefact of one of them.
+                for (k in listOf(20, 60)) {
+                    for (w in listOf(1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 50.0)) {
+                        score("k=%-3d semanticWeight=%.1f".format(k, w)) { kw, sem ->
+                            weightedFuse(listOf(kw, sem), listOf(1.0, w), k)
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

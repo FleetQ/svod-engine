@@ -29,8 +29,10 @@ class RetrievalEvalTest {
     // Raise them when the stack genuinely improves; never lower one to make a red run green.
     private companion object {
         // Measured 2026-08-19 on multilingual-e5-small, floors = measured - ~0.03.
-        const val P_HYBRID_RECALL5 = 0.62      // measured 0.649
-        const val P_HYBRID_NDCG10 = 0.53       // measured 0.557
+        // Re-baselined when leg P's embedder gained real signal (see BagOfWordsEmbedder). The old
+        // numbers were BM25 fused with hash noise, which is why they could not gate fusion at all.
+        const val P_HYBRID_RECALL5 = 0.66      // measured 0.703
+        const val P_HYBRID_NDCG10 = 0.57       // measured 0.600
         const val P_KEYWORD_RECALL5 = 0.70     // measured 0.730
         const val S_HYBRID_RECALL5 = 0.78      // measured 0.811
         const val S_HYBRID_NDCG10 = 0.75       // measured 0.786
@@ -111,7 +113,7 @@ class RetrievalEvalTest {
 
     @Test
     fun `leg P - pipeline quality holds on the synthetic corpus`() {
-        val (fx, index) = seeded(FakeEmbedder("fake-eval"))
+        val (fx, index) = seeded(BagOfWordsEmbedder())
         fx.use {
             index.use {
                 val hybrid = report("P/HYBRID", index, GoldenCorpus.queries, SearchMode.HYBRID)
@@ -121,8 +123,17 @@ class RetrievalEvalTest {
                 assertTrue(hybrid.recallAt5 >= P_HYBRID_RECALL5, "HYBRID recall@5 ${hybrid.recallAt5} below floor $P_HYBRID_RECALL5")
                 assertTrue(hybrid.ndcgAt10 >= P_HYBRID_NDCG10, "HYBRID nDCG@10 ${hybrid.ndcgAt10} below floor $P_HYBRID_NDCG10")
                 assertTrue(keyword.recallAt5 >= P_KEYWORD_RECALL5, "KEYWORD recall@5 ${keyword.recallAt5} below floor $P_KEYWORD_RECALL5")
-                // Deliberately loose: with a hashed embedder, a tight SEMANTIC floor would be a
-                // number about the hash function, not about retrieval quality.
+                // Fusing a second signal must not score below the semantic leg it was fused with.
+                //
+                // NOT a gate on Rrf.DEFAULT_SEMANTIC_WEIGHT — checked, and it holds at weight 1.0
+                // and 3.0 alike, because on this corpus the bag-of-words leg is weak enough that
+                // keyword carries fusion either way. It catches gross fusion breakage, nothing
+                // subtler; the weight itself is only measurable on a real vault (leg V).
+                assertTrue(
+                    hybrid.ndcgAt10 >= semantic.ndcgAt10,
+                    "HYBRID nDCG@10 ${hybrid.ndcgAt10} is below its own SEMANTIC leg ${semantic.ndcgAt10} — " +
+                        "fusion is destroying information (see Rrf.DEFAULT_SEMANTIC_WEIGHT)",
+                )
                 assertTrue(semantic.recallAt10 > 0.0, "SEMANTIC leg returned nothing — the kNN leg is not firing at all")
             }
         }

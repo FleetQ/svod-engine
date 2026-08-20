@@ -68,6 +68,20 @@ class ModelPrefixTest {
     }
 
     @Test
+    fun `a lexical-only index is not wiped by the new prefix field`() {
+        // A BM25-only vault stores dim 0 and holds no vectors, so it has no prefix to disagree
+        // about. Comparing one anyway would have re-indexed every lexical vault on upgrade — a
+        // full git re-read for a difference that cannot exist in its data.
+        val legacy = """{"schemaVersion":1,"embeddingModel":"none","embeddingDim":0,"headCommit":"abc"}"""
+        val meta = Json { ignoreUnknownKeys = true }.decodeFromString(IndexMeta.serializer(), legacy)
+        assertEquals("passage: ", meta.passagePrefix)
+        assertTrue(
+            meta.compatibleWith(1, "none", 0, passagePrefix = ""),
+            "a lexical-only index must survive the upgrade untouched",
+        )
+    }
+
+    @Test
     fun `changing only the prefix re-embeds the vault`() = runBlocking {
         IndexFixture.create().use { fx ->
             fx.seed("one.md", "# One\nphotosynthesis converts light to energy")
