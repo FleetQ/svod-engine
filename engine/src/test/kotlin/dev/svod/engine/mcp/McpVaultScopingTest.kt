@@ -42,6 +42,50 @@ class McpVaultScopingTest {
         (content.firstOrNull { it is TextContent } as TextContent).text!!
 
     @Test
+    fun `an agent reaches a vault created at runtime without a restart`() = runBlocking {
+        val personalDir = Files.createTempDirectory("scope-personal-")
+        val freshDir = Files.createTempDirectory("scope-fresh-parent-").resolve("fresh")
+        val node = dev.svod.engine.lifecycle.SvodNode.start(
+            dev.svod.engine.lifecycle.SvodConfig(
+                vaults = listOf(dev.svod.engine.lifecycle.SvodConfig.VaultSettings("personal", personalDir.toString())),
+                defaultVault = "personal",
+                appApiPort = 0,
+                mcpPort = 0,
+                embedder = dev.svod.engine.lifecycle.SvodConfig.EmbedderSettings(provider = "none"),
+                reranker = dev.svod.engine.lifecycle.SvodConfig.RerankerSettings(provider = "none"),
+                agents = listOf(dev.svod.engine.lifecycle.SvodConfig.AgentSettings("t", "scribe", "WRITE")),
+            ),
+        )
+        try {
+            fun api(path: String, method: String, body: String): java.net.http.HttpResponse<String> {
+                val b = java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:${node.appApiPort}$path"))
+                    .header("Content-Type", "application/json")
+                return java.net.http.HttpClient.newHttpClient().send(
+                    (if (method == "POST") b.POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
+                     else b.PUT(java.net.http.HttpRequest.BodyPublishers.ofString(body))).build(),
+                    java.net.http.HttpResponse.BodyHandlers.ofString(),
+                )
+            }
+
+            val created = api("/api/v1/vaults", "POST", """{"id":"fresh","path":"$freshDir"}""")
+            assertEquals(201, created.statusCode(), created.body())
+            // Grant the new vault to the agent, so the call is decided by ROUTING, not by the grant check.
+            assertEquals(200, api("/api/v1/agents/scribe", "PUT", """{"vaults":["personal","fresh"]}""").statusCode())
+
+            // Before the fix the MCP tool map was built once at startup, so this answered
+            // {"status":"not_found","message":"vault: fresh"} for a vault GET /vaults already listed.
+            val client = connect(node.mcpPort, "t")
+            try {
+                val written = client.callTool("write", mapOf("path" to "note.md", "content" to "# via mcp", "vault" to "fresh"))
+                assertTrue(written.text().contains("\"status\":\"ok\""), "new vault must be reachable over MCP: ${written.text()}")
+            } finally { client.close() }
+            assertTrue(Files.exists(freshDir.resolve("note.md")), "the MCP write must land in the new vault")
+        } finally {
+            node.shutdown()
+        }
+    }
+
+    @Test
     fun `a work-scoped agent writes only to the work vault`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val workDir = Files.createTempDirectory("scope-work-")

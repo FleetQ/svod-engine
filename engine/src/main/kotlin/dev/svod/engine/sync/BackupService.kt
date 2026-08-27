@@ -99,13 +99,27 @@ class BackupService(bindings: List<Binding>) {
         }
     }
 
-    private val byId: Map<String, Binding> = bindings.associateBy { it.id }
+    // Mutable: a vault created at runtime (POST /api/v1/vaults) must get a binding without a restart,
+    // else PUT /settings/backup for it is a silent no-op that still answers 200.
+    private val byId = java.util.concurrent.ConcurrentHashMap<String, Binding>(bindings.associateBy { it.id })
+
+    /** Bind a vault hot-added at runtime, so it can be configured and backed up without a restart. */
+    fun register(binding: Binding) { byId[binding.id] = binding }
+
+    /** Drop a deleted vault's binding (its scheduler ticks stop with it). */
+    fun unregister(vaultId: String) { byId.remove(vaultId) }
 
     fun configOf(vaultId: String): SvodConfig.BackupSettings? = byId[vaultId]?.config
-    fun configure(vaultId: String, settings: SvodConfig.BackupSettings?) { byId[vaultId]?.configure(settings) }
+
+    /** Set [vaultId]'s backup config; false when no such vault is bound (the caller must not report success). */
+    fun configure(vaultId: String, settings: SvodConfig.BackupSettings?): Boolean {
+        val binding = byId[vaultId] ?: return false
+        binding.configure(settings)
+        return true
+    }
 
     /** Every vault id with a backup binding (the scheduler iterates these). */
-    fun vaultIds(): Set<String> = byId.keys
+    fun vaultIds(): Set<String> = byId.keys.toSet()
 
     /** ISO-8601 instant of [vaultId]'s last successful backup, null until one succeeds. */
     fun lastBackupAt(vaultId: String): String? = byId[vaultId]?.lastBackupAt

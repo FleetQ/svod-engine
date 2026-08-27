@@ -626,9 +626,16 @@ class AppApiServer(
                 }
                 // Set + persist THIS vault's backup remote + auto-backup schedule (survives restart via
                 // its BackupConfigStore), then return the vault's updated, redacted sync+backup config.
-                backup?.configure(vc.id, dev.svod.engine.lifecycle.SvodConfig.BackupSettings(
+                // null service = backup not wired at all (embeds/tests) — unchanged legacy behaviour.
+                val applied = backup?.configure(vc.id, dev.svod.engine.lifecycle.SvodConfig.BackupSettings(
                     req.remote, req.enabled, req.backupOnStartup, req.backupIntervalMinutes, req.backupOnChange,
                     req.syncEnabled, req.syncIntervalMinutes,
+                ))
+                // A vault the service does not know must never be answered with 200 + an unchanged
+                // config: that reads as "saved" while the next /backup/now says no remote is configured.
+                if (applied == false) return@put call.respond(HttpStatusCode.Conflict, ErrorDto(
+                    "vault_not_bound",
+                    "vault '${vc.id}' has no backup binding — the config was NOT saved; restart the engine and retry",
                 ))
                 call.respond(syncConfig(vc))
             }
