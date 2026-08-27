@@ -3,6 +3,36 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.19.1 — 2026-08-27 (App API contract 0.29.0)
+
+### Fixed — a vault created at runtime was only half-wired until the next restart
+
+`POST /api/v1/vaults` hot-adds a vault to the `VaultManager`, so `GET /vaults` lists it and
+`?vault=<id>` routes to it immediately. But three registries that keep their OWN per-vault state
+were each built **once** at startup from `vaults.contexts()` and never updated:
+
+| registry | symptom for a vault created at runtime |
+|---|---|
+| `BackupService.byId` | `PUT /settings/backup` answered **200** and silently discarded the config; `POST /backup/now` then 409'd `no_backup_remote` |
+| MCP `toolsByVault` | every tool call answered `{"status":"not_found","message":"vault: <id>"}` — for a vault the same engine was listing |
+| `SourceWatchManager.byId` | `autoSync` sources registered fine but were never actually watched |
+
+All three now subscribe to a `VaultManager.Listener`, so create/delete keeps them in step with no
+restart. Found while connecting a GitHub backup remote to a vault created from the app: the PUT
+reported success three times in a row and nothing was ever saved.
+
+The 200-on-a-silent-no-op is the part worth naming — the success code was measured on the wrong
+subject (the request parsed fine; the write went nowhere). `BackupService.configure` now returns
+whether it applied, and the route answers **409 `vault_not_bound`** rather than a reassuring 200.
+That response is newly declared in the contract, hence 0.28.0 → **0.29.0** (additive).
+
+### Fixed — `SourceWatchManager.kt` was not a text file
+
+Its composite watcher key used **raw NUL bytes** as the separator, committed literally into the
+source. `file(1)` reported the source as `data` and **`grep` silently matched nothing in it** — a
+whole file invisible to text search, which cost real time during this fix. Now `\u0000` escapes:
+byte-identical at runtime, plain UTF-8 on disk.
+
 ## v1.18.1 — 2026-08-18 (App API contract 0.27.0)
 
 Cold start: **~52 s → 13.4 s** on the operator's 3,096-note vault. Contract unchanged, no reindex,

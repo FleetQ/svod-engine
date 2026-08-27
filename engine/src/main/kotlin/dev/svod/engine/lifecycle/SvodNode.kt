@@ -109,29 +109,32 @@ class SvodNode private constructor(
                 val registry = AgentRegistry(config.toAgentSpecs())
                 val rateLimiter = RateLimiter.default()
                 val defaultId = vaults.defaultId()
-                val toolsByVault = vaults.contexts().associate { vc ->
+                // Mutable: a vault created at runtime gets its tool set here, or the MCP layer answers
+                // not_found for a vault that GET /vaults happily lists.
+                val toolsByVault = java.util.concurrent.ConcurrentHashMap<String, SvodTools>()
+                fun toolsFor(vc: VaultContext): SvodTools {
                     val audit = AuditLog(vc.engine.root.resolve(".svod").resolve("audit").resolve("audit.log"))
-                    vc.id to SvodTools(vc.engine, vc.index, audit, rateLimiter, eventBus, graph = vc.graph)
+                    return SvodTools(vc.engine, vc.index, audit, rateLimiter, eventBus, graph = vc.graph)
                 }
+                for (vc in vaults.contexts()) toolsByVault[vc.id] = toolsFor(vc)
 
                 val ready = AtomicBoolean(false)
                 // Per-vault backup: each vault gets its own remote + persistence (a runtime PUT is
                 // saved to that vault's .svod/backup.json and survives a restart, taking precedence
                 // over the startup config; falls back to a per-vault or global config remote).
-                val backup = dev.svod.engine.sync.BackupService(
-                    vaults.contexts().map { vc ->
-                        val store = BackupConfigStore(vc.engine.root)
-                        val persisted = store.load()
-                        // A persisted runtime config (incl. backup schedule + sync toggle) wins over startup.
-                        val effective = persisted?.let {
-                            SvodConfig.BackupSettings(it.remote, it.enabled, it.backupOnStartup, it.backupIntervalMinutes, it.backupOnChange, it.syncEnabled, it.syncIntervalMinutes)
-                        } ?: config.backupFor(vc.id)
-                        dev.svod.engine.sync.BackupService.Binding(
-                            vc.id, vc.engine.root, effective, store,
-                            persisted?.lastBackupAt, persisted?.lastBackupHead, persisted?.lastSyncedAt, persisted?.lastSyncedHead,
-                        )
-                    },
-                )
+                fun backupBindingFor(vc: VaultContext): dev.svod.engine.sync.BackupService.Binding {
+                    val store = BackupConfigStore(vc.engine.root)
+                    val persisted = store.load()
+                    // A persisted runtime config (incl. backup schedule + sync toggle) wins over startup.
+                    val effective = persisted?.let {
+                        SvodConfig.BackupSettings(it.remote, it.enabled, it.backupOnStartup, it.backupIntervalMinutes, it.backupOnChange, it.syncEnabled, it.syncIntervalMinutes)
+                    } ?: config.backupFor(vc.id)
+                    return dev.svod.engine.sync.BackupService.Binding(
+                        vc.id, vc.engine.root, effective, store,
+                        persisted?.lastBackupAt, persisted?.lastBackupHead, persisted?.lastSyncedAt, persisted?.lastSyncedHead,
+                    )
+                }
+                val backup = dev.svod.engine.sync.BackupService(vaults.contexts().map { backupBindingFor(it) })
                 // Per-source filesystem auto-sync: a watcher re-syncs each autoSync source shortly after
                 // its files change. Built before the API so the API can query "is it watching?" and ask
                 // it to reconcile after a register/PATCH/remove.
@@ -139,6 +142,26 @@ class SvodNode private constructor(
                     workScope, eventBus,
                     vaults.contexts().map { dev.svod.engine.sources.SourceWatchManager.Vault(it.id, it.engine, it.engine.root) },
                 )
+
+                // Keep every per-vault registry in step with runtime vault create/delete. Without this
+                // a new vault is listed by GET /vaults but has no backup binding (PUT /settings/backup
+                // silently no-ops), no MCP tools (agents get not_found) and no source watching — all of
+                // which only appear to work again after a restart.
+                vaults.addListener(object : VaultManager.Listener {
+                    override fun onVaultRegistered(vc: VaultContext) {
+                        toolsByVault[vc.id] = toolsFor(vc)
+                        backup.register(backupBindingFor(vc))
+                        sourceWatch.addVault(
+                            dev.svod.engine.sources.SourceWatchManager.Vault(vc.id, vc.engine, vc.engine.root),
+                        )
+                    }
+
+                    override fun onVaultUnregistered(id: String) {
+                        toolsByVault.remove(id)
+                        backup.unregister(id)
+                        sourceWatch.removeVault(id)
+                    }
+                })
 
                 val ecView = config.toEmbedderConfig()
                 // One shared, mutable config holder so the runtime controllers (embedder, vault
@@ -148,7 +171,7 @@ class SvodNode private constructor(
                 val vaultCreator = VaultController(vaults, configStore, workScope, eventBus, hostId)
                 val agentController = AgentController(configStore, registry, config.host)
                 val updateService = UpdateService(
-                    currentAppVersion = "1.19.0",
+                    currentAppVersion = "1.19.1",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 val api = AppApiServer(

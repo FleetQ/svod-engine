@@ -240,6 +240,48 @@ class MultiVaultTest {
     }
 
     @Test
+    fun `a vault created at runtime is fully wired without a restart`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val work = Files.createTempDirectory("svod-work-")
+        val freshDir = Files.createTempDirectory("svod-fresh-parent-").resolve("fresh")
+        val bare = Files.createTempDirectory("svod-backup-bare-").also {
+            org.eclipse.jgit.api.Git.init().setBare(true).setDirectory(it.toFile()).call().close()
+        }
+
+        val node = SvodNode.start(twoVaultConfig(personal, work))
+        val port = node.appApiPort
+        try {
+            assertEquals(201, post(port, "/api/v1/vaults", """{"id":"fresh","path":"$freshDir"}""").statusCode())
+            assertEquals(200, put(port, "/api/v1/file?path=hello.md&vault=fresh", """{"content":"# fresh"}""").statusCode())
+
+            // Backup: the binding must exist immediately — before the fix this answered 200 while
+            // silently discarding the config, and /backup/now then 409'd "no backup remote".
+            val set = put(port, "/api/v1/settings/backup?vault=fresh",
+                """{"remote":"$bare","enabled":true,"backupOnStartup":false,"backupIntervalMinutes":0,"backupOnChange":false}""")
+            assertEquals(200, set.statusCode(), set.body())
+
+            val readBack = get(port, "/api/v1/sync/config?vault=fresh").body()
+            assertTrue(readBack.contains("\"backupEnabled\":true"), "config must actually be stored: $readBack")
+
+            val now = post(port, "/api/v1/backup/now?vault=fresh", "")
+            assertEquals(200, now.statusCode(), now.body())
+            assertTrue(now.body().contains("\"ok\":true"), now.body())
+
+            // The snapshot really landed on the remote's per-vault backup ref.
+            org.eclipse.jgit.storage.file.FileRepositoryBuilder().setGitDir(bare.toFile()).setBare().build().use { repo ->
+                assertTrue(repo.refDatabase.hasRefs(), "bare remote must have received the backup push")
+                assertTrue(repo.exactRef("refs/svod/backup/fresh") != null, "backup ref for the new vault must exist")
+            }
+
+            // Backup config for an unknown vault is a 404 (routing), never a silent success.
+            assertEquals(404, put(port, "/api/v1/settings/backup?vault=ghost",
+                """{"remote":"$bare","enabled":true}""").statusCode())
+        } finally {
+            node.shutdown()
+        }
+    }
+
+    @Test
     fun `create vault with an existing id returns 409`() {
         val personal = Files.createTempDirectory("svod-personal-")
         val work = Files.createTempDirectory("svod-work-")

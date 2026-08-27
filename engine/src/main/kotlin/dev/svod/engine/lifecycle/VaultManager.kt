@@ -18,15 +18,33 @@ class VaultManager(
     @Volatile
     private var byId: Map<String, VaultContext> = LinkedHashMap(initial)
 
+    private val listeners = java.util.concurrent.CopyOnWriteArrayList<Listener>()
+
+    /**
+     * Notified when a vault is hot-added/removed at runtime. Everything that keeps its OWN per-vault
+     * state — backup bindings, the MCP tool sets, source watching — must subscribe: a registry built
+     * once from [contexts] at start goes stale the moment a vault is created via the API, and the
+     * miss is silent (the vault lists fine in GET /vaults but has no backup binding and no tools).
+     */
+    interface Listener {
+        fun onVaultRegistered(vc: VaultContext)
+        fun onVaultUnregistered(id: String)
+    }
+
+    fun addListener(listener: Listener) { listeners.add(listener) }
+
     fun context(id: String?): VaultContext? = byId[id ?: defaultId]
     fun default(): VaultContext = byId.getValue(defaultId)
     fun contexts(): List<VaultContext> = byId.values.toList()
 
     /** Hot-add a freshly opened vault (POST /api/v1/vaults). The caller has verified its id is new. */
-    @Synchronized
     fun register(vc: VaultContext) {
-        require(vc.id !in byId) { "vault already registered: ${vc.id}" }
-        byId = LinkedHashMap(byId).apply { put(vc.id, vc) }
+        synchronized(this) {
+            require(vc.id !in byId) { "vault already registered: ${vc.id}" }
+            byId = LinkedHashMap(byId).apply { put(vc.id, vc) }
+        }
+        // Outside the lock: a listener may call back into the manager (e.g. to read contexts()).
+        for (l in listeners) l.onVaultRegistered(vc)
     }
 
     /**
@@ -34,10 +52,13 @@ class VaultManager(
      * close() it (releasing its lock + handles), or null if no such vault is registered. After this
      * returns, GET /vaults no longer lists it and `?vault=<id>` resolves to null (a 404).
      */
-    @Synchronized
     fun unregister(id: String): VaultContext? {
-        val vc = byId[id] ?: return null
-        byId = LinkedHashMap(byId).apply { remove(id) }
+        val vc = synchronized(this) {
+            val found = byId[id] ?: return null
+            byId = LinkedHashMap(byId).apply { remove(id) }
+            found
+        }
+        for (l in listeners) l.onVaultUnregistered(id)
         return vc
     }
 
