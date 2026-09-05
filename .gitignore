@@ -25,3 +25,6 @@ PROJECT_INDEX.md
 dist/config.local.*
 # personal API keys + POST /secrets values written next to a config that lives here
 dist/secrets/
+# per-engine state written next to the config (people audit + key activity) — never commit
+dist/audit-api.log
+dist/user-activity.json
