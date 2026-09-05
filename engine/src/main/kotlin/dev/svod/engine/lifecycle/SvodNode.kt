@@ -114,7 +114,7 @@ class SvodNode private constructor(
                 val toolsByVault = java.util.concurrent.ConcurrentHashMap<String, SvodTools>()
                 fun toolsFor(vc: VaultContext): SvodTools {
                     val audit = AuditLog(vc.engine.root.resolve(".svod").resolve("audit").resolve("audit.log"))
-                    return SvodTools(vc.engine, vc.index, audit, rateLimiter, eventBus, graph = vc.graph)
+                    return SvodTools(vc.engine, vc.index, audit, rateLimiter, eventBus, graph = vc.graph, vaultId = vc.id)
                 }
                 for (vc in vaults.contexts()) toolsByVault[vc.id] = toolsFor(vc)
 
@@ -171,7 +171,7 @@ class SvodNode private constructor(
                 val vaultCreator = VaultController(vaults, configStore, workScope, eventBus, hostId)
                 val agentController = AgentController(configStore, registry, config.host)
                 val updateService = UpdateService(
-                    currentAppVersion = "1.19.1",
+                    currentAppVersion = "1.19.2",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 val api = AppApiServer(

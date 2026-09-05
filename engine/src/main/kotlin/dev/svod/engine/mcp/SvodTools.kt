@@ -15,6 +15,7 @@ import dev.svod.engine.memory.MemoryAdjudicator
 import dev.svod.engine.memory.MemoryCandidate
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -46,9 +47,18 @@ class SvodTools(
      * not change shape depending on config.
      */
     private val graph: dev.svod.engine.graphrag.GraphService? = null,
+    /**
+     * The vault these tools are bound to, stamped onto every event they publish (`data.vault`).
+     * The App API has always tagged its commits; without the tag on MCP writes, per-vault
+     * listeners (backup/sync on-change, the app's review inbox and per-vault filters) either
+     * skip the event or guess the vault. Null only in tests that build tools without a vault.
+     */
+    private val vaultId: String? = null,
 ) {
     /** Classifies an incoming memory against existing memory of the same type/subject. */
     private val classifier = FactClassifier(engine, index, adjudicator)
+
+    private fun JsonObjectBuilder.putVault() { vaultId?.let { put("vault", it) } }
 
     // ---- read-only tools ----
 
@@ -558,8 +568,8 @@ class SvodTools(
             when (val outcome = engine.writeGuarded(files, guards, agent.author, "remember: $path (${plan.classification})")) {
                 is GuardedWrite.Applied -> {
                     audit.record(agent.agentId, "remember", "ok", path, revision = outcome.revisions[path], detail = outcome.commit)
-                    eventBus.publish(EventTypes.AGENT_ACTIVITY) { put("agentId", agent.agentId); put("tool", "remember"); put("path", path); put("commit", outcome.commit) }
-                    eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", outcome.commit); put("path", path); put("author", agent.author.name); put("agentId", agent.agentId) }
+                    eventBus.publish(EventTypes.AGENT_ACTIVITY) { put("agentId", agent.agentId); put("tool", "remember"); put("path", path); put("commit", outcome.commit); putVault() }
+                    eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", outcome.commit); put("path", path); put("author", agent.author.name); put("agentId", agent.agentId); putVault() }
                     return@guarded ToolResult.ok {
                         put("status", "written"); put("path", path); put("type", t); put("memoryStatus", st)
                         put("revision", outcome.revisions[path]); put("commit", outcome.commit)
@@ -673,10 +683,10 @@ class SvodTools(
             is WriteOutcome.Success -> {
                 audit.record(agent.agentId, tool, "ok", path, target, outcome.revision, outcome.commit)
                 eventBus.publish(EventTypes.AGENT_ACTIVITY) {
-                    put("agentId", agent.agentId); put("tool", tool); put("path", outcome.path); put("commit", outcome.commit)
+                    put("agentId", agent.agentId); put("tool", tool); put("path", outcome.path); put("commit", outcome.commit); putVault()
                 }
                 eventBus.publish(EventTypes.COMMIT_CREATED) {
-                    put("commit", outcome.commit); put("path", outcome.path); put("author", agent.author.name); put("agentId", agent.agentId)
+                    put("commit", outcome.commit); put("path", outcome.path); put("author", agent.author.name); put("agentId", agent.agentId); putVault()
                 }
                 ToolResult.ok { put("path", outcome.path); put("revision", outcome.revision); put("commit", outcome.commit) }
             }

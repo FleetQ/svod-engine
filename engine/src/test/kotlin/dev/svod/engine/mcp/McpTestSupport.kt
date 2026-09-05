@@ -16,6 +16,8 @@ val READ_AGENT = AgentRegistry.AgentSpec("read-token", "reader", AgentRole.READ_
 class McpFixture(
     rateLimiter: RateLimiter = RateLimiter.default(),
     agents: List<AgentRegistry.AgentSpec> = listOf(WRITE_AGENT, READ_AGENT),
+    /** The vault id the tools stamp onto their events; null = tools not bound to a vault. */
+    vaultId: String? = null,
 ) : AutoCloseable {
     val root: Path = Files.createTempDirectory("svod-mcp-test-")
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -24,7 +26,7 @@ class McpFixture(
     val audit: AuditLog = AuditLog(root.resolve(".svod").resolve("audit").resolve("audit.log"))
     val registry: AgentRegistry = AgentRegistry(agents)
     val eventBus: dev.svod.engine.events.EventBus = dev.svod.engine.events.EventBus()
-    val tools: SvodTools = SvodTools(engine, index, audit, rateLimiter, eventBus)
+    val tools: SvodTools = SvodTools(engine, index, audit, rateLimiter, eventBus, vaultId = vaultId)
 
     init {
         engine.onCommit { index.onCommit(it) }

@@ -6,7 +6,10 @@ import dev.svod.engine.index.SearchQuery
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.jsonArray
@@ -94,6 +97,39 @@ class RecallGuardsTest {
             fx.tools.write(fx.write, "notes/a.md", "hello", null)
             val data = withTimeout(3_000) { payload.await() }
             assertEquals("scribe", data["agentId"]!!.jsonPrimitive.content, "commit.created includes the agent id")
+        }
+    }
+
+    @Test
+    fun `agent events carry the vault the tools are bound to`() = runBlocking {
+        McpFixture(vaultId = "personal").use { fx ->
+            // Both events of one MCP write: the per-vault listeners (backup/sync on-change, the
+            // app's review inbox) key off `data.vault`, and the App API has always sent it.
+            val payloads = async(Dispatchers.Default) {
+                fx.eventBus.events
+                    .filter { it.type == EventTypes.AGENT_ACTIVITY || it.type == EventTypes.COMMIT_CREATED }
+                    .take(2).toList()
+            }
+            delay(150)
+            fx.tools.write(fx.write, "notes/a.md", "hello", null)
+            val events = withTimeout(3_000) { payloads.await() }
+            assertEquals(setOf(EventTypes.AGENT_ACTIVITY, EventTypes.COMMIT_CREATED), events.map { it.type }.toSet())
+            for (ev in events) {
+                assertEquals("personal", ev.data["vault"]?.jsonPrimitive?.content, "${ev.type} carries the vault id")
+            }
+        }
+    }
+
+    @Test
+    fun `tools without a vault publish no vault key rather than a guess`() = runBlocking {
+        McpFixture().use { fx ->
+            val payload = async(Dispatchers.Default) {
+                fx.eventBus.events.first { it.type == EventTypes.COMMIT_CREATED }.data
+            }
+            delay(150)
+            fx.tools.write(fx.write, "notes/a.md", "hello", null)
+            val data = withTimeout(3_000) { payload.await() }
+            assertEquals(null, data["vault"], "no vault bound ⇒ no vault key")
         }
     }
 }
