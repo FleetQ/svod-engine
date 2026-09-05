@@ -365,7 +365,7 @@ class PrincipalAuthTest {
     }
 
     @Test
-    fun `a request that throws is still audited, as a 500`(): Unit = runBlocking {
+    fun `a request that throws is still audited, with the status the client saw`(): Unit = runBlocking {
         Fixture().use { fx ->
             // A move without expectedRevision of a note that does not exist makes the engine throw? No —
             // it answers 404. Use a body the route cannot parse: receive<MoveRequestDto>() throws inside proceed().
