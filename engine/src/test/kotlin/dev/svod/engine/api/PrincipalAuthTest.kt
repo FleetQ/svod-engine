@@ -322,9 +322,11 @@ class PrincipalAuthTest {
             assertEquals(200, fx.get("/api/v1/users", key = "k-admin").statusCode())
             assertEquals(403, fx.get("/api/v1/users", key = "k-reader").statusCode())
             repeat(3) { assertEquals(200, fx.get("/api/v1/tree").statusCode()) }   // local UI
+            assertEquals(401, fx.get("/api/v1/tree", key = "svk_guess").statusCode())   // a refused attempt IS audited
             delay(200)
             val entries = fx.audit.entries()
-            assertEquals(4, entries.size, entries.toString())
+            assertEquals(5, entries.size, entries.toString())
+            assertEquals(AppApiAuth.ANONYMOUS, entries[4].userId); assertEquals(401, entries[4].status)
             val e0 = entries[0]
             assertEquals("maria", e0.userId); assertEquals("GET", e0.method); assertEquals("/api/v1/tree", e0.path); assertEquals("a", e0.vault); assertEquals(200, e0.status)
             assertEquals("PUT", entries[1].method); assertEquals("/api/v1/file", entries[1].path)
@@ -333,6 +335,31 @@ class PrincipalAuthTest {
             assertTrue(entries.none { it.userId == "local" }, "the loopback UI is not a person to audit")
             val raw = Files.readString(fx.secretsDir.resolve("audit-api.log"))
             assertFalse("k-editor" in raw || "k-admin" in raw || "k-reader" in raw || "svk_" in raw, raw)
+        }
+    }
+
+    @Test
+    fun `a request that throws is still audited, as a 500`(): Unit = runBlocking {
+        Fixture().use { fx ->
+            // A move without expectedRevision of a note that does not exist makes the engine throw? No —
+            // it answers 404. Use a body the route cannot parse: receive<MoveRequestDto>() throws inside proceed().
+            val r = fx.req("POST", "/api/v1/file/move?vault=a", "k-editor", """{"from": 5}""")
+            assertTrue(r.statusCode() >= 400, "status ${r.statusCode()}")
+            delay(200)
+            val e = fx.audit.entries().last()
+            assertEquals("maria", e.userId); assertEquals("/api/v1/file/move", e.path)
+            assertTrue(e.status >= 400, "the failed request is on record: $e")
+        }
+    }
+
+    @Test
+    fun `a member sees the backup schedule but not the remote, peers or host id`(): Unit = runBlocking {
+        Fixture().use { fx ->
+            val asReader = fx.get("/api/v1/sync/config?vault=a", key = "k-reader").body()
+            assertFalse("\"backupRemote\"" in asReader && "github" in asReader, asReader)
+            assertFalse("\"hostId\":\"" in asReader, "host identity is the admin's: $asReader")
+            assertTrue("\"syncPeers\":[]" in asReader, asReader)
+            assertEquals(200, fx.get("/api/v1/sync/config?vault=a", key = "k-admin").statusCode())
         }
     }
 
@@ -418,10 +445,11 @@ class PrincipalAuthTest {
     }
 
     @Test
-    fun `metrics need a key on a shared engine and none on a single-user one`(): Unit = runBlocking {
+    fun `metrics need an ADMIN key on a shared engine and none on a single-user one`(): Unit = runBlocking {
         Fixture(localAdmin = false).use { fx ->
             assertEquals(401, fx.get("/metrics").statusCode())
-            assertEquals(200, fx.get("/metrics", key = "k-reader").statusCode(), "any principal may read metrics")
+            assertEquals(403, fx.get("/metrics", key = "k-reader").statusCode(), "metrics list every vault id: not for a member")
+            assertEquals(200, fx.get("/metrics", key = "k-admin").statusCode())
             assertEquals(200, fx.get("/health").statusCode(), "health stays open: no vault data")
             assertEquals(200, fx.get("/ready").statusCode())
         }

@@ -32,6 +32,8 @@ import java.net.URLDecoder
 object AppApiAuth {
 
     val PrincipalKey: AttributeKey<Principal> = AttributeKey("svod.principal")
+    /** The `userId` an audit line carries when the request was refused before anyone was identified. */
+    const val ANONYMOUS = "anonymous"
 
     private class Rule(val methods: Set<String>?, val path: Regex) {
         fun matches(method: String, p: String) = (methods == null || method in methods) && path.matches(p)
@@ -105,17 +107,33 @@ object AppApiAuth {
             app.intercept(ApplicationCallPipeline.Monitoring) {
                 val raw = call.request.path()
                 if (!raw.startsWith("/api/") && !raw.startsWith("//")) return@intercept
-                proceed()
-                val p = call.attributes.getOrNull(PrincipalKey)
-                if (p != null && !p.local) {
-                    audit.record(
-                        userId = p.userId,
-                        method = call.request.httpMethod.value,
-                        path = canonicalPath(raw) ?: raw,
-                        vault = call.request.queryParameters["vault"],
-                        status = call.response.status()?.value ?: 0,
-                        ip = runCatching { call.request.origin.remoteAddress }.getOrNull(),
-                    )
+                var failed = false
+                try {
+                    proceed()
+                } catch (e: Throwable) {
+                    failed = true   // the request that produced a 500 is the one an admin will look for
+                    throw e
+                } finally {
+                    val p = call.attributes.getOrNull(PrincipalKey)
+                    val status = call.response.status()?.value ?: (if (failed) 500 else 0)
+                    // A refused request (401/403 before any principal) is audited as "anonymous":
+                    // key guessing against a shared engine belongs in the file an admin reads after
+                    // an incident, not only in the engine's own log.
+                    val who = when {
+                        p == null && status in setOf(400, 401, 403) -> ANONYMOUS
+                        p != null && !p.local -> p.userId
+                        else -> null
+                    }
+                    if (who != null) {
+                        audit.record(
+                            userId = who,
+                            method = call.request.httpMethod.value,
+                            path = canonicalPath(raw) ?: raw,
+                            vault = call.request.queryParameters["vault"],
+                            status = status,
+                            ip = runCatching { call.request.origin.remoteAddress }.getOrNull(),
+                        )
+                    }
                 }
             }
         }

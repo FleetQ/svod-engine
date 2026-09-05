@@ -200,10 +200,14 @@ class AppApiServer(
             // /api/v1 contract — it is for monitoring, not the UI, so it carries no apiVersion and is
             // not part of contract/openapi.yaml. The JSON /api/v1/metrics remains the UI-facing view.
             get("/metrics") {
-                // Vault ids, document counts and queue depths: open on a single-user engine, a key
-                // on a shared one (localAdmin=false). /health and /ready carry no vault data and stay open.
-                if (!config.localAdmin && AppApiAuth.authenticate(call, users, false, localPrincipal) == null) {
-                    return@get call.respond(HttpStatusCode.Unauthorized, ErrorDto("unauthorized", "a personal API key is required for /metrics on a shared engine"))
+                // Vault ids, document counts and queue depths of EVERY vault: open on a single-user
+                // engine, an ADMIN key on a shared one (localAdmin=false) — a grant-less key would
+                // otherwise read the vault ids the 404 rule hides. /health and /ready carry no vault
+                // data and stay open.
+                if (!config.localAdmin) {
+                    val p = AppApiAuth.authenticate(call, users, false, localPrincipal)
+                    if (p == null) return@get call.respond(HttpStatusCode.Unauthorized, ErrorDto("unauthorized", "a personal API key is required for /metrics on a shared engine"))
+                    if (!p.admin) return@get call.respond(HttpStatusCode.Forbidden, ErrorDto("forbidden", "/metrics describes every vault: engine admin only"))
                 }
                 call.respondText(prometheusExposition(), ContentType.Text.Plain)
             }
@@ -689,8 +693,10 @@ class AppApiServer(
 
             get("/api/v1/sync/config") {
                 val vc = vault() ?: return@get call.notFound("vault")
-                // syncConfig redacts any credentials embedded in peer/backup remote URLs.
-                call.respond(syncConfig(vc))
+                // syncConfig redacts any credentials embedded in peer/backup remote URLs; a member
+                // additionally gets no remote, no peers and no host identity — only the schedule.
+                val cfg = syncConfig(vc)
+                call.respond(if (principal().admin) cfg else cfg.copy(backupRemote = null, syncPeers = emptyList(), hostId = null))
             }
 
             post("/api/v1/sync/now") {

@@ -16,6 +16,11 @@ object SecretFiles {
     private val OWNER_RW = setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
     private val OWNER_RWX = OWNER_RW + PosixFilePermission.OWNER_EXECUTE
 
+    /** Re-apply owner-only mode to an existing file (after an atomic rename that lost it). No-op on non-POSIX stores. */
+    fun restrict(path: Path) {
+        if (Files.getFileStore(path).supportsFileAttributeView("posix")) Files.setPosixFilePermissions(path, OWNER_RW)
+    }
+
     fun write(path: Path, value: String) {
         val dir = path.parent
         if (dir != null && !Files.isDirectory(dir)) {

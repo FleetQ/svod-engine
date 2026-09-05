@@ -9,7 +9,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
@@ -60,11 +59,13 @@ class UserActivity(
         synchronized(lock) {
             runCatching {
                 val body = buildJsonObject { for ((k, v) in snapshot) put(k, JsonPrimitive(v)) }.toString()
+                // First write creates the file 0600 (SecretFiles); later writes go through the
+                // codebase's one atomic writer (fsync + rename). The rename brings the temp file's
+                // default mode with it, so 0600 is re-applied — this file names people.
                 if (!Files.exists(file)) SecretFiles.write(file, body)
                 else {
-                    val tmp = file.resolveSibling(file.fileName.toString() + ".tmp")
-                    SecretFiles.write(tmp, body)
-                    Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+                    dev.svod.engine.core.AtomicFile.write(file, body.toByteArray())
+                    SecretFiles.restrict(file)
                 }
             }.onFailure { log.warn("user activity: cannot write {}: {}", file, it.message) }
         }
