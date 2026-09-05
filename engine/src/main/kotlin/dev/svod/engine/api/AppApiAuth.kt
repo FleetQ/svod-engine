@@ -91,9 +91,12 @@ object AppApiAuth {
      */
     internal fun originAllowed(call: ApplicationCall): Boolean {
         val origin = call.request.headers[HttpHeaders.Origin]?.trim()?.lowercase() ?: return true
-        if (origin == "null") return false
-        val host = origin.substringAfter("://", "").let { h -> if (h.startsWith("[")) h.substringBefore("]").removePrefix("[") else h.substringBefore(':').substringBefore('/') }
-        return host in LOOPBACK_NAMES
+        if (origin == "null" || "://" !in origin) return false
+        // Same origin as this engine: the Origin's host:port must equal the request's Host — a page
+        // on another loopback PORT (a dev server on :9999) is a different origin and not the local UI.
+        val originHostPort = origin.substringAfter("://").substringBefore('/')
+        val requestHostPort = call.request.headers[HttpHeaders.Host]?.trim()?.lowercase() ?: return false
+        return originHostPort == requestHostPort && hostAllowed(call)
     }
     private val IPV4 = Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")
 
@@ -128,16 +131,21 @@ object AppApiAuth {
             // is final and the principal (set below, in Plugins) is on the call.
             app.intercept(ApplicationCallPipeline.Monitoring) {
                 val raw = call.request.path()
-                if (!raw.startsWith("/api/") && !raw.startsWith("//")) return@intercept
-                var failed = false
+                val canonical = canonicalPath(raw)
+                // Everything that resolves under /api (however it was spelled), plus /metrics — the
+                // one ops route that identifies a principal.
+                if (!(canonical == null || canonical.startsWith("/api/") || canonical == "/metrics")) return@intercept
+                var thrown: Throwable? = null
                 try {
                     proceed()
                 } catch (e: Throwable) {
-                    failed = true   // the request that produced a 500 is the one an admin will look for
+                    thrown = e   // the request that failed is the one an admin will look for
                     throw e
                 } finally {
                     val p = call.attributes.getOrNull(PrincipalKey)
-                    val status = call.response.status()?.value ?: (if (failed) 500 else 0)
+                    // Ktor answers a BadRequestException (unparseable body) with 400 and anything else with 500.
+                    val status = call.response.status()?.value
+                        ?: when (thrown) { null -> 0; is io.ktor.server.plugins.BadRequestException -> 400; else -> 500 }
                     // A refused request (401/403 before any principal) is audited as "anonymous":
                     // key guessing against a shared engine belongs in the file an admin reads after
                     // an incident, not only in the engine's own log.
@@ -150,7 +158,7 @@ object AppApiAuth {
                         audit.record(
                             userId = who,
                             method = call.request.httpMethod.value,
-                            path = canonicalPath(raw) ?: raw,
+                            path = canonical ?: raw,
                             vault = call.request.queryParameters["vault"],
                             status = status,
                             ip = runCatching { call.request.origin.remoteAddress }.getOrNull(),
@@ -170,6 +178,7 @@ object AppApiAuth {
             if (path != raw) {
                 // Canonical differs from what was sent: `//`, `%xx` or a trailing slash. Every API
                 // route is fixed ASCII segments plus `[a-z0-9_-]` ids, so nothing legitimate is lost.
+                denied(call, path, "non-canonical path '$raw'")
                 call.respond(HttpStatusCode.BadRequest, ErrorDto("bad_request", "API paths must be canonical (no empty or encoded segments)"))
                 return@intercept finish()
             }

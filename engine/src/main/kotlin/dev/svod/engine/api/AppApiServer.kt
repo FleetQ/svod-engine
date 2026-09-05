@@ -207,6 +207,7 @@ class AppApiServer(
                 if (!config.localAdmin) {
                     val p = AppApiAuth.authenticate(call, users, false, localPrincipal)
                     if (p == null) return@get call.respond(HttpStatusCode.Unauthorized, ErrorDto("unauthorized", "a personal API key is required for /metrics on a shared engine"))
+                    call.attributes.put(AppApiAuth.PrincipalKey, p)   // so the audit line names them
                     if (!p.admin) return@get call.respond(HttpStatusCode.Forbidden, ErrorDto("forbidden", "/metrics describes every vault: engine admin only"))
                 }
                 call.respondText(prometheusExposition(), ContentType.Text.Plain)

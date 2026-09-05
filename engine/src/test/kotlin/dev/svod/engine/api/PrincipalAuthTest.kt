@@ -323,7 +323,9 @@ class PrincipalAuthTest {
             assertEquals(401, fx.rawGet("/api/v1/tree", host = h, origin = "https://evil.example"))
             assertEquals(401, fx.rawGet("/api/v1/tree", host = h, origin = "null"), "an opaque origin (sandboxed iframe, file://) is not ours either")
             assertEquals(200, fx.rawGet("/api/v1/tree", host = h, origin = "http://$h"), "the engine's own web viewer")
-            assertEquals(200, fx.rawGet("/api/v1/tree", host = h, origin = "http://localhost:${fx.port}"))
+            assertEquals(200, fx.rawGet("/api/v1/tree", host = "localhost:${fx.port}", origin = "http://localhost:${fx.port}"))
+            assertEquals(401, fx.rawGet("/api/v1/tree", host = h, origin = "http://127.0.0.1:9999"), "another loopback PORT is another origin (a dev server)")
+            assertEquals(401, fx.rawGet("/api/v1/tree", host = h, origin = "http://localhost:${fx.port}"), "host must match the request's Host exactly")
             assertEquals(200, fx.rawGet("/api/v1/tree", host = h), "native clients send no Origin")
             assertEquals(200, fx.rawGet("/api/v1/tree", host = h, key = "k-editor", origin = "https://evil.example"), "a keyed request does not depend on Origin")
             // The real thing: a WebSocket upgrade with a foreign Origin and no key must be refused.
@@ -368,11 +370,11 @@ class PrincipalAuthTest {
             // A move without expectedRevision of a note that does not exist makes the engine throw? No —
             // it answers 404. Use a body the route cannot parse: receive<MoveRequestDto>() throws inside proceed().
             val r = fx.req("POST", "/api/v1/file/move?vault=a", "k-editor", """{"from": 5}""")
-            assertTrue(r.statusCode() >= 400, "status ${r.statusCode()}")
             delay(200)
             val e = fx.audit.entries().last()
             assertEquals("maria", e.userId); assertEquals("/api/v1/file/move", e.path)
-            assertTrue(e.status >= 400, "the failed request is on record: $e")
+            assertEquals(r.statusCode(), e.status, "the audit line carries the status the client saw: $e")
+            assertEquals(400, e.status)
         }
     }
 
@@ -474,6 +476,13 @@ class PrincipalAuthTest {
             assertEquals(401, fx.get("/metrics").statusCode())
             assertEquals(403, fx.get("/metrics", key = "k-reader").statusCode(), "metrics list every vault id: not for a member")
             assertEquals(200, fx.get("/metrics", key = "k-admin").statusCode())
+            assertEquals(400, fx.get("/%61pi/v1/users", key = "k-admin").statusCode())
+            delay(200)
+            val audited = fx.audit.entries().map { "${it.userId} ${it.method} ${it.path} ${it.status}" }
+            assertTrue("${AppApiAuth.ANONYMOUS} GET /metrics 401" in audited, audited.toString())
+            assertTrue("ivan GET /metrics 403" in audited, audited.toString())
+            assertTrue("boss GET /metrics 200" in audited, "the protected endpoint leaves a record: $audited")
+            assertTrue("${AppApiAuth.ANONYMOUS} GET /api/v1/users 400" in audited, "an encoded prefix is audited under its canonical path: $audited")
             assertEquals(200, fx.get("/health").statusCode(), "health stays open: no vault data")
             assertEquals(200, fx.get("/ready").statusCode())
         }

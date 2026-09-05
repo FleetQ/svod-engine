@@ -7,20 +7,26 @@ independently of the engine; each entry notes the contract version it ships.
 
 ### Security — the shared-vault review closed (`docs/security-shared-vault.md`)
 
-- **Keyless loopback needs a loopback `Host`.** With `localAdmin: true` (every single-user Mac)
-  a page whose DNS name is re-pointed at 127.0.0.1 was same-origin for the browser and reached
-  the engine as the local admin. The keyless path now accepts only `Host: 127.0.0.1|localhost|[::1]`
-  (any port); anything else is 401. Keyed requests are unaffected; the app and the MCP bridges
-  already send a loopback `Host`.
-- **Audit of people.** Every `/api` request by a keyed principal is one JSON line in
-  `<configDir>/audit-api.log` (0600): ts, userId, method, canonical path, `vault`, status, ip.
-  No bodies, no query strings, no keys. The loopback UI is not audited (nobody to tell apart).
+- **Keyless loopback needs a loopback `Host` and no foreign `Origin`.** With `localAdmin: true`
+  (every single-user Mac) a page whose DNS name is re-pointed at 127.0.0.1 was same-origin for
+  the browser and reached the engine as the local admin; and a WebSocket opened from any site
+  carries a legitimate loopback `Host` with no CORS in the way. The keyless path now accepts only
+  `Host: 127.0.0.1|localhost|[::1]` (any port) and either no `Origin` (native clients) or an
+  `Origin` equal to the request's own `host:port` (the engine's web viewer) — a page on another
+  loopback port is another origin. Anything else is 401. Keyed requests are unaffected; the app
+  and the MCP bridges send a loopback `Host` and no `Origin`.
+- **Audit of people.** Every `/api` request (and `/metrics`) by a keyed principal is one JSON line
+  in `<configDir>/audit-api.log` (0600): ts, userId, method, canonical path, `vault`, status, ip —
+  including requests that throw (with the status the client saw) and refused ones (`userId`
+  `anonymous`). No bodies, no query strings, no keys. The loopback UI is not audited (nobody to
+  tell apart). The MCP agents' `.svod/audit/audit.log` is now 0600 too (was 0644).
 - **Refusals are logged** (WARN, `AppApiAuth`): method, path, peer address and the reason —
   `key not accepted`, `no key`, `<user> is not an admin`, `… has no grant on vault …`. Never
   the key value.
-- **`lastUsedAt` per person** in `GET /users` and `/me`: when the key last authenticated,
-  persisted to `<configDir>/user-activity.json` at most once a minute per user, so a leaver's
-  quiet key is visible in Members instead of relying on someone remembering to revoke it.
+- **`lastUsedAt` per person** in `GET /users` and `/me`: when the key last authenticated
+  (exact in memory; the whole map is persisted to `<configDir>/user-activity.json` at most once a
+  minute), so a leaver's quiet key is visible in Members instead of relying on someone
+  remembering to revoke it.
 - **A member sees no server paths.** For a non-admin `GET /settings` returns `vaultPath`,
   `host` and `embedder.endpoint` empty; `GET /sources` shows a source's basename only.
   (`/sync/config` already redacted credentials.)

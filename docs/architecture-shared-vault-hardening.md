@@ -23,13 +23,18 @@ after (ApplicationCallPipeline.Call, on response sent):
 ```
 
 - `hostAllowed(call)`: `call.request.headers[Host]` → маха порт (`host:port`, `[v6]:port`) →
-  `in setOf("localhost","127.0.0.1","::1","[::1]")`. Липсващ `Host` → false (HTTP/1.1 го изисква).
+  `in setOf("localhost","127.0.0.1","::1","0:0:0:0:0:0:0:1")`. Липсващ `Host` → false (HTTP/1.1 го изисква).
+- `originAllowed(call)`: няма `Origin` → true (native клиенти); `Origin` равен на `host:port` от
+  `Host` header-а → true (собственият web viewer); всичко друго → false. Покрива cross-origin
+  WebSocket, който `Host` allowlist-ът не може (реализирано след review-а на спринта).
 - Логът е `org.slf4j.LoggerFactory.getLogger(AppApiAuth::class.java)`, никога не съдържа
   стойността на bearer-а.
 - Audit hook: `app.sendPipeline.intercept(ApplicationSendPipeline.After)` не дава статус
   надеждно за WebSocket; по-просто е `app.intercept(ApplicationCallPipeline.Monitoring)` с
   `proceed()` и след него `call.response.status()`. За `/api/v1/events` (WS) се записва един ред
-  при upgrade със status 101.
+  при затваряне на сокета (status какъвто Ktor е записал; 0 ако няма). Заявки, които хвърлят, се
+  одитират със статуса, който клиентът е видял (400 за BadRequestException, иначе 500); отказани
+  заявки (400/401/403 преди principal) се одитират като `anonymous`. `/metrics` също се одитира.
 
 ### `api/ApiAuditLog.kt` (нов)
 
@@ -51,13 +56,12 @@ after (ApplicationCallPipeline.Call, on response sent):
 
 ### Redaction за не-admin (`AppApiServer`)
 
-Helper `private fun <T> RoutingContext.forViewer(dto: T, redact: (T) -> T): T` — ако
-`principal().admin` връща dto, иначе `redact(dto)`. Прилага се на три места:
-- `/settings`: `vaultPath = ""`, `embedder.endpoint = ""` (ако полето съществува; проверява се в
-  build), `host = ""`.
+Реализирано като `val admin = principal().admin` + `if (admin) … else …` във всеки от трите route-а
+(без общ helper — три места, три различни DTO):
+- `/settings`: `vaultPath = ""`, `host = ""`, `embedder.endpoint = null`.
 - `/sources` (list + get): `path = path.substringAfterLast('/')`.
-- `/sync/config`: `backupRemote` → `stripCredential()` (ако remote-ът съдържа `://x:y@` → маха
-  userinfo). Sync peers остават (те са id-та).
+- `/sync/config`: credential-ът в remote-а вече се махаше; за не-admin `backupRemote = null`,
+  `syncPeers = []`, `hostId = null` — остава само schedule-ът.
 
 ### `/metrics`
 

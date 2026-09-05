@@ -105,7 +105,7 @@ GitHub PAT за backup, MCP токените на агентите.
 
 | Находка | Статус |
 |---|---|
-| §3.1 DNS rebinding | **Затворена.** Keyless loopback заявка се приема само с loopback `Host` **и** без чужд `Origin` (review-ът на sprint 2a показа, че WebSocket от чужд сайт носи loopback `Host` и не минава през CORS — `Origin` е това, което страницата не може да подправи). |
+| §3.1 DNS rebinding | **Затворена.** Keyless loopback заявка се приема само с loopback `Host` **и** с `Origin`, който липсва (native клиент) или е равен на собствения `host:port` на engine-а (review-ът на sprint 2a показа, че WebSocket от чужд сайт носи loopback `Host` и не минава през CORS — `Origin` е това, което страницата не може да подправи; страница на друг loopback порт също е чужд origin). |
 | §3.2 Audit за хората | **Затворена.** `audit-api.log` (0600): всяка `/api` заявка на keyed principal + всяка отказана (`anonymous`), включително заявки, които хвърлят. |
 | §3.3 Лог на 401/403 | **Затворена.** WARN с IP, метод, път и причина; никога ключът. |
 | §3.4 Ключове без срок | **Частично.** `lastUsedAt` в `/users` и `/me`, „last seen“ в Members. `expiresAt` не е правено. |
