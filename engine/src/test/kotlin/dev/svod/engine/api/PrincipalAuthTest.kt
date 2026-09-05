@@ -223,6 +223,54 @@ class PrincipalAuthTest {
     }
 
     @Test
+    fun `a doubled slash or an encoded segment cannot slip past the auth check`(): Unit = runBlocking {
+        Fixture(localAdmin = false).use { fx ->
+            // Ktor routes `//api/v1/vaults` and `/api/v1/%76aults` to the real handlers; the
+            // interceptor must see the same path the router does, or neither check runs.
+            assertEquals(400, fx.get("//api/v1/vaults").statusCode(), "empty segment, no key")
+            assertEquals(400, fx.get("/api/v1/%76aults").statusCode(), "encoded segment, no key")
+            assertEquals(400, fx.req("POST", "//api/v1/users", body = """{"userId":"evil","name":"E","admin":true}""").statusCode())
+            assertEquals(400, fx.req("POST", "/api/v1/%75sers", "k-editor", """{"userId":"evil","name":"E","admin":true}""").statusCode())
+            assertEquals(200, fx.get("/api/v1/users", key = "k-admin").statusCode(), "the canonical path still works")
+            assertFalse(fx.get("/api/v1/users", key = "k-admin").body().contains("evil"), "no user was created")
+        }
+    }
+
+    @Test
+    fun `a move never rewrites links in a vault the mover cannot write`(): Unit = runBlocking {
+        Fixture().use { fx ->
+            assertEquals(200, fx.write("a", "old.md", "# old", key = "k-admin").statusCode())
+            assertEquals(200, fx.write("b", "ref.md", "see [[a:old]]", key = "k-admin").statusCode())
+            val headB = fx.b.engine.head()
+            // Мария is EDITOR on a only.
+            val rev1 = fx.a.engine.read("old.md")!!.revision
+            assertEquals(200, fx.req("POST", "/api/v1/file/move?vault=a", "k-editor", """{"from":"old.md","to":"new.md","expectedRevision":"$rev1"}""").statusCode())
+            delay(300)
+            assertEquals(headB, fx.b.engine.head(), "vault b must not have been written by a user without a grant on it")
+            assertEquals("see [[a:old]]", fx.b.engine.read("ref.md")!!.text)
+            // The admin CAN write b, so the same move by them relinks it.
+            val refRev = fx.b.engine.read("ref.md")!!.revision
+            assertEquals(200, fx.req("PUT", "/api/v1/file?vault=b&path=ref.md", "k-admin", """{"content":"see [[a:new]]","expectedRevision":"$refRev"}""").statusCode())
+            val rev2 = fx.a.engine.read("new.md")!!.revision
+            assertEquals(200, fx.req("POST", "/api/v1/file/move?vault=a", "k-admin", """{"from":"new.md","to":"newer.md","expectedRevision":"$rev2"}""").statusCode())
+            withTimeout(5000) { while (fx.b.engine.read("ref.md")!!.text == "see [[a:new]]") delay(50) }
+            assertEquals("see [[a:newer]]", fx.b.engine.read("ref.md")!!.text)
+        }
+    }
+
+    @Test
+    fun `cross-vault backlinks come only from vaults the caller can read`(): Unit = runBlocking {
+        Fixture().use { fx ->
+            assertEquals(200, fx.write("a", "target.md", "# t", key = "k-admin").statusCode())
+            assertEquals(200, fx.write("b", "secret-plan.md", "see [[a:target]]", key = "k-admin").statusCode())
+            val asAdmin = fx.get("/api/v1/file/links?vault=a&path=target.md", key = "k-admin").body()
+            assertTrue("b:secret-plan.md" in asAdmin, asAdmin)
+            val asReader = fx.get("/api/v1/file/links?vault=a&path=target.md", key = "k-reader").body()
+            assertFalse("secret-plan" in asReader, "a note path from vault b reached a reader of a only: $asReader")
+        }
+    }
+
+    @Test
     fun `events are filtered to readable vaults`(): Unit = runBlocking {
         Fixture().use { fx ->
             val received = CopyOnWriteArrayList<String>()

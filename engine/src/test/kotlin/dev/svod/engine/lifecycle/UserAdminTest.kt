@@ -22,12 +22,12 @@ import kotlin.test.assertTrue
 
 class UserAdminTest {
 
-    private fun controller(): Triple<UserController, UserRegistry, Path> {
+    private fun controller(localAdmin: Boolean = true): Triple<UserController, UserRegistry, Path> {
         val dir = Files.createTempDirectory("svod-users-")
         val config = SvodConfig(vaults = listOf(
             SvodConfig.VaultSettings("a", dir.resolve("a").toString()),
             SvodConfig.VaultSettings("b", dir.resolve("b").toString()),
-        ))
+        ), localAdmin = localAdmin)
         val registry = UserRegistry(emptyList())
         return Triple(UserController(ConfigStore(config, null), registry, dir.resolve("secrets")), registry, dir.resolve("secrets"))
     }
@@ -50,6 +50,30 @@ class UserAdminTest {
         assertEquals(VaultRole.EDITOR, p.grants["a"])
         assertFalse(p.admin)
         assertFalse(ctrl.list().toString().contains(created.key), "list must not expose the key")
+    }
+
+    @Test
+    fun `the last admin cannot be deleted or demoted while localAdmin is off`(): Unit = runBlocking {
+        val (ctrl, registry, _) = controller(localAdmin = false)
+        val boss = ctrl.create(CreateUserRequest("boss", "Boss", admin = true))
+        ctrl.create(CreateUserRequest("maria", "Мария"))
+        assertFailsWith<UserAdmin.InvalidRequest> { ctrl.delete("boss") }
+        assertFailsWith<UserAdmin.InvalidRequest> { ctrl.update("boss", UpdateUserRequest(admin = false)) }
+        assertNotNull(registry.authenticate(boss.key), "the refused delete must not have touched the registry")
+        // A second admin makes the first one removable.
+        ctrl.update("maria", UpdateUserRequest(admin = true))
+        ctrl.delete("boss")
+        assertNull(registry.authenticate(boss.key))
+    }
+
+    @Test
+    fun `an empty email clears it and the git author falls back to the synthetic one`(): Unit = runBlocking {
+        val (ctrl, registry, _) = controller()
+        val u = ctrl.create(CreateUserRequest("ivan", "Иван", email = "ivan@co"))
+        assertEquals("ivan@co", registry.authenticate(u.key)!!.author.email)
+        ctrl.update("ivan", UpdateUserRequest(email = ""))
+        assertNull(ctrl.list().single().email)
+        assertEquals("ivan@users.svod.local", registry.authenticate(u.key)!!.author.email)
     }
 
     @Test

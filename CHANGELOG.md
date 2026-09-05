@@ -27,10 +27,30 @@ search and the WebSocket event stream drop what the caller may not read.
 without a key as the local UI — admin, author `svod-ui`, exactly as before. The whole existing suite
 runs in that mode.
 
-**Leaving loopback** (`host: "0.0.0.0"`) is allowed only with `appApiTls`, `mcpTls` and at least one
-user; config validation refuses anything less. The App API serves HTTPS through Netty when
-`appApiTls` is set (CIO cannot). `localAdmin: false` is for a shared engine, including one on loopback
-behind a reverse proxy that terminates TLS.
+**Leaving loopback** (`host: "0.0.0.0"`) is allowed only with `appApiTls`, `mcpTls`, at least one
+admin user and `localAdmin: false`; config validation refuses anything less. The App API serves HTTPS
+through Netty when `appApiTls` is set (CIO cannot). `localAdmin: false` is also what a shared engine
+on loopback behind a TLS-terminating reverse proxy needs — on a shared host every other shell
+account is a loopback caller too.
+
+**Hardening found by review before release** (all covered by tests in `PrincipalAuthTest`,
+`SharedEngineConfigTest`, `UserAdminTest`):
+- The auth interceptor matches the path Ktor's router will match — empty segments dropped, each
+  segment percent-decoded — and answers 400 when the request path is not already canonical.
+  Previously `//api/v1/users` skipped authentication and `/api/v1/%75sers` skipped the admin table.
+- A route reached without a principal fails closed (500) instead of falling back to the local admin.
+- `isLoopback` reads only the socket's peer address as an IP literal: no reverse/forward DNS on the
+  request path, nothing a PTR record can influence.
+- A move rewrites `[[vault:note]]` links only in vaults the mover can WRITE; `/file/links` returns
+  cross-vault backlinks only from vaults the caller can READ.
+- Every vault-scoped event is tagged (`data.vault`): MCP conflicts, watcher `file.changed` and
+  `commit.created`. The `/events` filter no longer forwards vault content to the wrong reader.
+- With `localAdmin: false` the last admin cannot be deleted or demoted (400); `email: ""` clears the
+  email instead of persisting an empty git author; a user whose key file went missing is skipped
+  with a warning instead of blocking every admin operation.
+- `users[].keyRef` must be `env:`/`file:`/`keychain:` — a pasted key would have been echoed by
+  `GET /users`. `dist/secrets/` is git-ignored: the live config lives in this repo, and so would
+  every key file next to it.
 
 Contract 0.29.0 → **0.30.0** (additive: five paths, `Vault.role`, 401/403, a bearer security scheme).
 

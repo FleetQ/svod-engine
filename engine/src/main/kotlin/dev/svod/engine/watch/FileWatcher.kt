@@ -32,6 +32,8 @@ class FileWatcher(
     private val index: IndexService,
     private val eventBus: EventBus,
     private val debounceMs: Long = 300,
+    /** Tagged onto every event: the App API streams a vault's events only to people who may read it. */
+    private val vaultId: String? = null,
 ) : AutoCloseable {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -80,8 +82,8 @@ class FileWatcher(
     private suspend fun applyIngest(commit: String?) {
         if (commit == null) return
         index.onCommit(commit)
-        eventBus.publish(EventTypes.FILE_CHANGED) { put("source", "watcher"); put("commit", commit) }
-        eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", commit); put("author", "external") }
+        eventBus.publish(EventTypes.FILE_CHANGED) { put("source", "watcher"); put("commit", commit); vaultId?.let { put("vault", it) } }
+        eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", commit); put("author", "external"); vaultId?.let { put("vault", it) } }
     }
 
     private fun isIgnored(path: Path): Boolean {

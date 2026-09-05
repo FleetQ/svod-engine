@@ -175,7 +175,9 @@ class AppApiServer(
     private val localPrincipal: Principal get() = Principal.local(config.uiAuthor)
 
     /** The authenticated caller ([AppApiAuth] sets it on every /api call; the local UI otherwise). */
-    private fun RoutingContext.principal(): Principal = call.attributes.getOrNull(AppApiAuth.PrincipalKey) ?: localPrincipal
+    /** Set by [AppApiAuth] on every /api call; a route reached without one is a wiring bug, and it fails CLOSED. */
+    private fun RoutingContext.principal(): Principal = call.attributes.getOrNull(AppApiAuth.PrincipalKey)
+        ?: error("no principal on ${call.request.path()} — AppApiAuth did not run")
 
     private fun Application.module() {
         install(ContentNegotiation) { json(jsonFormat) }
@@ -390,7 +392,7 @@ class AppApiServer(
                         // living in OTHER vaults. Best-effort, per-repo commits — never atomic across
                         // repos, never loses data (the move already stands; a failed rewrite just
                         // leaves a stale link that surfaces as a cross-vault backlink to fix).
-                        if (vaults.ids().size > 1) runCatching { crossVaultRelink(vc.id, req.from, req.to, principal().author) }
+                        if (vaults.ids().size > 1) runCatching { crossVaultRelink(vc.id, req.from, req.to, principal()) }
                         call.respond(MoveResultDto(o.path, o.revision, o.commit, moved.rewrittenBacklinks))
                     }
                     is WriteOutcome.Conflict -> { publishConflict(vc, o.path); call.respond(HttpStatusCode.Conflict, o.toConflictDto()) }
@@ -435,8 +437,10 @@ class AppApiServer(
                 val g = graph(vc)
                 // Cross-vault backlinks (qualified [[vault:note]] from other vaults) come from the
                 // federated graph; local backlinks stay as bare paths for back-compat.
+                // …and only from vaults the caller may read: a backlink is a note path from that vault.
+                val p = principal()
                 val cross = if (vaults.ids().size > 1)
-                    federated().backlinks(vc.id, path).filter { !it.startsWith("${vc.id}:") }
+                    federated().backlinks(vc.id, path).filter { !it.startsWith("${vc.id}:") && p.canRead(it.substringBefore(':')) }
                 else emptyList()
                 call.respond(FileLinksDto(
                     path = path,
@@ -933,8 +937,9 @@ class AppApiServer(
             }
 
             webSocket("/api/v1/events") {
-                // A person receives events only for vaults they can read; untagged events pass through.
-                val p = call.attributes.getOrNull(AppApiAuth.PrincipalKey) ?: localPrincipal
+                // A person receives events only for vaults they can read; untagged events (engine
+                // status) pass through — every vault-scoped publisher tags its events.
+                val p = call.attributes.getOrNull(AppApiAuth.PrincipalKey) ?: error("no principal on /api/v1/events")
                 eventBus.events.collect { e ->
                     val v = runCatching { e.data["vault"]?.jsonPrimitive?.contentOrNull }.getOrNull()
                     if (v == null || p.canRead(v)) send(Frame.Text(encodeEvent(e)))
@@ -1133,12 +1138,18 @@ class AppApiServer(
      * Each rewrite is a separate, optimistic commit in its own repo (D7) — best-effort: a failure
      * leaves the move intact and the stale link merely unresolved, never a lost file.
      */
-    private suspend fun crossVaultRelink(movedVault: String, from: String, to: String, author: Author) {
+    /**
+     * Rewrites `[[movedVault:from]]` in every OTHER vault the caller may write. A vault they cannot
+     * write keeps its (now dangling) link — the interceptor only checked the vault of the move,
+     * so this is where their grant on each other vault is honoured.
+     */
+    private suspend fun crossVaultRelink(movedVault: String, from: String, to: String, principal: Principal) {
+        val author = principal.author
         val fromBase = from.substringAfterLast('/').removeSuffix(".md")
         val fromNorm = from.removeSuffix(".md")
         val toRef = if ('/' in to) to.removeSuffix(".md") else to.substringAfterLast('/').removeSuffix(".md")
         for (v in vaults.all()) {
-            if (v.id == movedVault) continue
+            if (v.id == movedVault || !principal.canWrite(v.id)) continue
             for (path in v.engine.list()) {
                 if (!path.endsWith(".md")) continue
                 val fc = v.engine.read(path) ?: continue

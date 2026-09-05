@@ -42,7 +42,9 @@ memory you can read, diff, and restore* — not a note app.
    orphan `.tmp`.
 6. **Contract-first.** `contract/openapi.yaml` is the single source of truth; engine and
    UI release independently against a versioned contract.
-7. **App API binds 127.0.0.1 only.** Remote agent access only via MCP (TLS + token).
+7. **App API binds 127.0.0.1 by default.** Leaving loopback needs TLS on both ports, personal
+   keys for every person and `localAdmin=false` (ADR-0019). Remote agent access only via MCP
+   (TLS + token).
 8. **UTF-8 / Cyrillic everywhere** — `core.quotepath=false`, tested.
 
 ## Module layout

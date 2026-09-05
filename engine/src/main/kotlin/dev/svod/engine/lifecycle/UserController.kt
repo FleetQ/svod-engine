@@ -61,10 +61,12 @@ class UserController(
         req.grants?.let { validateGrants(it) }
         val updated = existing.copy(
             name = req.name?.trim() ?: existing.name,
-            email = req.email?.trim() ?: existing.email,
+            // "" clears the email (the git author then falls back to <id>@users.svod.local); null keeps it.
+            email = if (req.email != null) req.email.trim().takeIf { it.isNotEmpty() } else existing.email,
             admin = req.admin ?: existing.admin,
             grants = req.grants?.map { SvodConfig.VaultGrant(it.vault, it.role.uppercase()) } ?: existing.grants,
         )
+        guardLastAdmin(configStore.config.users.map { if (it.userId == id) updated else it })
         configStore.update { cfg -> cfg.copy(users = cfg.users.map { if (it.userId == id) updated else it }) }
         registry.reload(configStore.config.toUserSpecs())
         return updated.toView()
@@ -73,6 +75,7 @@ class UserController(
     override suspend fun delete(id: String) {
         val existing = configStore.config.users.firstOrNull { it.userId == id }
             ?: throw UserAdmin.UnknownUser("unknown user: $id")
+        guardLastAdmin(configStore.config.users.filterNot { u -> u.userId == id })
         configStore.update { it.copy(users = it.users.filterNot { u -> u.userId == id }) }
         registry.reload(configStore.config.toUserSpecs())
         // Only our own key files are removed — a keyRef pointing elsewhere (env:, an operator's file) is left alone.
@@ -94,6 +97,17 @@ class UserController(
         }
         registry.reload(configStore.config.toUserSpecs())
         return key
+    }
+
+    /**
+     * With `localAdmin=false` the admins in `users[]` are the ONLY way to administer the engine:
+     * removing the last one (or demoting them) locks everyone out with no API to recover, and the
+     * config it leaves behind is one the engine refuses to boot.
+     */
+    private fun guardLastAdmin(after: List<SvodConfig.UserSettings>) {
+        if (!configStore.config.localAdmin && after.none { it.admin }) {
+            throw UserAdmin.InvalidRequest("cannot remove or demote the last admin while localAdmin is off")
+        }
     }
 
     private fun validateGrants(grants: List<VaultGrantDto>) {

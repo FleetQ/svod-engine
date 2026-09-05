@@ -345,12 +345,18 @@ data class SvodConfig(
             if (appApiTls == null) errors += "host '$host' is not loopback: appApiTls is required to expose the App API"
             if (mcpTls == null) errors += "host '$host' is not loopback: mcpTls is required to expose MCP"
             if (users.isEmpty()) errors += "host '$host' is not loopback: at least one user (users[]) is required"
+            // On a shared host every other shell account is "loopback" too; the keyless admin door must be shut.
+            if (localAdmin) errors += "host '$host' is not loopback: localAdmin must be false (a keyless loopback caller would be admin)"
         }
-        if (!localAdmin && users.isEmpty()) errors += "localAdmin=false requires at least one user, or nobody can reach the engine"
+        if (!localAdmin && users.none { it.admin }) errors += "localAdmin=false requires at least one admin user, or nobody can administer the engine"
         val userIds = users.map { it.userId }
         if (userIds.size != userIds.toSet().size) errors += "user ids must be unique"
         val keyRefs = users.map { it.keyRef }
         if (keyRefs.any { it.isBlank() }) errors += "user keyRefs must be non-blank"
+        // A bare value would be the key itself — and GET /users echoes keyRef, which must never be the key.
+        for (r in keyRefs) if (r.isNotBlank() && SECRET_REF_PREFIXES.none { r.startsWith(it) }) {
+            errors += "user keyRef '$r' must be a reference (env:, file: or keychain:), never the key itself"
+        }
         if (keyRefs.size != keyRefs.toSet().size) errors += "user keyRefs must be unique"
         for (u in users) {
             if (!USER_ID.matches(u.userId)) errors += "user id '${u.userId}' must match ${USER_ID.pattern}"
@@ -487,9 +493,20 @@ data class SvodConfig(
     }
 
     /** App API principals. Resolves each `keyRef` now, so a broken ref fails at load, not at login. */
-    fun toUserSpecs(): List<dev.svod.engine.api.UserRegistry.UserSpec> = users.map { u ->
+    /**
+     * A user whose keyRef cannot be resolved (file deleted, env var unset) is SKIPPED with a
+     * warning, not fatal: they simply cannot authenticate. Failing the whole list would let one
+     * broken sibling block every admin operation — and leave disk and memory divergent, because
+     * the controller persists config before it reloads the registry.
+     */
+    fun toUserSpecs(): List<dev.svod.engine.api.UserRegistry.UserSpec> = users.mapNotNull { u ->
+        val key = runCatching { dev.svod.engine.security.Secrets.resolve(u.keyRef) }.getOrElse { e ->
+            org.slf4j.LoggerFactory.getLogger(SvodConfig::class.java)
+                .warn("user '{}' skipped: keyRef '{}' cannot be resolved ({})", u.userId, u.keyRef, e.message)
+            return@mapNotNull null
+        }
         dev.svod.engine.api.UserRegistry.UserSpec(
-            key = dev.svod.engine.security.Secrets.resolve(u.keyRef),
+            key = key,
             userId = u.userId,
             name = u.name,
             email = u.email ?: "${u.userId}@users.svod.local",
@@ -502,6 +519,7 @@ data class SvodConfig(
 
     companion object {
         val LOOPBACK = setOf("127.0.0.1", "::1", "localhost")
+        val SECRET_REF_PREFIXES = listOf("env:", "file:", "keychain:")
         val USER_ROLES = listOf("READER", "EDITOR")
         val USER_ID = Regex("^[a-z0-9][a-z0-9_-]*$")
 

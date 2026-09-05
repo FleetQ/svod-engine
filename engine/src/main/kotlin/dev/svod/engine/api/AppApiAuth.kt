@@ -12,6 +12,7 @@ import io.ktor.server.request.path
 import io.ktor.server.response.respond
 import io.ktor.util.AttributeKey
 import java.net.InetAddress
+import java.net.URLDecoder
 
 /**
  * Authentication + authorization for every call under `/api/`, in ONE place so no route can forget it
@@ -52,6 +53,21 @@ object AppApiAuth {
     private val NON_VAULT = Regex("^/api/v1/(vaults|agents|users|me|secrets|update|events)(/.*)?$")
 
     private val LOOPBACK_NAMES = setOf("localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1")
+    private val IPV4 = Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")
+
+    /**
+     * The path Ktor's router will actually match: empty segments dropped, each segment
+     * percent-decoded. Everything below matches against THIS, never the raw request path —
+     * `//api/v1/users` and `/api/v1/%75sers` both route to the users handler in Ktor 3.4.3, and
+     * a raw-path check would let the first skip authentication and the second skip the admin
+     * table. Null when a segment cannot be decoded.
+     */
+    internal fun canonicalPath(raw: String): String? {
+        val segments = raw.split('/').filter { it.isNotEmpty() }.map { seg ->
+            runCatching { URLDecoder.decode(seg.replace("+", "%2B"), Charsets.UTF_8) }.getOrNull() ?: return null
+        }
+        return "/" + segments.joinToString("/")
+    }
 
     fun install(
         app: Application,
@@ -62,8 +78,19 @@ object AppApiAuth {
         resolveVault: (String?) -> String?,
     ) {
         app.intercept(ApplicationCallPipeline.Plugins) {
-            val path = call.request.path()
+            val raw = call.request.path()
+            val path = canonicalPath(raw)
+            if (path == null) {
+                call.respond(HttpStatusCode.BadRequest, ErrorDto("bad_request", "path cannot be decoded"))
+                return@intercept finish()
+            }
             if (!path.startsWith("/api/")) return@intercept
+            if (path != raw) {
+                // Canonical differs from what was sent: `//`, `%xx` or a trailing slash. Every API
+                // route is fixed ASCII segments plus `[a-z0-9_-]` ids, so nothing legitimate is lost.
+                call.respond(HttpStatusCode.BadRequest, ErrorDto("bad_request", "API paths must be canonical (no empty or encoded segments)"))
+                return@intercept finish()
+            }
 
             val principal = authenticate(call, users, localAdmin, localPrincipal)
             if (principal == null) {
@@ -103,11 +130,16 @@ object AppApiAuth {
         return if (localAdmin && isLoopback(call)) localPrincipal else null
     }
 
+    /**
+     * Only the socket's peer ADDRESS decides, and only when it is an IP literal — `remoteHost`
+     * is a reverse-DNS name on both Netty and CIO, and `InetAddress.getByName` on a name is a
+     * forward lookup: a blocking resolver call on every keyless request, and a check an attacker
+     * with a PTR record and a 127.0.0.1 A record can pass. A literal never touches DNS.
+     */
     private fun isLoopback(call: ApplicationCall): Boolean {
-        val origin = call.request.origin
-        val candidates = listOfNotNull(runCatching { origin.remoteAddress }.getOrNull(), runCatching { origin.remoteHost }.getOrNull())
-        return candidates.any { addr ->
-            addr in LOOPBACK_NAMES || runCatching { InetAddress.getByName(addr).isLoopbackAddress }.getOrDefault(false)
-        }
+        val addr = runCatching { call.request.origin.remoteAddress }.getOrNull() ?: return false
+        if (addr in LOOPBACK_NAMES) return true
+        if (!IPV4.matches(addr) && ':' !in addr) return false
+        return runCatching { InetAddress.getByName(addr).isLoopbackAddress }.getOrDefault(false)
     }
 }

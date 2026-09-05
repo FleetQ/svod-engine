@@ -23,3 +23,5 @@ PROJECT_INDEX.md
 
 # local machine configs (real paths / secret refs)
 dist/config.local.*
+# personal API keys + POST /secrets values written next to a config that lives here
+dist/secrets/
