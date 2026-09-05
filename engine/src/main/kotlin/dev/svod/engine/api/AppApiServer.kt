@@ -97,6 +97,10 @@ class AppApiServer(
     private val userAdmin: UserAdmin? = null,
     /** Stores a secret on the engine host for a remote UI; null ⇒ POST /secrets returns 501. */
     private val secrets: SecretSink? = null,
+    /** Last use of each personal key (`lastUsedAt` in /users and /me); null ⇒ never reported. */
+    private val activity: UserActivity? = null,
+    /** Per-request audit of keyed principals; null ⇒ off. */
+    private val audit: ApiAuditLog? = null,
 ) {
     /** Back-compat single-vault constructor (one engine/index, optional conflicts + sync status). */
     constructor(
@@ -182,7 +186,7 @@ class AppApiServer(
     private fun Application.module() {
         install(ContentNegotiation) { json(jsonFormat) }
         install(WebSockets)
-        AppApiAuth.install(this, users, config.localAdmin, localPrincipal) { id -> vaults.resolve(id)?.id }
+        AppApiAuth.install(this, users, config.localAdmin, localPrincipal, { id -> vaults.resolve(id)?.id }, activity, audit)
 
         routing {
             get("/health") { call.respond(HealthDto()) }
@@ -195,7 +199,14 @@ class AppApiServer(
             // Prometheus scrape endpoint (loopback ops surface). Deliberately OUTSIDE the versioned
             // /api/v1 contract — it is for monitoring, not the UI, so it carries no apiVersion and is
             // not part of contract/openapi.yaml. The JSON /api/v1/metrics remains the UI-facing view.
-            get("/metrics") { call.respondText(prometheusExposition(), ContentType.Text.Plain) }
+            get("/metrics") {
+                // Vault ids, document counts and queue depths: open on a single-user engine, a key
+                // on a shared one (localAdmin=false). /health and /ready carry no vault data and stay open.
+                if (!config.localAdmin && AppApiAuth.authenticate(call, users, false, localPrincipal) == null) {
+                    return@get call.respond(HttpStatusCode.Unauthorized, ErrorDto("unauthorized", "a personal API key is required for /metrics on a shared engine"))
+                }
+                call.respondText(prometheusExposition(), ContentType.Text.Plain)
+            }
 
             get("/api/v1/vaults") {
                 // A person sees only the vaults they have a role in; the row says which role.
@@ -283,7 +294,8 @@ class AppApiServer(
 
             get("/api/v1/me") {
                 val p = principal()
-                call.respond(MeDto(p.userId, p.author.name, p.admin, p.local, p.grants.map { (v, r) -> VaultGrantDto(v, r.name.lowercase()) }))
+                call.respond(MeDto(p.userId, p.author.name, p.admin, p.local, p.grants.map { (v, r) -> VaultGrantDto(v, r.name.lowercase()) },
+                    lastUsedAt = if (p.local) null else activity?.lastUsedIso(p.userId)))
             }
             get("/api/v1/users") {
                 val admin = userAdmin ?: return@get call.notImplemented("user management")
@@ -553,14 +565,16 @@ class AppApiServer(
             get("/api/v1/settings") {
                 val vc = vault() ?: return@get call.notFound("vault")
                 val emb = embedderInfo(vc)
+                // Server paths and endpoints are the admin's; a member gets the fields, empty.
+                val admin = principal().admin
                 call.respond(SettingsDto(
-                    vaultPath = vc.engine.root.toString(),
+                    vaultPath = if (admin) vc.engine.root.toString() else "",
                     apiVersion = config.apiVersion,
                     embedderProvider = emb.provider,
                     embedderModel = vc.index.indexedModel() ?: emb.model,
                     embedderDim = emb.dimension,
-                    host = config.host,
-                    embedder = emb,
+                    host = if (admin) config.host else "",
+                    embedder = if (admin) emb else emb.copy(endpoint = null),
                     reranker = vc.index.rerankerInfo().let { RerankerInfoDto(it.provider, it.model, it.active) },
                 ))
             }
@@ -765,7 +779,9 @@ class AppApiServer(
             get("/api/v1/sources") {
                 val vc = vault() ?: return@get call.notFound("vault")
                 val store = dev.svod.engine.sources.ExternalSourceStore(vc.engine.root)
-                call.respond(store.list().map { it.toDto(sourceWatching(vc, it.id)) })
+                val admin = principal().admin
+                // A member sees that a source exists and where it lands in the vault, not the server path.
+                call.respond(store.list().map { s -> s.toDto(sourceWatching(vc, s.id)).let { if (admin) it else it.copy(path = it.path.substringAfterLast('/')) } })
             }
 
             post("/api/v1/sources") {
@@ -1061,7 +1077,7 @@ class AppApiServer(
     }
 
     private fun AgentSpecView.toDto() = AgentDto(agentId, name, role, vaults, tokenRef, prompt)
-    private fun UserSpecView.toDto() = UserDto(userId, name, email, admin, grants, keyRef)
+    private fun UserSpecView.toDto() = UserDto(userId, name, email, admin, grants, keyRef, lastUsedAt = activity?.lastUsedIso(userId))
 
     /** All captured session notes' frontmatter for [vc] (bypasses the index — reads notes directly). */
     private suspend fun sessionMetas(vc: VaultView): List<SessionMeta> =

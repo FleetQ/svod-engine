@@ -3,6 +3,35 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.21.0 — 2026-09-05 (App API contract 0.31.0)
+
+### Security — the shared-vault review closed (`docs/security-shared-vault.md`)
+
+- **Keyless loopback needs a loopback `Host`.** With `localAdmin: true` (every single-user Mac)
+  a page whose DNS name is re-pointed at 127.0.0.1 was same-origin for the browser and reached
+  the engine as the local admin. The keyless path now accepts only `Host: 127.0.0.1|localhost|[::1]`
+  (any port); anything else is 401. Keyed requests are unaffected; the app and the MCP bridges
+  already send a loopback `Host`.
+- **Audit of people.** Every `/api` request by a keyed principal is one JSON line in
+  `<configDir>/audit-api.log` (0600): ts, userId, method, canonical path, `vault`, status, ip.
+  No bodies, no query strings, no keys. The loopback UI is not audited (nobody to tell apart).
+- **Refusals are logged** (WARN, `AppApiAuth`): method, path, peer address and the reason —
+  `key not accepted`, `no key`, `<user> is not an admin`, `… has no grant on vault …`. Never
+  the key value.
+- **`lastUsedAt` per person** in `GET /users` and `/me`: when the key last authenticated,
+  persisted to `<configDir>/user-activity.json` at most once a minute per user, so a leaver's
+  quiet key is visible in Members instead of relying on someone remembering to revoke it.
+- **A member sees no server paths.** For a non-admin `GET /settings` returns `vaultPath`,
+  `host` and `embedder.endpoint` empty; `GET /sources` shows a source's basename only.
+  (`/sync/config` already redacted credentials.)
+- **`/metrics` needs a key when `localAdmin` is off** (vault ids, document counts, queue depth).
+  `/health` and `/ready` stay open: they carry no vault data.
+- **A vault without a grant is a 404**, the same body as an unknown vault id — no enumeration.
+  A reader's write stays 403.
+
+Contract 0.30.0 → **0.31.0** (additive: `User.lastUsedAt`, `Me.lastUsedAt`; 404 semantics and
+the `/metrics` rule documented on the error responses).
+
 ## v1.20.0 — 2026-09-05 (App API contract 0.30.0)
 
 ### Added — people as App API principals (ADR-0019): a shared engine for a company vault

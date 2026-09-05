@@ -474,6 +474,8 @@ data class UserDto(
     val grants: List<VaultGrantDto> = emptyList(),
     /** The Secrets ref the key resolves through (file:/env:/keychain:). Never the key itself. */
     val keyRef: String,
+    /** When this key last authenticated (ISO-8601 UTC); null if never, or unknown to this engine. */
+    val lastUsedAt: String? = null,
 )
 
 @Serializable
@@ -512,6 +514,7 @@ data class MeDto(
     /** True for the loopback UI identity (no key presented). */
     val local: Boolean,
     val grants: List<VaultGrantDto> = emptyList(),
+    val lastUsedAt: String? = null,
 )
 
 @Serializable
