@@ -289,7 +289,14 @@ data class SourceSyncResultDto(
 )
 
 @Serializable
-data class VaultInfoDto(val id: String, val name: String, val default: Boolean, val sync: SyncStatusDto? = null)
+data class VaultInfoDto(
+    val id: String,
+    val name: String,
+    val default: Boolean,
+    val sync: SyncStatusDto? = null,
+    /** The caller's access to this vault: `admin` | `editor` | `reader` (0.30.0; absent on older engines). */
+    val role: String? = null,
+)
 
 @Serializable
 data class VaultsDto(val vaults: List<VaultInfoDto>)
@@ -451,3 +458,64 @@ data class UpdateAgentRequest(
     val tokenRef: String? = null,
     val prompt: String? = null,
 )
+
+// ---- People: App API principals (GET/POST/PUT/DELETE /api/v1/users, /me, /secrets — 0.30.0, ADR-0019) ----
+
+/** One per-vault grant: `role` is `reader` | `editor`. */
+@Serializable
+data class VaultGrantDto(val vault: String, val role: String)
+
+@Serializable
+data class UserDto(
+    val userId: String,
+    val name: String,
+    val email: String? = null,
+    val admin: Boolean = false,
+    val grants: List<VaultGrantDto> = emptyList(),
+    /** The Secrets ref the key resolves through (file:/env:/keychain:). Never the key itself. */
+    val keyRef: String,
+)
+
+@Serializable
+data class UsersDto(val users: List<UserDto>)
+
+@Serializable
+data class CreateUserRequest(
+    val userId: String,
+    val name: String,
+    val email: String? = null,
+    val admin: Boolean = false,
+    val grants: List<VaultGrantDto> = emptyList(),
+)
+
+@Serializable
+data class UpdateUserRequest(
+    val name: String? = null,
+    val email: String? = null,
+    val admin: Boolean? = null,
+    val grants: List<VaultGrantDto>? = null,
+)
+
+/** The only response that ever carries the raw key — shown once, then gone. */
+@Serializable
+data class CreatedUserDto(val user: UserDto, val key: String)
+
+@Serializable
+data class RotatedKeyDto(val userId: String, val key: String)
+
+/** Who am I: the app's connection test and the source of its per-vault read-only state. */
+@Serializable
+data class MeDto(
+    val userId: String,
+    val name: String,
+    val admin: Boolean,
+    /** True for the loopback UI identity (no key presented). */
+    val local: Boolean,
+    val grants: List<VaultGrantDto> = emptyList(),
+)
+
+@Serializable
+data class CreateSecretRequest(val name: String, val value: String)
+
+@Serializable
+data class SecretRefDto(val ref: String)

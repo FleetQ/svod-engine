@@ -272,6 +272,7 @@ class AppApiContractTest {
             "/api/v1/graph/communities", "/api/v1/graph/community", "/api/v1/graph/status", "/api/v1/graph/rebuild",
             "/api/v1/tags", "/api/v1/settings", "/api/v1/index/status",
             "/api/v1/vaults", "/api/v1/vaults/{id}", "/api/v1/agents", "/api/v1/agents/{id}",
+            "/api/v1/users", "/api/v1/users/{id}", "/api/v1/users/{id}/key", "/api/v1/me", "/api/v1/secrets",
             "/api/v1/update/check", "/api/v1/update/apply",
             "/api/v1/metrics", "/api/v1/conflicts", "/api/v1/conflicts/resolve",
             "/api/v1/import", "/api/v1/events",

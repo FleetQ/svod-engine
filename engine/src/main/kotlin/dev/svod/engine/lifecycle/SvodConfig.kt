@@ -16,7 +16,8 @@ import java.nio.file.Paths
 /**
  * Centralized engine configuration, validated at startup. One file is the single place that
  * decides vault location, ports, embedder provider, and the agent tokens the MCP endpoint
- * accepts. Loopback is enforced here so the App API can never be misconfigured off 127.0.0.1.
+ * accepts. Loopback is enforced here so the App API can never be misconfigured off 127.0.0.1 —
+ * the one exception is a shared engine with TLS on both ports and personal keys (ADR-0019).
  */
 @Serializable
 data class SvodConfig(
@@ -57,6 +58,20 @@ data class SvodConfig(
     val includeMessyInRecall: Boolean = false,
     /** Derived thematic graph over the vault (communities + summaries). Off by default. */
     val graph: GraphSettings = GraphSettings(),
+    /**
+     * Optional TLS for the App API. Required (together with [users] and [mcpTls]) before [host] may
+     * leave loopback: a shared engine on a server is reached over HTTPS with personal keys, never
+     * over plain HTTP (ADR-0019).
+     */
+    val appApiTls: TlsSettings? = null,
+    /**
+     * A loopback request WITHOUT a key acts as the local UI (an admin). True by default so every
+     * single-user installation keeps working unchanged; a shared engine sets it to false so that a
+     * process on the same host (a reverse proxy, another user's shell) cannot act as admin.
+     */
+    val localAdmin: Boolean = true,
+    /** People who may reach the App API with a personal key (ADR-0019). Managed at runtime via /api/v1/users. */
+    val users: List<UserSettings> = emptyList(),
 ) {
     /**
      * Configuration for the derived graph sidecar (`.svod/graph/`).
@@ -250,6 +265,25 @@ data class SvodConfig(
         val prompt: String? = null,
     )
 
+    /**
+     * One person with App API access. [keyRef] is a `Secrets` ref (env:/file:/keychain:) to the
+     * personal key — never the key itself; [UserController] writes `file:` refs. [admin] manages
+     * the engine (and implicitly reaches every vault); [grants] give per-vault READER/EDITOR access.
+     */
+    @Serializable
+    data class UserSettings(
+        val userId: String,
+        val name: String,
+        val email: String? = null,
+        val keyRef: String,
+        val admin: Boolean = false,
+        val grants: List<VaultGrant> = emptyList(),
+    )
+
+    /** `role` is `READER` or `EDITOR` (see [USER_ROLES]). */
+    @Serializable
+    data class VaultGrant(val vault: String, val role: String)
+
     /** Optional TLS for the MCP endpoint (remote agents reach MCP over HTTPS). Passwords are secret refs. */
     @Serializable
     data class TlsSettings(
@@ -305,7 +339,28 @@ data class SvodConfig(
         if (ids.size != ids.toSet().size) errors += "vault ids must be unique"
         if (defaultVault != null && defaultVault !in ids) errors += "defaultVault '$defaultVault' is not among vault ids $ids"
         for (a in agents) for (v in a.vaults) if (v !in ids) errors += "agent '${a.agentId}' is granted unknown vault '$v'"
-        if (host !in LOOPBACK) errors += "host must be loopback (one of $LOOPBACK), was '$host'"
+        if (host !in LOOPBACK) {
+            // Leaving loopback is allowed only for a shared engine: encrypted on both ports and with
+            // at least one person who can authenticate (ADR-0019). Anything less is the old error.
+            if (appApiTls == null) errors += "host '$host' is not loopback: appApiTls is required to expose the App API"
+            if (mcpTls == null) errors += "host '$host' is not loopback: mcpTls is required to expose MCP"
+            if (users.isEmpty()) errors += "host '$host' is not loopback: at least one user (users[]) is required"
+        }
+        if (!localAdmin && users.isEmpty()) errors += "localAdmin=false requires at least one user, or nobody can reach the engine"
+        val userIds = users.map { it.userId }
+        if (userIds.size != userIds.toSet().size) errors += "user ids must be unique"
+        val keyRefs = users.map { it.keyRef }
+        if (keyRefs.any { it.isBlank() }) errors += "user keyRefs must be non-blank"
+        if (keyRefs.size != keyRefs.toSet().size) errors += "user keyRefs must be unique"
+        for (u in users) {
+            if (!USER_ID.matches(u.userId)) errors += "user id '${u.userId}' must match ${USER_ID.pattern}"
+            if (u.name.isBlank()) errors += "user '${u.userId}' must have a name"
+            for (g in u.grants) {
+                if (g.vault !in ids) errors += "user '${u.userId}' is granted unknown vault '${g.vault}'"
+                if (USER_ROLES.none { it.equals(g.role, ignoreCase = true) }) errors += "user '${u.userId}' role must be one of $USER_ROLES, was '${g.role}'"
+            }
+            if (u.grants.map { it.vault }.let { it.size != it.toSet().size }) errors += "user '${u.userId}' grants a vault twice"
+        }
         if (appApiPort !in 0..65535) errors += "appApiPort out of range: $appApiPort"
         if (mcpPort !in 0..65535) errors += "mcpPort out of range: $mcpPort"
         // port 0 = ephemeral (any free port); only fixed ports must differ.
@@ -431,8 +486,24 @@ data class SvodConfig(
         )
     }
 
+    /** App API principals. Resolves each `keyRef` now, so a broken ref fails at load, not at login. */
+    fun toUserSpecs(): List<dev.svod.engine.api.UserRegistry.UserSpec> = users.map { u ->
+        dev.svod.engine.api.UserRegistry.UserSpec(
+            key = dev.svod.engine.security.Secrets.resolve(u.keyRef),
+            userId = u.userId,
+            name = u.name,
+            email = u.email ?: "${u.userId}@users.svod.local",
+            admin = u.admin,
+            grants = u.grants.associate { g ->
+                g.vault to (if (g.role.equals("EDITOR", ignoreCase = true)) dev.svod.engine.api.VaultRole.EDITOR else dev.svod.engine.api.VaultRole.READER)
+            },
+        )
+    }
+
     companion object {
         val LOOPBACK = setOf("127.0.0.1", "::1", "localhost")
+        val USER_ROLES = listOf("READER", "EDITOR")
+        val USER_ID = Regex("^[a-z0-9][a-z0-9_-]*$")
 
         // `user:password@host` userinfo in a URL-style remote (https://, ssh://, git://). The scp
         // form `git@host:path` carries a username but no password and is the normal ssh form, so it

@@ -170,8 +170,24 @@ class SvodNode private constructor(
                 val embedderControl = EmbedderController(vaults, configStore)
                 val vaultCreator = VaultController(vaults, configStore, workScope, eventBus, hostId)
                 val agentController = AgentController(configStore, registry, config.host)
+                // People (ADR-0019): personal keys → principals with per-vault roles. Key files live
+                // next to the config (a config-less embed falls back to ~/.svod/secrets).
+                val secretsDir = configPath?.toAbsolutePath()?.parent?.resolve("secrets")
+                    ?: java.nio.file.Paths.get(System.getProperty("user.home"), ".svod", "secrets")
+                val userRegistry = dev.svod.engine.api.UserRegistry(config.toUserSpecs())
+                val userController = UserController(configStore, userRegistry, secretsDir)
+                val secretStore = SecretStore(secretsDir)
+                val appApiTls = config.appApiTls?.let { t ->
+                    val ks = dev.svod.engine.security.Keystores.load(
+                        java.nio.file.Paths.get(t.keystorePath),
+                        dev.svod.engine.security.Secrets.resolve(t.keystorePassword).toCharArray(),
+                    )
+                    AppApiServer.Tls(ks, t.keyAlias,
+                        dev.svod.engine.security.Secrets.resolve(t.keystorePassword).toCharArray(),
+                        dev.svod.engine.security.Secrets.resolve(t.keyPassword).toCharArray())
+                }
                 val updateService = UpdateService(
-                    currentAppVersion = "1.19.2",
+                    currentAppVersion = "1.20.0",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 val api = AppApiServer(
@@ -183,6 +199,8 @@ class SvodNode private constructor(
                         embedderModel = ecView.modelName,
                         embedderEndpoint = ecView.endpointOrNull,
                         webViewerPath = config.webViewerPath,
+                        localAdmin = config.localAdmin,
+                        tls = appApiTls,
                     ),
                     readiness = { ready.get() },
                     embedderControl = embedderControl,
@@ -190,6 +208,9 @@ class SvodNode private constructor(
                     vaultRemover = vaultCreator,
                     agentAdmin = agentController,
                     updateAdmin = updateService,
+                    users = userRegistry,
+                    userAdmin = userController,
+                    secrets = secretStore,
                     backup = backup,
                     syncConfig = { vc ->
                         val b = backup.configOf(vc.id)

@@ -24,7 +24,9 @@ import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.engine.sslConnector
 import io.ktor.server.http.content.staticFiles
+import io.ktor.server.netty.Netty
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.http.ContentType
 import io.ktor.server.request.path
@@ -47,13 +49,16 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * The UI-facing App API: REST + WebSocket over Ktor, bound to 127.0.0.1 ONLY (invariant 7).
- * It is the contract surface defined by `contract/openapi.yaml`. Unlike the MCP endpoint it
- * has no per-agent auth — it is loopback-trusted and acts as a single UI identity.
+ * The UI-facing App API: REST + WebSocket over Ktor. It is the contract surface defined by
+ * `contract/openapi.yaml`. Bound to 127.0.0.1 by default (invariant 7), where a request without a
+ * key is the trusted local UI; a shared engine (ADR-0019) binds to the network over TLS and every
+ * caller presents a personal key that [AppApiAuth] resolves to a [Principal] with per-vault roles.
  *
  * Multi-vault: every per-vault route resolves an optional `?vault=` (default vault when omitted)
  * via the [VaultRouter]. An unknown vault id is a 404. The single-vault convenience constructor
@@ -86,6 +91,12 @@ class AppApiServer(
     private val agentAdmin: AgentAdmin? = null,
     /** Runtime self-update; null ⇒ /update endpoints return 501. */
     private val updateAdmin: UpdateAdmin? = null,
+    /** Personal-key principals (ADR-0019); null ⇒ only the local UI can call (a key is always 401). */
+    private val users: UserRegistry? = null,
+    /** Runtime user management; null ⇒ /users endpoints return 501. */
+    private val userAdmin: UserAdmin? = null,
+    /** Stores a secret on the engine host for a remote UI; null ⇒ POST /secrets returns 501. */
+    private val secrets: SecretSink? = null,
 ) {
     /** Back-compat single-vault constructor (one engine/index, optional conflicts + sync status). */
     constructor(
@@ -116,6 +127,18 @@ class AppApiServer(
         val uiAuthor: Author = Author("svod-ui", "ui@svod.local"),
         /** When set to a directory, the reference web viewer is served same-origin at `/`. */
         val webViewerPath: String? = null,
+        /** A loopback request without a key is the local UI (admin). Off for a shared engine. */
+        val localAdmin: Boolean = true,
+        /** Serve over HTTPS (Netty) instead of plain HTTP (CIO). */
+        val tls: Tls? = null,
+    )
+
+    /** TLS material for serving the App API over HTTPS (same shape as the MCP server's). */
+    data class Tls(
+        val keyStore: java.security.KeyStore,
+        val keyAlias: String,
+        val keyStorePassword: CharArray,
+        val privateKeyPassword: CharArray,
     )
 
     class Running(val embedded: EmbeddedServer<*, *>, val port: Int, private val onStop: () -> Unit = {}) {
@@ -129,7 +152,18 @@ class AppApiServer(
     fun start(requestedPort: Int = 0): Running {
         eventBus.publish(EventTypes.ENGINE_STATUS) { put("status", "ready") }
 
-        val embedded = embeddedServer(CIO, host = config.host, port = requestedPort) { module() }
+        val tls = config.tls
+        // CIO cannot serve TLS; Netty (already here for MCP) does. Plain HTTP keeps the CIO path unchanged.
+        val embedded: EmbeddedServer<*, *> = if (tls == null) {
+            embeddedServer(CIO, host = config.host, port = requestedPort) { module() }
+        } else {
+            val h = config.host
+            embeddedServer(Netty, configure = {
+                sslConnector(tls.keyStore, tls.keyAlias, { tls.keyStorePassword }, { tls.privateKeyPassword }) {
+                    host = h; port = requestedPort
+                }
+            }) { module() }
+        }
         embedded.start(wait = false)
         val port = runBlocking { embedded.engine.resolvedConnectors().first().port }
         return Running(embedded, port) { linkIndexes.values.forEach { runCatching { it.close() } } }
@@ -138,9 +172,15 @@ class AppApiServer(
     /** Resolve the request's target vault (`?vault=`, default when omitted); null ⇒ unknown id. */
     private fun RoutingContext.vault(): VaultView? = vaults.resolve(call.request.queryParameters["vault"])
 
+    private val localPrincipal: Principal get() = Principal.local(config.uiAuthor)
+
+    /** The authenticated caller ([AppApiAuth] sets it on every /api call; the local UI otherwise). */
+    private fun RoutingContext.principal(): Principal = call.attributes.getOrNull(AppApiAuth.PrincipalKey) ?: localPrincipal
+
     private fun Application.module() {
         install(ContentNegotiation) { json(jsonFormat) }
         install(WebSockets)
+        AppApiAuth.install(this, users, config.localAdmin, localPrincipal) { id -> vaults.resolve(id)?.id }
 
         routing {
             get("/health") { call.respond(HealthDto()) }
@@ -156,7 +196,11 @@ class AppApiServer(
             get("/metrics") { call.respondText(prometheusExposition(), ContentType.Text.Plain) }
 
             get("/api/v1/vaults") {
-                call.respond(VaultsDto(vaults.all().map { VaultInfoDto(it.id, it.name, it.id == vaults.defaultId(), vaultStatus(it)) }))
+                // A person sees only the vaults they have a role in; the row says which role.
+                val p = principal()
+                call.respond(VaultsDto(vaults.all().filter { p.canRead(it.id) }.map {
+                    VaultInfoDto(it.id, it.name, it.id == vaults.defaultId(), vaultStatus(it), role = p.roleLabel(it.id))
+                }))
             }
             post("/api/v1/vaults") {
                 val creator = vaultCreator ?: return@post call.notImplemented("vault creation")
@@ -233,6 +277,69 @@ class AppApiServer(
                 }
             }
 
+            // ---- People (ADR-0019): who may reach this engine, with which role per vault ----
+
+            get("/api/v1/me") {
+                val p = principal()
+                call.respond(MeDto(p.userId, p.author.name, p.admin, p.local, p.grants.map { (v, r) -> VaultGrantDto(v, r.name.lowercase()) }))
+            }
+            get("/api/v1/users") {
+                val admin = userAdmin ?: return@get call.notImplemented("user management")
+                call.respond(UsersDto(admin.list().map { it.toDto() }))
+            }
+            post("/api/v1/users") {
+                val admin = userAdmin ?: return@post call.notImplemented("user management")
+                val req = call.receive<CreateUserRequest>()
+                try {
+                    val created = admin.create(req)
+                    call.respond(HttpStatusCode.Created, CreatedUserDto(created.user.toDto(), created.key))
+                } catch (e: UserAdmin.InvalidRequest) {
+                    call.badRequest(e.message ?: "invalid user request")
+                } catch (e: UserAdmin.Conflict) {
+                    call.respond(HttpStatusCode.Conflict, ErrorDto("conflict", e.message ?: "user already exists"))
+                }
+            }
+            put("/api/v1/users/{id}") {
+                val admin = userAdmin ?: return@put call.notImplemented("user management")
+                val id = call.parameters["id"] ?: return@put call.badRequest("missing user id")
+                val req = call.receive<UpdateUserRequest>()
+                try {
+                    call.respond(admin.update(id, req).toDto())
+                } catch (e: UserAdmin.UnknownUser) {
+                    call.notFound(e.message ?: "unknown user")
+                } catch (e: UserAdmin.InvalidRequest) {
+                    call.badRequest(e.message ?: "invalid user request")
+                }
+            }
+            delete("/api/v1/users/{id}") {
+                val admin = userAdmin ?: return@delete call.notImplemented("user management")
+                val id = call.parameters["id"] ?: return@delete call.badRequest("missing user id")
+                try {
+                    admin.delete(id)
+                    call.respond(buildJsonObject { put("userId", id) })
+                } catch (e: UserAdmin.UnknownUser) {
+                    call.notFound(e.message ?: "unknown user")
+                }
+            }
+            post("/api/v1/users/{id}/key") {
+                val admin = userAdmin ?: return@post call.notImplemented("user management")
+                val id = call.parameters["id"] ?: return@post call.badRequest("missing user id")
+                try {
+                    call.respond(RotatedKeyDto(id, admin.rotateKey(id)))
+                } catch (e: UserAdmin.UnknownUser) {
+                    call.notFound(e.message ?: "unknown user")
+                }
+            }
+            post("/api/v1/secrets") {
+                val sink = secrets ?: return@post call.notImplemented("secret storage")
+                val req = call.receive<CreateSecretRequest>()
+                try {
+                    call.respond(HttpStatusCode.Created, SecretRefDto(sink.store(req.name, req.value)))
+                } catch (e: SecretSink.InvalidName) {
+                    call.badRequest(e.message ?: "invalid secret")
+                }
+            }
+
             get("/api/v1/update/check") {
                 val admin = updateAdmin ?: return@get call.notImplemented("update")
                 call.respond(admin.check())
@@ -263,27 +370,27 @@ class AppApiServer(
                 val vc = vault() ?: return@put call.notFound("vault")
                 val path = call.path() ?: return@put call.badRequest("missing path")
                 val body = call.receive<WriteRequestDto>()
-                respondOutcome(vc, vc.engine.write(path, body.content, body.expectedRevision, config.uiAuthor), "write")
+                respondOutcome(vc, vc.engine.write(path, body.content, body.expectedRevision, principal().author), "write")
             }
             delete("/api/v1/file") {
                 val vc = vault() ?: return@delete call.notFound("vault")
                 val path = call.path() ?: return@delete call.badRequest("missing path")
                 val rev = call.request.queryParameters["expectedRevision"]
-                respondOutcome(vc, vc.engine.delete(path, rev, config.uiAuthor), "delete")
+                respondOutcome(vc, vc.engine.delete(path, rev, principal().author), "delete")
             }
 
             post("/api/v1/file/move") {
                 val vc = vault() ?: return@post call.notFound("vault")
                 val req = call.receive<MoveRequestDto>()
-                val moved = vc.engine.moveWithLinks(req.from, req.to, req.expectedRevision, config.uiAuthor)
+                val moved = vc.engine.moveWithLinks(req.from, req.to, req.expectedRevision, principal().author)
                 when (val o = moved.outcome) {
                     is WriteOutcome.Success -> {
-                        publishCommit(vc, o, "move")
+                        publishCommit(vc, o, "move", principal().author)
                         // Cross-vault link integrity (D7): rewrite qualified [[vault:note]] backlinks
                         // living in OTHER vaults. Best-effort, per-repo commits — never atomic across
                         // repos, never loses data (the move already stands; a failed rewrite just
                         // leaves a stale link that surfaces as a cross-vault backlink to fix).
-                        if (vaults.ids().size > 1) runCatching { crossVaultRelink(vc.id, req.from, req.to) }
+                        if (vaults.ids().size > 1) runCatching { crossVaultRelink(vc.id, req.from, req.to, principal().author) }
                         call.respond(MoveResultDto(o.path, o.revision, o.commit, moved.rewrittenBacklinks))
                     }
                     is WriteOutcome.Conflict -> { publishConflict(vc, o.path); call.respond(HttpStatusCode.Conflict, o.toConflictDto()) }
@@ -295,7 +402,7 @@ class AppApiServer(
             post("/api/v1/file/restore") {
                 val vc = vault() ?: return@post call.notFound("vault")
                 val req = call.receive<RestoreRequestDto>()
-                respondOutcome(vc, vc.engine.restore(req.trashPath, req.to, config.uiAuthor), "restore")
+                respondOutcome(vc, vc.engine.restore(req.trashPath, req.to, principal().author), "restore")
             }
 
             get("/api/v1/file/history") {
@@ -361,7 +468,9 @@ class AppApiServer(
                 if (across) {
                     // Federated: query every vault, tag each hit with its vault, merge by score.
                     val hits = ArrayList<SearchHitDto>()
+                    val p = principal()
                     for (v in vaults.all()) {
+                        if (!p.canRead(v.id)) continue
                         val r = v.index.search(SearchQuery(q, filters, mode, limit))
                         r.hits.forEach { hits.add(SearchHitDto(it.path, it.heading, it.snippet, it.score, it.matchedKeyword, it.matchedSemantic, it.tags, v.id, dev.svod.engine.index.estimateTokens(it.snippet))) }
                     }
@@ -519,10 +628,10 @@ class AppApiServer(
                 // revision, so a change landing after the client resolved still yields 409 rather
                 // than a silent overwrite (invariant 4); a client may pin its own expectedRevision.
                 val expected = req.expectedRevision ?: vc.engine.read(req.path)?.revision
-                when (val o = vc.engine.write(req.path, req.content, expected, config.uiAuthor)) {
+                when (val o = vc.engine.write(req.path, req.content, expected, principal().author)) {
                     is WriteOutcome.Success -> {
                         vc.conflicts?.resolve(req.path)
-                        publishCommit(vc, o, "resolve")
+                        publishCommit(vc, o, "resolve", principal().author)
                         call.respond(WriteResultDto(o.path, o.revision, o.commit))
                     }
                     is WriteOutcome.Conflict -> { publishConflict(vc, o.path); call.respond(HttpStatusCode.Conflict, o.toConflictDto()) }
@@ -754,9 +863,9 @@ class AppApiServer(
                 // writeBytes (not write) — raw transcripts routinely contain secrets; the capture store
                 // keeps them verbatim and quarantines them from recall, so the write-path secret scanner
                 // is deliberately bypassed here (it would otherwise Block a transcript carrying a token).
-                when (val o = vc.engine.writeBytes(path, note.toByteArray(Charsets.UTF_8), null, config.uiAuthor)) {
+                when (val o = vc.engine.writeBytes(path, note.toByteArray(Charsets.UTF_8), null, principal().author)) {
                     is WriteOutcome.Success -> {
-                        publishCommit(vc, o, "memory.capture")
+                        publishCommit(vc, o, "memory.capture", principal().author)
                         call.respond(CaptureResultDto(o.path, o.revision, deduped = false))
                     }
                     is WriteOutcome.Conflict -> { publishConflict(vc, o.path); call.respond(HttpStatusCode.Conflict, o.toConflictDto()) }
@@ -783,7 +892,7 @@ class AppApiServer(
                     val fc = vc.engine.read(p) ?: continue
                     val next = SessionNotes.withDistilled(fc.text)
                     if (next == fc.text) continue
-                    if (vc.engine.writeBytes(p, next.toByteArray(Charsets.UTF_8), fc.revision, config.uiAuthor) is WriteOutcome.Success) updated++
+                    if (vc.engine.writeBytes(p, next.toByteArray(Charsets.UTF_8), fc.revision, principal().author) is WriteOutcome.Success) updated++
                 }
                 MemoryStore(vc.engine.root).recordDistill(req.noteRefs, System.currentTimeMillis())
                 call.respond(MarkDistilledResultDto(updated))
@@ -824,7 +933,12 @@ class AppApiServer(
             }
 
             webSocket("/api/v1/events") {
-                eventBus.events.collect { e -> send(Frame.Text(encodeEvent(e))) }
+                // A person receives events only for vaults they can read; untagged events pass through.
+                val p = call.attributes.getOrNull(AppApiAuth.PrincipalKey) ?: localPrincipal
+                eventBus.events.collect { e ->
+                    val v = runCatching { e.data["vault"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+                    if (v == null || p.canRead(v)) send(Frame.Text(encodeEvent(e)))
+                }
             }
 
             // An unmatched path UNDER /api is a client error, not a viewer route.
@@ -942,6 +1056,7 @@ class AppApiServer(
     }
 
     private fun AgentSpecView.toDto() = AgentDto(agentId, name, role, vaults, tokenRef, prompt)
+    private fun UserSpecView.toDto() = UserDto(userId, name, email, admin, grants, keyRef)
 
     /** All captured session notes' frontmatter for [vc] (bypasses the index — reads notes directly). */
     private suspend fun sessionMetas(vc: VaultView): List<SessionMeta> =
@@ -977,15 +1092,15 @@ class AppApiServer(
 
     private suspend fun RoutingContext.respondOutcome(vc: VaultView, outcome: WriteOutcome, tool: String) {
         when (outcome) {
-            is WriteOutcome.Success -> { publishCommit(vc, outcome, tool); call.respond(WriteResultDto(outcome.path, outcome.revision, outcome.commit)) }
+            is WriteOutcome.Success -> { publishCommit(vc, outcome, tool, principal().author); call.respond(WriteResultDto(outcome.path, outcome.revision, outcome.commit)) }
             is WriteOutcome.Conflict -> { publishConflict(vc, outcome.path); call.respond(HttpStatusCode.Conflict, outcome.toConflictDto()) }
             is WriteOutcome.NotFound -> call.notFound(outcome.path)
             is WriteOutcome.Blocked -> call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("blocked", "secret(s) detected: ${outcome.findings.joinToString(", ")}"))
         }
     }
 
-    private fun publishCommit(vc: VaultView, s: WriteOutcome.Success, tool: String) {
-        eventBus.publish(EventTypes.COMMIT_CREATED) { put("vault", vc.id); put("commit", s.commit); put("path", s.path); put("author", config.uiAuthor.name); put("tool", tool) }
+    private fun publishCommit(vc: VaultView, s: WriteOutcome.Success, tool: String, author: Author) {
+        eventBus.publish(EventTypes.COMMIT_CREATED) { put("vault", vc.id); put("commit", s.commit); put("path", s.path); put("author", author.name); put("tool", tool) }
         eventBus.publish(EventTypes.FILE_CHANGED) { put("vault", vc.id); put("path", s.path); put("source", "api") }
     }
 
@@ -1018,7 +1133,7 @@ class AppApiServer(
      * Each rewrite is a separate, optimistic commit in its own repo (D7) — best-effort: a failure
      * leaves the move intact and the stale link merely unresolved, never a lost file.
      */
-    private suspend fun crossVaultRelink(movedVault: String, from: String, to: String) {
+    private suspend fun crossVaultRelink(movedVault: String, from: String, to: String, author: Author) {
         val fromBase = from.substringAfterLast('/').removeSuffix(".md")
         val fromNorm = from.removeSuffix(".md")
         val toRef = if ('/' in to) to.removeSuffix(".md") else to.substringAfterLast('/').removeSuffix(".md")
@@ -1034,7 +1149,7 @@ class AppApiServer(
                     if (tgtVault == movedVault && (tgt == fromNorm || tgt.substringAfterLast('/') == fromBase))
                         "[[$movedVault:$toRef$suffix]]" else m.value
                 }
-                if (updated != fc.text) runCatching { v.engine.write(path, updated, fc.revision, config.uiAuthor) }
+                if (updated != fc.text) runCatching { v.engine.write(path, updated, fc.revision, author) }
             }
         }
     }
