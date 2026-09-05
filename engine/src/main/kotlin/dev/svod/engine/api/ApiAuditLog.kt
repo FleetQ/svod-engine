@@ -5,7 +5,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
 
 /**
  * Who did what on the App API — one JSON line per request by a PERSON (a keyed principal). The
@@ -34,10 +33,8 @@ class ApiAuditLog(private val file: Path, private val clock: () -> Long = System
     fun record(userId: String, method: String, path: String, vault: String?, status: Int, ip: String?) {
         val line = json.encodeToString(Entry.serializer(), Entry(clock(), userId, method, path, vault, status, ip)) + "\n"
         synchronized(lock) {
-            runCatching {
-                if (!Files.exists(file)) SecretFiles.write(file, "")
-                Files.writeString(file, line, StandardOpenOption.APPEND)
-            }.onFailure { log.warn("api audit: cannot append to {}: {}", file, it.message) }
+            runCatching { SecretFiles.append(file, line) }
+                .onFailure { log.warn("api audit: cannot append to {}: {}", file, it.message) }
         }
     }
 

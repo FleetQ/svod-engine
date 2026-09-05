@@ -18,16 +18,23 @@ import java.net.URLDecoder
  * Authentication + authorization for every call under `/api/`, in ONE place so no route can forget it
  * (ADR-0019). Three decisions per call, in order:
  *
- *  1. **Who** — `Authorization: Bearer <key>` resolves through the [UserRegistry]; no header on a
- *     loopback connection with `localAdmin` on is the local UI (admin). Anything else is 401.
+ *  1. **Who** — `Authorization: Bearer <key>` resolves through the [UserRegistry]. No header is the
+ *     local UI (admin) only when `localAdmin` is on, the peer address is loopback, the `Host`
+ *     header names a loopback host and there is no foreign `Origin` — see [hostAllowed] and
+ *     [originAllowed] for why a browser on the same machine would otherwise qualify. Anything
+ *     else is 401.
  *  2. **Engine admin** — the routes in [ADMIN_ROUTES] (users, agents, backup, vaults, update,
  *     sources, import, index/embedder control) need `admin`; otherwise 403.
  *  3. **Vault access** — every vault-scoped route resolves its `?vault=` (default when omitted): no
- *     read grant ⇒ 403; a non-GET without an EDITOR grant ⇒ 403. An unknown vault id is left to the
- *     route, which answers 404 as before.
+ *     read grant ⇒ 404 with the same body as an unknown vault id (no enumeration); a non-GET
+ *     without an EDITOR grant ⇒ 403.
  *
- * `/health`, `/ready`, `/metrics` and the reference web viewer stay open: they are the ops surface,
- * not the vault.
+ * `/health`, `/ready` and the reference web viewer stay open (no vault data). `/metrics` lists
+ * every vault, so on a shared engine (`localAdmin=false`) it needs an admin key — enforced in its
+ * own route because it is not under `/api/`.
+ *
+ * Every request by a keyed principal, and every refusal, is one line in [ApiAuditLog]; refusals
+ * are also WARN-logged with the peer address and the reason, never the key.
  */
 object AppApiAuth {
 
@@ -71,6 +78,21 @@ object AppApiAuth {
             raw.count { it == ':' } > 1 -> raw                                     // bare IPv6
             else -> raw.substringBefore(':')                                       // name:port
         }
+        return host in LOOPBACK_NAMES
+    }
+
+    /**
+     * The second half of the browser threat: a WebSocket handshake carries a legitimate loopback
+     * `Host` and is not subject to CORS, so `new WebSocket("ws://127.0.0.1:7619/api/v1/events")`
+     * from https://evil.example would pass [hostAllowed] and, keyless, become the local admin.
+     * Browsers always send `Origin` on WebSocket upgrades and on cross-site fetches; native
+     * clients (the app, curl, the MCP bridges) send none. So: no `Origin`, or a loopback one (the
+     * reference web viewer served by this engine), is fine — any other origin is not the local UI.
+     */
+    internal fun originAllowed(call: ApplicationCall): Boolean {
+        val origin = call.request.headers[HttpHeaders.Origin]?.trim()?.lowercase() ?: return true
+        if (origin == "null") return false
+        val host = origin.substringAfter("://", "").let { h -> if (h.startsWith("[")) h.substringBefore("]").removePrefix("[") else h.substringBefore(':').substringBefore('/') }
         return host in LOOPBACK_NAMES
     }
     private val IPV4 = Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")
@@ -156,7 +178,8 @@ object AppApiAuth {
             if (principal == null) {
                 val reason = when {
                     call.request.headers[HttpHeaders.Authorization] != null -> "key not accepted"
-                    localAdmin && isLoopback(call) -> "keyless loopback request with non-loopback Host '${call.request.headers[HttpHeaders.Host]}'"
+                    localAdmin && isLoopback(call) && !hostAllowed(call) -> "keyless loopback request with non-loopback Host '${call.request.headers[HttpHeaders.Host]}'"
+                    localAdmin && isLoopback(call) -> "keyless loopback request from a foreign Origin '${call.request.headers[HttpHeaders.Origin]}'"
                     else -> "no key"
                 }
                 denied(call, path, reason)
@@ -207,7 +230,7 @@ object AppApiAuth {
             val key = header.trim().let { if (it.startsWith("Bearer ", ignoreCase = true)) it.substring(7).trim() else it }
             return users?.authenticate(key)?.also { activity?.touch(it.userId) }
         }
-        return if (localAdmin && isLoopback(call) && hostAllowed(call)) localPrincipal else null
+        return if (localAdmin && isLoopback(call) && hostAllowed(call) && originAllowed(call)) localPrincipal else null
     }
 
     /**

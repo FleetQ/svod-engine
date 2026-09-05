@@ -116,10 +116,11 @@ class PrincipalAuthTest {
          * A raw GET over a socket: java.net.http refuses to set `Host`, and HTTP/1.0 is the only
          * way to send no Host at all. Returns the status code.
          */
-        fun rawGet(path: String, host: String?, key: String? = null): Int = java.net.Socket("127.0.0.1", port).use { sock ->
+        fun rawGet(path: String, host: String?, key: String? = null, origin: String? = null): Int = java.net.Socket("127.0.0.1", port).use { sock ->
             val lines = mutableListOf(if (host == null) "GET $path HTTP/1.0" else "GET $path HTTP/1.1")
             if (host != null) lines += "Host: $host"
             if (key != null) lines += "Authorization: Bearer $key"
+            if (origin != null) lines += "Origin: $origin"
             lines += "Connection: close"
             sock.getOutputStream().write((lines.joinToString("\r\n") + "\r\n\r\n").toByteArray())
             sock.getOutputStream().flush()
@@ -311,6 +312,29 @@ class PrincipalAuthTest {
             assertEquals(401, fx.rawGet("/api/v1/tree", host = "127.0.0.1.evil.example"))
             assertEquals(200, fx.rawGet("/api/v1/tree", host = "evil.example", key = "k-editor"), "a keyed request does not depend on Host")
             assertEquals(401, fx.rawGet("/api/v1/tree", host = null), "no Host header at all is not loopback either")
+        }
+    }
+
+    @Test
+    fun `a keyless request from a foreign Origin is not the local UI - cross-origin WebSocket`(): Unit = runBlocking {
+        Fixture().use { fx ->
+            val h = "127.0.0.1:${fx.port}"
+            // A page on evil.example opening ws://127.0.0.1/api/v1/events: Host is legitimately loopback, Origin is not.
+            assertEquals(401, fx.rawGet("/api/v1/tree", host = h, origin = "https://evil.example"))
+            assertEquals(401, fx.rawGet("/api/v1/tree", host = h, origin = "null"), "an opaque origin (sandboxed iframe, file://) is not ours either")
+            assertEquals(200, fx.rawGet("/api/v1/tree", host = h, origin = "http://$h"), "the engine's own web viewer")
+            assertEquals(200, fx.rawGet("/api/v1/tree", host = h, origin = "http://localhost:${fx.port}"))
+            assertEquals(200, fx.rawGet("/api/v1/tree", host = h), "native clients send no Origin")
+            assertEquals(200, fx.rawGet("/api/v1/tree", host = h, key = "k-editor", origin = "https://evil.example"), "a keyed request does not depend on Origin")
+            // The real thing: a WebSocket upgrade with a foreign Origin and no key must be refused.
+            val client = HttpClient(CIO) { install(WebSockets) }
+            val r = runCatching {
+                withTimeout(3000) {
+                    client.webSocket(host = "127.0.0.1", port = fx.port, path = "/api/v1/events", request = { header("Origin", "https://evil.example") }) { incoming.receive() }
+                }
+            }
+            assertTrue(r.isFailure, "cross-origin keyless WebSocket must not be upgraded")
+            client.close()
         }
     }
 
