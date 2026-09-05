@@ -116,7 +116,7 @@ class VaultContext private constructor(
                 val syncEngine = SyncEngine(engine, syncGit, conflicts, eventBus, vs.id, hostId)
 
                 // The suspect: methvin's DirectoryWatcher hashes the whole tree when it is built.
-                val watcher = phase(vs.id, "file watcher start") { FileWatcher(vault, engine, index, eventBus).start() }
+                val watcher = phase(vs.id, "file watcher start") { FileWatcher(vault, engine, index, eventBus, vaultId = vs.id).start() }
 
                 // Derived thematic graph. Disabled by default; start() is a no-op unless enabled, and
                 // a build never blocks startup or touches the Lucene index.

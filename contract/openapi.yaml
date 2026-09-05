@@ -1,11 +1,13 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.29.0
+  version: 0.30.0
   description: >
-    Local control + client API for the Svod engine. Binds to 127.0.0.1 ONLY; remote agent
-    access goes through the MCP endpoint, not this API. This contract is the single source of
-    truth for all UI clients (Swift, web, …) and is versioned independently of the engine.
+    Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
+    engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
+    `localAdmin=false` (ADR-0019). Remote AGENT access goes through the MCP endpoint, not this
+    API. This contract is the single source of truth for all UI clients (Swift, web, …) and is
+    versioned independently of the engine.
   license:
     name: Apache-2.0
 
@@ -628,6 +630,159 @@ paths:
                 properties:
                   agentId: { type: string }
         "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /api/v1/me:
+    get:
+      tags: [meta]
+      summary: >
+        Who is calling (0.30.0, ADR-0019): the principal behind the personal key, or the local UI
+        identity on loopback. The app uses it as the connection test for a central engine and to
+        derive per-vault read-only state.
+      operationId: me
+      responses:
+        "200":
+          description: The caller
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Me" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/users:
+    get:
+      tags: [meta]
+      summary: List the people who may reach this engine (admin only). Keys are never returned.
+      operationId: listUsers
+      responses:
+        "200":
+          description: Users
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Users" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+    post:
+      tags: [meta]
+      summary: >
+        Create a person (admin only). The engine generates the personal key, stores it on its own
+        host, persists the user in config and hot-loads it — the key authenticates on the next call,
+        no restart. The raw key is returned exactly once, in this response.
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateUserRequest" }
+      responses:
+        "201":
+          description: The created user and its one-time key
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreatedUser" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409":
+          description: Duplicate userId.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /api/v1/users/{id}:
+    put:
+      tags: [meta]
+      summary: Update a person's name, email, admin flag or grants (admin only). Omitted fields are unchanged.
+      operationId: updateUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateUserRequest" }
+      responses:
+        "200":
+          description: The updated user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+    delete:
+      tags: [meta]
+      summary: Revoke a person (admin only). Their key stops authenticating on the next call.
+      operationId: deleteUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [userId]
+                properties:
+                  userId: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /api/v1/users/{id}/key:
+    post:
+      tags: [meta]
+      summary: Rotate a person's key (admin only). The old key fails immediately; the new one is returned once.
+      operationId: rotateUserKey
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The new key (shown once)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RotatedKey" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "501": { $ref: "#/components/responses/NotImplemented" }
+
+  /api/v1/secrets:
+    post:
+      tags: [meta]
+      summary: >
+        Store a secret on the engine host (admin only) and get back a `file:` Secrets ref to use in
+        config fields such as PUT /settings/backup — so a GitHub token typed once in a remote UI
+        never has to travel again and never appears in a response.
+      operationId: createSecret
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSecretRequest" }
+      responses:
+        "201":
+          description: The ref
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SecretRef" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "501": { $ref: "#/components/responses/NotImplemented" }
 
   /api/v1/update/check:
@@ -1268,6 +1423,26 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: No personal key, or an unknown one (0.30.0). The local UI on loopback needs none.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: >
+        The principal lacks the role for this operation (0.30.0): an engine-admin route without
+        `admin`, a vault without a grant, or a mutation with only a `reader` grant.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  securitySchemes:
+    personalKey:
+      type: http
+      scheme: bearer
+      description: >
+        A personal API key issued by an engine admin (POST /api/v1/users). Every route under
+        /api/v1 accepts it; on loopback with `localAdmin` on, omitting it means the local UI.
 
   schemas:
     Health:
@@ -1679,6 +1854,10 @@ components:
         name: { type: string }
         default: { type: boolean }
         sync: { $ref: "#/components/schemas/SyncStatus" }
+        role:
+          type: string
+          enum: [admin, editor, reader]
+          description: The caller's access to this vault (0.30.0; absent on older engines).
 
     Vaults:
       type: object
@@ -1719,6 +1898,97 @@ components:
         filesDeleted:
           type: boolean
           description: True when the engine recursively deleted the directory from disk (deleteFiles=true).
+
+    VaultGrant:
+      type: object
+      required: [vault, role]
+      properties:
+        vault: { type: string }
+        role: { type: string, enum: [reader, editor] }
+
+    User:
+      type: object
+      required: [userId, name, admin, grants, keyRef]
+      description: One person with App API access. `keyRef` is the Secrets ref, never the key.
+      properties:
+        userId: { type: string }
+        name: { type: string }
+        email: { type: string }
+        admin: { type: boolean }
+        grants:
+          type: array
+          items: { $ref: "#/components/schemas/VaultGrant" }
+        keyRef: { type: string }
+
+    Users:
+      type: object
+      required: [users]
+      properties:
+        users:
+          type: array
+          items: { $ref: "#/components/schemas/User" }
+
+    CreateUserRequest:
+      type: object
+      required: [userId, name]
+      properties:
+        userId: { type: string, description: "^[a-z0-9][a-z0-9_-]*$" }
+        name: { type: string }
+        email: { type: string }
+        admin: { type: boolean, default: false }
+        grants:
+          type: array
+          items: { $ref: "#/components/schemas/VaultGrant" }
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        name: { type: string }
+        email: { type: string }
+        admin: { type: boolean }
+        grants:
+          type: array
+          items: { $ref: "#/components/schemas/VaultGrant" }
+
+    CreatedUser:
+      type: object
+      required: [user, key]
+      description: The only response that carries a raw key.
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        key: { type: string }
+
+    RotatedKey:
+      type: object
+      required: [userId, key]
+      properties:
+        userId: { type: string }
+        key: { type: string }
+
+    Me:
+      type: object
+      required: [userId, name, admin, local, grants]
+      properties:
+        userId: { type: string }
+        name: { type: string }
+        admin: { type: boolean }
+        local: { type: boolean, description: The loopback UI identity (no key presented). }
+        grants:
+          type: array
+          items: { $ref: "#/components/schemas/VaultGrant" }
+
+    CreateSecretRequest:
+      type: object
+      required: [name, value]
+      properties:
+        name: { type: string, description: "^[a-z0-9][a-z0-9_.-]*$" }
+        value: { type: string }
+
+    SecretRef:
+      type: object
+      required: [ref]
+      properties:
+        ref: { type: string, description: "A `file:` Secrets ref on the engine host." }
 
     Agent:
       type: object

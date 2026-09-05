@@ -692,7 +692,7 @@ class SvodTools(
             }
             is WriteOutcome.Conflict -> {
                 audit.record(agent.agentId, tool, "conflict", path, target, outcome.current)
-                eventBus.publish(EventTypes.CONFLICT) { put("path", outcome.path); put("agentId", agent.agentId); put("tool", tool) }
+                eventBus.publish(EventTypes.CONFLICT) { put("path", outcome.path); put("agentId", agent.agentId); put("tool", tool); putVault() }
                 ToolResult.conflict {
                     put("path", outcome.path); put("expected", outcome.expected)
                     put("current", outcome.current); put("currentContent", outcome.currentContent)

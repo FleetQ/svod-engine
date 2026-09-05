@@ -3,6 +3,57 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.20.0 — 2026-09-05 (App API contract 0.30.0)
+
+### Added — people as App API principals (ADR-0019): a shared engine for a company vault
+
+The App API now knows **who** is calling. A person presents a personal key (`Authorization:
+Bearer svk_…`), resolves to a principal with an `admin` flag and per-vault `reader` / `editor`
+grants, and becomes the **git author** of every change they make — a shared vault's history names
+Мария, not `svod-ui`. One interceptor (`AppApiAuth`) does all of it: 401 without a key, 403 on
+engine-admin routes without `admin`, 403 on a vault without a grant, 403 on a write with only a
+`reader` grant. `GET /vaults` is filtered to the caller's grants (and says the role), federated
+search and the WebSocket event stream drop what the caller may not read.
+
+- `GET /api/v1/me` — who am I (the app's connection test for a central engine).
+- `GET/POST /api/v1/users`, `PUT/DELETE /api/v1/users/{id}`, `POST /api/v1/users/{id}/key` — admin
+  creates a person, the engine generates the key (stored `0600` next to the config, referenced as
+  `file:`), the raw key is returned **once**; rotate/revoke take effect on the next call, no restart.
+- `POST /api/v1/secrets` — upload a secret once to the engine host, get back a `file:` ref (the
+  company GitHub token never travels twice and never appears in a response).
+- `Vault.role` on every `/vaults` row.
+
+**Nothing changes for a single-user install.** `localAdmin: true` (default) keeps a loopback request
+without a key as the local UI — admin, author `svod-ui`, exactly as before. The whole existing suite
+runs in that mode.
+
+**Leaving loopback** (`host: "0.0.0.0"`) is allowed only with `appApiTls`, `mcpTls`, at least one
+admin user and `localAdmin: false`; config validation refuses anything less. The App API serves HTTPS
+through Netty when `appApiTls` is set (CIO cannot). `localAdmin: false` is also what a shared engine
+on loopback behind a TLS-terminating reverse proxy needs — on a shared host every other shell
+account is a loopback caller too.
+
+**Hardening found by review before release** (all covered by tests in `PrincipalAuthTest`,
+`SharedEngineConfigTest`, `UserAdminTest`):
+- The auth interceptor matches the path Ktor's router will match — empty segments dropped, each
+  segment percent-decoded — and answers 400 when the request path is not already canonical.
+  Previously `//api/v1/users` skipped authentication and `/api/v1/%75sers` skipped the admin table.
+- A route reached without a principal fails closed (500) instead of falling back to the local admin.
+- `isLoopback` reads only the socket's peer address as an IP literal: no reverse/forward DNS on the
+  request path, nothing a PTR record can influence.
+- A move rewrites `[[vault:note]]` links only in vaults the mover can WRITE; `/file/links` returns
+  cross-vault backlinks only from vaults the caller can READ.
+- Every vault-scoped event is tagged (`data.vault`): MCP conflicts, watcher `file.changed` and
+  `commit.created`. The `/events` filter no longer forwards vault content to the wrong reader.
+- With `localAdmin: false` the last admin cannot be deleted or demoted (400); `email: ""` clears the
+  email instead of persisting an empty git author; a user whose key file went missing is skipped
+  with a warning instead of blocking every admin operation.
+- `users[].keyRef` must be `env:`/`file:`/`keychain:` — a pasted key would have been echoed by
+  `GET /users`. `dist/secrets/` is git-ignored: the live config lives in this repo, and so would
+  every key file next to it.
+
+Contract 0.29.0 → **0.30.0** (additive: five paths, `Vault.role`, 401/403, a bearer security scheme).
+
 ## v1.19.1 — 2026-08-27 (App API contract 0.29.0)
 
 ### Fixed — a vault created at runtime was only half-wired until the next restart
