@@ -104,8 +104,8 @@ class PrincipalAuthTest {
         val port get() = running.port
         private val http = JHttpClient.newHttpClient()
 
-        fun req(method: String, path: String, key: String? = null, body: String? = null): HttpResponse<String> {
-            val b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port$path")).header("Content-Type", "application/json")
+        fun req(method: String, path: String, key: String? = null, body: String? = null, contentType: String = "application/json"): HttpResponse<String> {
+            val b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port$path")).header("Content-Type", contentType)
             if (key != null) b.header("Authorization", "Bearer $key")
             b.method(method, if (body == null) HttpRequest.BodyPublishers.noBody() else HttpRequest.BodyPublishers.ofString(body))
             return http.send(b.build(), HttpResponse.BodyHandlers.ofString())
@@ -375,6 +375,11 @@ class PrincipalAuthTest {
             assertEquals("maria", e.userId); assertEquals("/api/v1/file/move", e.path)
             assertEquals(r.statusCode(), e.status, "the audit line carries the status the client saw: $e")
             assertEquals(400, e.status)
+            // A body the route cannot even negotiate: Ktor answers 415, and so must the audit line.
+            val r2 = fx.req("POST", "/api/v1/file/move?vault=a", "k-editor", "from=old", contentType = "text/plain")
+            delay(200)
+            val e2 = fx.audit.entries().last()
+            assertEquals(415, r2.statusCode()); assertEquals(r2.statusCode(), e2.status, "$e2")
         }
     }
 

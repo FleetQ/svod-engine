@@ -8,18 +8,23 @@
 ### `api/AppApiAuth.kt`
 
 ```
+intercept(Monitoring):                                       [нов: audit]
+  canonical = canonicalPath(raw); само за /api/* и /metrics
+  try { proceed() } finally {
+    status = response.status ?: (400 | 404 | 415 за Ktor request exceptions, иначе 500)
+    principal → audit.record(userId, method, canonical, vault, status, ip)
+    няма principal и status ∈ {400,401,403} → audit.record("anonymous", …)
+  }
 intercept(Plugins):
-  raw → canonicalPath → (400 ако не е канонично)          [sprint 1]
+  raw → canonicalPath → (400 + WARN ако не е канонично)      [sprint 1, + WARN]
   principal = authenticate(call)                             [sprint 1]
-     ├ bearer → registry.authenticate(key) → touch lastUsed  [нов: activity.touch(userId)]
-     └ без bearer: localAdmin && isLoopback && hostAllowed   [нов: hostAllowed]
-  null → WARN "auth failed ip=… method=… path=… reason=no-key|bad-key|host" → 401
+     ├ bearer → registry.authenticate(key) → activity.touch(userId)
+     └ без bearer: localAdmin && isLoopback && hostAllowed && originAllowed
+  null → WARN "auth refused: METHOD path from ip: reason" → 401
   admin routes → 403 (WARN)
-  vault: !canRead → 404 not_found  (беше 403)                [нов]
+  vault: !canRead → 404 not_found (същото body като непознат vault)
          write && !canWrite → 403 (WARN)
   call.attributes[PrincipalKey] = principal
-after (ApplicationCallPipeline.Call, on response sent):
-  if (!principal.local) audit.record(ts, userId, method, path, vault, status, ip)   [нов]
 ```
 
 - `hostAllowed(call)`: `call.request.headers[Host]` → маха порт (`host:port`, `[v6]:port`) →

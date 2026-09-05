@@ -17,8 +17,9 @@ independently of the engine; each entry notes the contract version it ships.
   and the MCP bridges send a loopback `Host` and no `Origin`.
 - **Audit of people.** Every `/api` request (and `/metrics`) by a keyed principal is one JSON line
   in `<configDir>/audit-api.log` (0600): ts, userId, method, canonical path, `vault`, status, ip —
-  including requests that throw (with the status the client saw) and refused ones (`userId`
-  `anonymous`). No bodies, no query strings, no keys. The loopback UI is not audited (nobody to
+  including requests that throw (with the status Ktor sends for the request errors it maps —
+  400, 404, 413, 415 — and 500 for anything else) and refused ones (`userId` `anonymous`; a keyed
+  caller probing a non-canonical path is refused before it is identified, so it is `anonymous` too). No bodies, no query strings, no keys. The loopback UI is not audited (nobody to
   tell apart). The MCP agents' `.svod/audit/audit.log` is now 0600 too (was 0644).
 - **Refusals are logged** (WARN, `AppApiAuth`): method, path, peer address and the reason —
   `key not accepted`, `no key`, `<user> is not an admin`, `… has no grant on vault …`. Never

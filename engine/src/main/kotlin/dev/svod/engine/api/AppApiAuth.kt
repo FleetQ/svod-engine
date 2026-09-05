@@ -143,9 +143,16 @@ object AppApiAuth {
                     throw e
                 } finally {
                     val p = call.attributes.getOrNull(PrincipalKey)
-                    // Ktor answers a BadRequestException (unparseable body) with 400 and anything else with 500.
-                    val status = call.response.status()?.value
-                        ?: when (thrown) { null -> 0; is io.ktor.server.plugins.BadRequestException -> 400; else -> 500 }
+                    // The status Ktor's default handler will send for the exceptions it maps; 500 for the rest.
+                    val status = call.response.status()?.value ?: when (thrown) {
+                        null -> 0
+                        is io.ktor.server.plugins.BadRequestException -> 400
+                        is io.ktor.server.plugins.NotFoundException -> 404
+                        is io.ktor.server.plugins.UnsupportedMediaTypeException,
+                        is io.ktor.server.plugins.CannotTransformContentToTypeException -> 415
+                        is io.ktor.server.plugins.PayloadTooLargeException -> 413
+                        else -> 500
+                    }
                     // A refused request (401/403 before any principal) is audited as "anonymous":
                     // key guessing against a shared engine belongs in the file an admin reads after
                     // an incident, not only in the engine's own log.

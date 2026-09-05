@@ -18,7 +18,10 @@ object SecretFiles {
 
     /** Append to an owner-only file, creating it 0600 (and its directory 0700) when absent. [write] truncates; this does not. */
     fun append(path: Path, value: String) {
-        if (!Files.exists(path)) write(path, "") else runCatching { restrict(path) }   // a file created 0644 by an older build
+        if (!Files.exists(path)) write(path, "")
+        else runCatching {   // a file created 0644 by an older build: restrict it, once
+            if (Files.getFileStore(path).supportsFileAttributeView("posix") && Files.getPosixFilePermissions(path) != OWNER_RW) restrict(path)
+        }
         Files.writeString(path, value, StandardOpenOption.APPEND)
     }
 
