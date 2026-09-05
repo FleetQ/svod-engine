@@ -174,6 +174,9 @@ class SvodNode private constructor(
                 // next to the config (a config-less embed falls back to ~/.svod/secrets).
                 val secretsDir = configPath?.toAbsolutePath()?.parent?.resolve("secrets")
                     ?: java.nio.file.Paths.get(System.getProperty("user.home"), ".svod", "secrets")
+                val configDir = secretsDir.parent
+                val userActivity = dev.svod.engine.api.UserActivity(configDir.resolve("user-activity.json"))
+                val apiAudit = dev.svod.engine.api.ApiAuditLog(configDir.resolve("audit-api.log"))
                 val userRegistry = dev.svod.engine.api.UserRegistry(config.toUserSpecs())
                 val userController = UserController(configStore, userRegistry, secretsDir)
                 val secretStore = SecretStore(secretsDir)
@@ -187,7 +190,7 @@ class SvodNode private constructor(
                         dev.svod.engine.security.Secrets.resolve(t.keyPassword).toCharArray())
                 }
                 val updateService = UpdateService(
-                    currentAppVersion = "1.20.0",
+                    currentAppVersion = "1.21.0",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 val api = AppApiServer(
@@ -211,6 +214,8 @@ class SvodNode private constructor(
                     users = userRegistry,
                     userAdmin = userController,
                     secrets = secretStore,
+                    activity = userActivity,
+                    audit = apiAudit,
                     backup = backup,
                     syncConfig = { vc ->
                         val b = backup.configOf(vc.id)

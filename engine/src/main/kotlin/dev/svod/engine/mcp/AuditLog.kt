@@ -45,7 +45,8 @@ class AuditLog(private val file: Path, private val clock: () -> Long = System::c
         val entry = AuditEntry(clock(), agentId, tool, outcome, path, target, revision, detail)
         val line = json.encodeToString(AuditEntry.serializer(), entry) + "\n"
         synchronized(lock) {
-            Files.writeString(file, line, StandardOpenOption.CREATE, StandardOpenOption.APPEND)
+            // Agent ids and note paths: owner-only, like the App API audit (creates 0600, restricts an older 0644 file).
+            dev.svod.engine.security.SecretFiles.append(file, line)
         }
     }
 

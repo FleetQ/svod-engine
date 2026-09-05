@@ -101,7 +101,21 @@ GitHub PAT за backup, MCP токените на агентите.
   съдържание не бива да е четимо от оператора на сървъра, то не принадлежи в споделен vault.
 - **Секретите в бележки:** `secretScanning` е opt-in; на споделен engine го включи.
 
-## 5. Препоръки по ред на изпълнение
+## 5. Статус след sprint 2a (engine 1.21.0 / app 0.2.24, `design-shared-vault-hardening.md`)
+
+| Находка | Статус |
+|---|---|
+| §3.1 DNS rebinding | **Затворена.** Keyless loopback заявка се приема само с loopback `Host` **и** с `Origin`, който липсва (native клиент) или е равен на собствения `host:port` на engine-а (review-ът на sprint 2a показа, че WebSocket от чужд сайт носи loopback `Host` и не минава през CORS — `Origin` е това, което страницата не може да подправи; страница на друг loopback порт също е чужд origin). |
+| §3.2 Audit за хората | **Затворена.** `audit-api.log` (0600): всяка `/api` заявка на keyed principal + всяка отказана (`anonymous`), включително заявки, които хвърлят. |
+| §3.3 Лог на 401/403 | **Затворена.** WARN с IP, метод, път и причина; никога ключът. |
+| §3.4 Ключове без срок | **Частично.** `lastUsedAt` в `/users` и `/me`, „last seen“ в Members. `expiresAt` не е правено. |
+| §3.5 Пътища за READER | **Затворена.** `/settings`, `/sources`, `/sync/config` без сървърни пътища, endpoint, remote, peers, hostId за не-admin. |
+| §3.6 Ops маршрути | **Частично.** `/metrics` иска admin ключ при `localAdmin=false`; `/health` и `/ready` остават отворени (без vault данни), рязането им навън е в прокси-то (runbook §5). |
+| §3.7 Enumeration | **Затворена.** Vault без grant → 404, същото body като несъществуващ. |
+| §3.8 Admin вижда ключа | Без промяна (SSO е sprint 2+). |
+| §3.9 http към външен host | **Затворена.** App-ът приема само https или loopback; стар http профил се маркира „insecure address“ и не се ползва. |
+
+## 5a. Препоръки по ред на изпълнение (оригиналният списък)
 
 | # | Действие | Усилие | Затваря |
 |---|---|---|---|

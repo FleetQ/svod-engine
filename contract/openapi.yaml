@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.30.0
+  version: 0.31.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -1424,14 +1424,19 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Unauthorized:
-      description: No personal key, or an unknown one (0.30.0). The local UI on loopback needs none.
+      description: >
+        No personal key, or an unknown one (0.30.0). The local UI on loopback needs none — since
+        0.31.0 only when its `Host` header names a loopback host too (a DNS-rebound page cannot
+        forge that). `/metrics` also answers 401 without a key when `localAdmin` is off.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Forbidden:
       description: >
         The principal lacks the role for this operation (0.30.0): an engine-admin route without
-        `admin`, a vault without a grant, or a mutation with only a `reader` grant.
+        `admin`, or a mutation with only a `reader` grant. Since 0.31.0 a vault the principal has
+        NO grant on answers 404, exactly like an unknown vault id — a grant-less caller learns
+        nothing about which vaults exist.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -1919,6 +1924,10 @@ components:
           type: array
           items: { $ref: "#/components/schemas/VaultGrant" }
         keyRef: { type: string }
+        lastUsedAt:
+          type: string
+          format: date-time
+          description: When this key last authenticated (UTC). Absent if never, or unknown to this engine. Since 0.31.0.
 
     Users:
       type: object
@@ -1976,6 +1985,7 @@ components:
         grants:
           type: array
           items: { $ref: "#/components/schemas/VaultGrant" }
+        lastUsedAt: { type: string, format: date-time, description: Since 0.31.0; absent for the local identity. }
 
     CreateSecretRequest:
       type: object

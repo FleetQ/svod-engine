@@ -18,20 +18,29 @@ import java.net.URLDecoder
  * Authentication + authorization for every call under `/api/`, in ONE place so no route can forget it
  * (ADR-0019). Three decisions per call, in order:
  *
- *  1. **Who** — `Authorization: Bearer <key>` resolves through the [UserRegistry]; no header on a
- *     loopback connection with `localAdmin` on is the local UI (admin). Anything else is 401.
+ *  1. **Who** — `Authorization: Bearer <key>` resolves through the [UserRegistry]. No header is the
+ *     local UI (admin) only when `localAdmin` is on, the peer address is loopback, the `Host`
+ *     header names a loopback host and there is no foreign `Origin` — see [hostAllowed] and
+ *     [originAllowed] for why a browser on the same machine would otherwise qualify. Anything
+ *     else is 401.
  *  2. **Engine admin** — the routes in [ADMIN_ROUTES] (users, agents, backup, vaults, update,
  *     sources, import, index/embedder control) need `admin`; otherwise 403.
  *  3. **Vault access** — every vault-scoped route resolves its `?vault=` (default when omitted): no
- *     read grant ⇒ 403; a non-GET without an EDITOR grant ⇒ 403. An unknown vault id is left to the
- *     route, which answers 404 as before.
+ *     read grant ⇒ 404 with the same body as an unknown vault id (no enumeration); a non-GET
+ *     without an EDITOR grant ⇒ 403.
  *
- * `/health`, `/ready`, `/metrics` and the reference web viewer stay open: they are the ops surface,
- * not the vault.
+ * `/health`, `/ready` and the reference web viewer stay open (no vault data). `/metrics` lists
+ * every vault, so on a shared engine (`localAdmin=false`) it needs an admin key — enforced in its
+ * own route because it is not under `/api/`.
+ *
+ * Every request by a keyed principal, and every refusal, is one line in [ApiAuditLog]; refusals
+ * are also WARN-logged with the peer address and the reason, never the key.
  */
 object AppApiAuth {
 
     val PrincipalKey: AttributeKey<Principal> = AttributeKey("svod.principal")
+    /** The `userId` an audit line carries when the request was refused before anyone was identified. */
+    const val ANONYMOUS = "anonymous"
 
     private class Rule(val methods: Set<String>?, val path: Regex) {
         fun matches(method: String, p: String) = (methods == null || method in methods) && path.matches(p)
@@ -53,6 +62,42 @@ object AppApiAuth {
     private val NON_VAULT = Regex("^/api/v1/(vaults|agents|users|me|secrets|update|events)(/.*)?$")
 
     private val LOOPBACK_NAMES = setOf("localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1")
+    private val log = org.slf4j.LoggerFactory.getLogger(AppApiAuth::class.java)
+
+    /**
+     * The keyless loopback path is only for software on THIS machine talking to `127.0.0.1`. A
+     * browser is also on this machine, and a page whose DNS name is re-pointed at 127.0.0.1 (DNS
+     * rebinding) is same-origin for it — so the request would arrive here as the local admin. The
+     * one thing that page cannot forge is the `Host` header: it carries the attacker's name. A
+     * keyless request must therefore name a loopback host; a keyed request is not affected.
+     */
+    internal fun hostAllowed(call: ApplicationCall): Boolean {
+        val raw = call.request.headers[HttpHeaders.Host]?.trim()?.lowercase() ?: return false
+        val host = when {
+            raw.startsWith("[") -> raw.substringBefore("]").removePrefix("[")     // [::1]:port
+            raw.count { it == ':' } > 1 -> raw                                     // bare IPv6
+            else -> raw.substringBefore(':')                                       // name:port
+        }
+        return host in LOOPBACK_NAMES
+    }
+
+    /**
+     * The second half of the browser threat: a WebSocket handshake carries a legitimate loopback
+     * `Host` and is not subject to CORS, so `new WebSocket("ws://127.0.0.1:7619/api/v1/events")`
+     * from https://evil.example would pass [hostAllowed] and, keyless, become the local admin.
+     * Browsers always send `Origin` on WebSocket upgrades and on cross-site fetches; native
+     * clients (the app, curl, the MCP bridges) send none. So: no `Origin`, or a loopback one (the
+     * reference web viewer served by this engine), is fine — any other origin is not the local UI.
+     */
+    internal fun originAllowed(call: ApplicationCall): Boolean {
+        val origin = call.request.headers[HttpHeaders.Origin]?.trim()?.lowercase() ?: return true
+        if (origin == "null" || "://" !in origin) return false
+        // Same origin as this engine: the Origin's host:port must equal the request's Host — a page
+        // on another loopback PORT (a dev server on :9999) is a different origin and not the local UI.
+        val originHostPort = origin.substringAfter("://").substringBefore('/')
+        val requestHostPort = call.request.headers[HttpHeaders.Host]?.trim()?.lowercase() ?: return false
+        return originHostPort == requestHostPort && hostAllowed(call)
+    }
     private val IPV4 = Regex("^\\d{1,3}(\\.\\d{1,3}){3}$")
 
     /**
@@ -76,7 +121,59 @@ object AppApiAuth {
         localPrincipal: Principal,
         /** `?vault=` (null ⇒ default) → the resolved vault id, or null when unknown. */
         resolveVault: (String?) -> String?,
+        /** Records when a key was last used; null ⇒ no `lastUsedAt`. */
+        activity: UserActivity? = null,
+        /** One line per request by a keyed principal; null ⇒ no audit. */
+        audit: ApiAuditLog? = null,
     ) {
+        if (audit != null) {
+            // Monitoring runs first and wraps the whole call: after proceed() the response status
+            // is final and the principal (set below, in Plugins) is on the call.
+            app.intercept(ApplicationCallPipeline.Monitoring) {
+                val raw = call.request.path()
+                val canonical = canonicalPath(raw)
+                // Everything that resolves under /api (however it was spelled), plus /metrics — the
+                // one ops route that identifies a principal.
+                if (!(canonical == null || canonical.startsWith("/api/") || canonical == "/metrics")) return@intercept
+                var thrown: Throwable? = null
+                try {
+                    proceed()
+                } catch (e: Throwable) {
+                    thrown = e   // the request that failed is the one an admin will look for
+                    throw e
+                } finally {
+                    val p = call.attributes.getOrNull(PrincipalKey)
+                    // The status Ktor's default handler will send for the exceptions it maps; 500 for the rest.
+                    val status = call.response.status()?.value ?: when (thrown) {
+                        null -> 0
+                        is io.ktor.server.plugins.BadRequestException -> 400
+                        is io.ktor.server.plugins.NotFoundException -> 404
+                        is io.ktor.server.plugins.UnsupportedMediaTypeException,
+                        is io.ktor.server.plugins.CannotTransformContentToTypeException -> 415
+                        is io.ktor.server.plugins.PayloadTooLargeException -> 413
+                        else -> 500
+                    }
+                    // A refused request (401/403 before any principal) is audited as "anonymous":
+                    // key guessing against a shared engine belongs in the file an admin reads after
+                    // an incident, not only in the engine's own log.
+                    val who = when {
+                        p == null && status in setOf(400, 401, 403) -> ANONYMOUS
+                        p != null && !p.local -> p.userId
+                        else -> null
+                    }
+                    if (who != null) {
+                        audit.record(
+                            userId = who,
+                            method = call.request.httpMethod.value,
+                            path = canonical ?: raw,
+                            vault = call.request.queryParameters["vault"],
+                            status = status,
+                            ip = runCatching { call.request.origin.remoteAddress }.getOrNull(),
+                        )
+                    }
+                }
+            }
+        }
         app.intercept(ApplicationCallPipeline.Plugins) {
             val raw = call.request.path()
             val path = canonicalPath(raw)
@@ -88,12 +185,20 @@ object AppApiAuth {
             if (path != raw) {
                 // Canonical differs from what was sent: `//`, `%xx` or a trailing slash. Every API
                 // route is fixed ASCII segments plus `[a-z0-9_-]` ids, so nothing legitimate is lost.
+                denied(call, path, "non-canonical path '$raw'")
                 call.respond(HttpStatusCode.BadRequest, ErrorDto("bad_request", "API paths must be canonical (no empty or encoded segments)"))
                 return@intercept finish()
             }
 
-            val principal = authenticate(call, users, localAdmin, localPrincipal)
+            val principal = authenticate(call, users, localAdmin, localPrincipal, activity)
             if (principal == null) {
+                val reason = when {
+                    call.request.headers[HttpHeaders.Authorization] != null -> "key not accepted"
+                    localAdmin && isLoopback(call) && !hostAllowed(call) -> "keyless loopback request with non-loopback Host '${call.request.headers[HttpHeaders.Host]}'"
+                    localAdmin && isLoopback(call) -> "keyless loopback request from a foreign Origin '${call.request.headers[HttpHeaders.Origin]}'"
+                    else -> "no key"
+                }
+                denied(call, path, reason)
                 call.respond(HttpStatusCode.Unauthorized, ErrorDto("unauthorized", "a personal API key is required (Authorization: Bearer <key>)"))
                 return@intercept finish()
             }
@@ -101,6 +206,7 @@ object AppApiAuth {
 
             val method = call.request.httpMethod.value
             if (!principal.admin && ADMIN_ROUTES.any { it.matches(method, path) }) {
+                denied(call, path, "${principal.userId} is not an admin")
                 call.respond(HttpStatusCode.Forbidden, ErrorDto("forbidden", "this operation requires an engine admin"))
                 return@intercept finish()
             }
@@ -111,23 +217,36 @@ object AppApiAuth {
 
             val vaultId = resolveVault(call.request.queryParameters["vault"]) ?: return@intercept
             if (!principal.canRead(vaultId)) {
-                call.respond(HttpStatusCode.Forbidden, ErrorDto("forbidden", "no access to vault '$vaultId'"))
+                // Indistinguishable from a vault that does not exist: a grant-less caller learns
+                // nothing about which vault ids the engine holds.
+                denied(call, path, "${principal.userId} has no grant on vault '$vaultId'")
+                call.respond(HttpStatusCode.NotFound, ErrorDto("not_found", "vault"))   // byte-identical to the route's own 404
                 return@intercept finish()
             }
             if (method != "GET" && !principal.canWrite(vaultId)) {
+                denied(call, path, "${principal.userId} is a reader of vault '$vaultId'")
                 call.respond(HttpStatusCode.Forbidden, ErrorDto("forbidden", "vault '$vaultId' is read-only for ${principal.userId}"))
                 return@intercept finish()
             }
         }
     }
 
-    private fun authenticate(call: ApplicationCall, users: UserRegistry?, localAdmin: Boolean, localPrincipal: Principal): Principal? {
+    /** The value of the key is never logged — only that a request from [ip] was refused, and why. */
+    private fun denied(call: ApplicationCall, path: String, reason: String) {
+        log.warn("auth refused: {} {} from {}: {}", call.request.httpMethod.value, path,
+            runCatching { call.request.origin.remoteAddress }.getOrNull() ?: "?", reason)
+    }
+
+    internal fun authenticate(
+        call: ApplicationCall, users: UserRegistry?, localAdmin: Boolean, localPrincipal: Principal,
+        activity: UserActivity? = null,
+    ): Principal? {
         val header = call.request.headers[HttpHeaders.Authorization]
         if (header != null) {
             val key = header.trim().let { if (it.startsWith("Bearer ", ignoreCase = true)) it.substring(7).trim() else it }
-            return users?.authenticate(key)
+            return users?.authenticate(key)?.also { activity?.touch(it.userId) }
         }
-        return if (localAdmin && isLoopback(call)) localPrincipal else null
+        return if (localAdmin && isLoopback(call) && hostAllowed(call) && originAllowed(call)) localPrincipal else null
     }
 
     /**
