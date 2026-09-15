@@ -93,7 +93,7 @@ class McpStatelessProtocolTest {
                     )
                     assertEquals(HttpStatusCode.OK, res.status)
                     val result = res.jsonBody()["result"]!!.jsonObject
-                    assertEquals(20,result["tools"]!!.jsonArray.size, "all 18 tools advertised statelessly")
+                    assertEquals(20,result["tools"]!!.jsonArray.size, "all 20 tools advertised statelessly")
                     assertEquals(McpProtocol.TOOLS_TTL_MS, result["ttlMs"]!!.jsonPrimitive.long)
                     assertEquals(McpProtocol.TOOLS_CACHE_SCOPE, result["cacheScope"]!!.jsonPrimitive.content)
                     // the schema still travels with each tool

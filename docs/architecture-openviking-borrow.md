@@ -31,8 +31,14 @@ newBytes >  old -> rewrite the SAME path, expectedRevision   deduped=false updat
   took the revision from a second read: a smaller capture could pass the size check, pick up the
   revision of a larger one that landed in between, and overwrite it. Found by the adversarial gate.)
   A concurrent writer → 409; the hook does not record a 409 and retries on its next event.
-- The hook hands the transcript to jq on **stdin**: as `--arg` a transcript over ARG_MAX (~1 MB)
-  stopped jq from starting and the session was never captured again (also found by the gate).
+- The transcript never passes through the shell as an argument or raw input: jq builds the request
+  body **straight from the JSONL file**, and the byte count comes from the same filter
+  (`utf8bytelength`). As `--arg`, a transcript over ARG_MAX (~1 MB) stopped jq from starting and the
+  session was never captured (found by the gate); piping it to `jq -R` instead split multi-byte UTF-8
+  at jq's read-buffer boundaries (85 broken Cyrillic characters in 1.4 MB), so that fix was dropped.
+- Known limits, unchanged from the old hook: a JSONL with a lone `\uD800`-style escape or a half-written
+  last line makes jq fail, so that event posts nothing (the next event retries); two FIRST captures of
+  one session in different seconds can create two notes, because the path carries `endedAt`.
 - `CaptureResult.updated` is additive (contract 0.32.0). `deduped` keeps its meaning "nothing written".
 
 ### Hook (`capture-session.sh`, registered on `Stop`, `PreCompact`, `SessionEnd`)
