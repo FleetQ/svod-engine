@@ -38,7 +38,7 @@ C2 guards the grow-only rule: without it a late small payload would truncate a l
 | G6 **(neg)** | needle in `messy/sessions/…` | no hit, also with `pathPrefix = "messy/sessions/"` |
 | G7 | needle in `messy/draft.md` | no hit by default; hit with `pathPrefix = "messy/"` |
 | G8 | 5 hits, `limit = 2` | 2 hits, `truncated=true` |
-| G9 | `(a+)+$` against a long `aaaa…b` line | returns well under 10 s with `timedOut=true` |
+| G9 | `^(a+)+\1$` against 40 × `a` + `!` | `ok`, `timedOut=true`, under 10 s. On JDK 20 the textbook `(a+)+$` is optimised (0 ms at any length) and cannot test the budget; the backreference variant is measured at 3.1 s for 28 chars, ~15× per 4 more |
 | G12 **(neg)** | `(a\|b)*c` over a 40,000-char line plus a short matching line | `ok`, `unsearchableLines ≥ 1`, the short line still hit (the stack overflow the gate found) |
 | G10 | tool count | 20 tools over streamable HTTP, stateless and TLS |
 
