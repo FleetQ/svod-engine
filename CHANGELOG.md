@@ -5,28 +5,38 @@ independently of the engine; each entry notes the contract version it ships.
 
 ## v1.22.1 — 2026-09-15 (App API contract 0.32.0, unchanged)
 
-### Fixed — MCP `grep` ran out of its time budget on a large vault
+### Changed — the private-span regex is skipped for notes without an opening tag
 
-On the live `personal` vault (3,217 notes, 46.8 M characters) 3 of 6 whole-vault `grep` calls on
-v1.22.0 returned `timedOut: true` with notes left unscanned. A JFR recording of those calls put 59
-of 95 grep samples in `MarkdownChunker.maskPrivateSpans`: Kotlin compiles `IGNORE_CASE` with
-`UNICODE_CASE`, so the `<private>` regex lowercased every character of every note, while only 3
-notes hold a tag. The regex now runs only on text that contains an opening tag, found with
-`regionMatches(ignoreCase = true)`, which accepts every case variant the regex does (`<PRIVATE>`,
-`<prıvate>`, `<prİvate>`). Masking all 3,217 notes went from ~300 ms to 8 ms in a test JVM, with
-identical output on every note for both `maskPrivateSpans` and `stripPrivateSpans`. The index,
+`MarkdownChunker.stripPrivateSpans` and `maskPrivateSpans` ran a case-insensitive `<private>` regex
+over every note. Kotlin compiles `IGNORE_CASE` with `UNICODE_CASE`, so the regex lowercased every
+character, while only 3 of the 3,217 notes in the live `personal` vault (46.8 M characters) hold a
+tag. On v1.22.0, measured by hand on the live engine, 3 of 6 whole-vault MCP `grep` calls returned
+`timedOut: true`, and 59 of 95 grep samples in a JFR recording were in that scan. The regex now runs
+only when `regionMatches(ignoreCase = true)` finds an opening tag, which accepts exactly the
+characters the regex accepts at each tag position (checked for every code point). Masking all notes
+went from ~300 ms to 8 ms in a test JVM, with identical output on every note. The index,
 `context_pack` and graph summary prompts call the same functions.
 
 ### Changed — MCP `grep` no longer builds a String for every line
 
-With the pre-check deployed, whole-vault `grep` on the live engine still took 2.6–5.2 s wall-clock
-and timed out in 3 of the first 4 calls after a restart. The scan still allocated: `lines()` built a
-String per line (1.1 M lines; one note alone is 22.4 MB), 372 MB per whole-vault call. `grep` now
-runs one `Matcher` per note and moves it line by line with `region()`. The default anchoring and
-opaque bounds give each line the same `^`, `$`, `\A`, `\z`, `\b` and lookaround behaviour as a
-separate String: over the real vault, 10 such patterns return identical hits (path, line, text), and
-allocation drops from 372 MB to under 1 MB per scan (90 → 64 ms; 227 → 194 ms with `ignoreCase`, in a
-test JVM). Line breaks are split as `String.lines()` splits them (CRLF, LF, lone CR).
+`grep` split each note with `lines()`, one String per line (1.1 M lines; one note alone is 22.4 MB),
+which allocated 372 MB per whole-vault call. It now runs one `Matcher` per note and moves it line by
+line with `region()`. The default anchoring and opaque bounds give each line the same `^`, `$`, `\A`,
+`\z`, `\b` and lookaround behaviour as a separate String. Over the real vault, 9 patterns with hits
+return identical hits (path, line, text) and a tenth matches nothing either way; a fuzz comparison of
+112 patterns over 4,027 texts found no difference. Line breaks are split as `String.lines()` splits
+them (CRLF, LF, lone CR). Allocation per scan dropped from 372 MB to under 1 MB and time from 90 to
+64 ms (227 → 194 ms with `ignoreCase`) in one test-JVM run; a second run measured 390 MB and
+107 → 61 ms. The time budget is now also checked across short lines: before, every line got a fresh
+read counter, so a line under 4,096 reads never looked at the clock.
+
+### Known limit — timeouts right after a restart
+
+Measured by hand on the live engine after deploying both changes, on a machine with 7.4 of 8.2 GB of
+swap in use: the first 3 whole-vault `grep` calls after a restart still returned `timedOut: true`;
+the next 7 calls and 5 `ignoreCase` calls did not (1.4–2.8 s wall-clock). With only the first change
+deployed, 4 of 5 `ignoreCase` calls had timed out. Machine load was not controlled, so these runs
+show a direction, not the size of the effect. A timed-out call returns the hits found so far.
 
 ## v1.22.0 — 2026-09-15 (App API contract 0.32.0)
 
