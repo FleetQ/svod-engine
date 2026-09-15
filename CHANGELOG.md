@@ -28,6 +28,11 @@ summary prompts — and would have gone into the new `grep`. An unclosed tag now
 the end of the note. Found by the review of this release. Notes already indexed with such a tail
 keep it in the index until the note changes or the vault is re-indexed.
 
+The cost is a note that only *mentions* the tag, e.g. in inline code: its text after the mention
+leaves recall too. Measured on the live vaults before choosing this: 2 of 3,906 notes have an
+unclosed `<private>`, both mentions in code, both under `messy/` (already outside default recall);
+none is a real typo.
+
 ### Added — MCP `tree` and `grep` (18 → 20 tools)
 
 - **`tree(pathPrefix?, depth=2)`** — folders with recursive file counts. `list` on a real vault is
@@ -37,7 +42,9 @@ keep it in the index until the note changes or the vault is re-indexed.
   recall's visibility, not `read`'s: `messy/sessions/` never, `messy/` only by explicit prefix (or the
   `includeMessyInRecall` toggle), `private: true` notes never, `<private>` spans masked with their
   newlines kept so line numbers match the file. A 2 s budget enforced inside the matcher stops a
-  catastrophic regex from pinning a CPU (`timedOut: true`).
+  catastrophic regex from pinning a CPU (`timedOut: true`). A line the regex engine cannot search
+  without overflowing the stack (`(a|b)*c` over a very long line) is counted in `unsearchableLines`
+  instead of failing the call.
 
 Contract 0.31.0 → **0.32.0** (additive: `CaptureResult.updated`; capture semantics documented).
 

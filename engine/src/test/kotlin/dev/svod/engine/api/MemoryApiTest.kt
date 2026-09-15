@@ -1,6 +1,9 @@
 package dev.svod.engine.api
 
 import dev.svod.engine.core.Author
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -71,6 +74,28 @@ class MemoryApiTest {
             }
             assertEquals(revision, fx.engine.read(path)!!.revision, "nothing was written")
             assertTrue(fx.engine.read(path)!!.text.endsWith(full), "the stored session did not shrink")
+        }
+    }
+
+    @Test
+    fun `concurrent captures of one session never leave it smaller than a capture that was written`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            capture(fx, "sess-race0000", "proj", "x".repeat(10), 1000)
+            repeat(10) { round ->
+                // Every size in a round beats what is stored, so each request passes the size check it
+                // reads; only the revision guard can stop a smaller one from landing after a larger one.
+                val sizes = (1..8).map { 100 * (round + 1) + it * 7 }.shuffled()
+                val written = java.util.concurrent.ConcurrentLinkedQueue<Int>()
+                sizes.map { size ->
+                    async(Dispatchers.IO) {
+                        val body = """{"sessionId":"sess-race0000","project":"proj","transcript":"${"x".repeat(size)}","startedAt":1000,"endedAt":${2000 + size}}"""
+                        val r = fx.post("/api/v1/memory/capture", body)
+                        if (r.statusCode() == 200 && !flag(obj(r.body()), "deduped")) written += size
+                    }
+                }.awaitAll()
+                val stored = str(arr(fx.get("/api/v1/memory/sessions").body()).single().jsonObject, "bytes").toInt()
+                assertEquals(written.maxOrNull() ?: stored, stored, "round $round: writes that succeeded were $written")
+            }
         }
     }
 

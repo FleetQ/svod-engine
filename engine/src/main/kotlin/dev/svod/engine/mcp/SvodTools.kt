@@ -131,6 +131,7 @@ class SvodTools(
         var scanned = 0
         var truncated = false
         var timedOut = false
+        var unsearchableLines = 0
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
             val deadline = System.nanoTime() + GREP_BUDGET_NANOS
             scan@ for (path in notes.keys.sorted()) {
@@ -147,6 +148,12 @@ class SvodTools(
                     } catch (_: GrepDeadline) {
                         timedOut = true
                         break@scan
+                    } catch (_: StackOverflowError) {
+                        // java.util.regex recurses per repetition of an alternation group, so a pattern like
+                        // `(a|b)*c` overflows the stack on a long line — and real vaults have lines over 5,000
+                        // chars. Count the line as unsearchable instead of failing the whole call.
+                        unsearchableLines++
+                        false
                     }
                     if (!found) continue
                     if (hits.size == max) { truncated = true; break@scan }
@@ -156,6 +163,7 @@ class SvodTools(
         }
         ToolResult.ok {
             put("pattern", pattern); put("notesScanned", scanned); put("truncated", truncated); put("timedOut", timedOut)
+            put("unsearchableLines", unsearchableLines)
             putJsonArray("hits") {
                 hits.forEach { (path, line, text) -> addJsonObject { put("path", path); put("line", line); put("text", text) } }
             }

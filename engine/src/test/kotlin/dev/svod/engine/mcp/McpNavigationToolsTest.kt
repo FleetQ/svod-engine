@@ -162,4 +162,19 @@ class McpNavigationToolsTest {
             assertTrue(elapsedMs < 10_000, "took $elapsedMs ms")
         }
     }
+
+    @Test
+    fun `a regex that overflows the stack on a long line is reported, not thrown`() = runBlocking {
+        McpFixture().use { fx ->
+            // java.util.regex recurses once per repetition of a group with alternation, so `(a|b)*c` over a
+            // long line overflows the stack. Real vaults have lines over 5,000 chars (review measurement).
+            fx.note("long.md", "ab".repeat(20_000) + "\nSHORT_NEEDLE c")
+
+            val r = fx.grep("(a|b)*c")
+
+            assertEquals("ok", r.status)
+            assertTrue(r.number("unsearchableLines") >= 1, r.data.toString())
+            assertEquals(2, r.hits().single()["line"]!!.jsonPrimitive.int, "the other lines are still searched")
+        }
+    }
 }

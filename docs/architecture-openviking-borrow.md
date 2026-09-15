@@ -27,7 +27,12 @@ newBytes >  old -> rewrite the SAME path, expectedRevision   deduped=false updat
   the same number the note already stores as `bytes`.
 - **`distilled` resets to false** when a distilled session grows: the new tail has not been
   distilled. Cost: the distiller may write a second draft for that session (drafts, never promoted).
-- **Optimistic write** with the read revision; a concurrent writer → 409 like every other write.
+- **Optimistic write** guarded by the revision of the SAME read the size came from. (The first cut
+  took the revision from a second read: a smaller capture could pass the size check, pick up the
+  revision of a larger one that landed in between, and overwrite it. Found by the adversarial gate.)
+  A concurrent writer → 409; the hook does not record a 409 and retries on its next event.
+- The hook hands the transcript to jq on **stdin**: as `--arg` a transcript over ARG_MAX (~1 MB)
+  stopped jq from starting and the session was never captured again (also found by the gate).
 - `CaptureResult.updated` is additive (contract 0.32.0). `deduped` keeps its meaning "nothing written".
 
 ### Hook (`capture-session.sh`, registered on `Stop`, `PreCompact`, `SessionEnd`)

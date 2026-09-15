@@ -885,17 +885,22 @@ class AppApiServer(
                 // turn of every session. So a LARGER transcript rewrites the note in place; an equal or
                 // smaller one is a duplicate or a late delivery and writes nothing, so a stored session can
                 // never shrink.
-                val existing = sessionMetas(vc).firstOrNull { it.sessionId == req.sessionId }
+                val listed = sessionMetas(vc).firstOrNull { it.sessionId == req.sessionId }
+                // The size check and the revision the write is guarded by must come from ONE read. Taking the
+                // revision from a second read let a smaller capture pass the size check, pick up the revision
+                // of a larger capture that landed in between, and overwrite it. Now that case is a 409 and the
+                // hook retries on its next event.
+                val current = listed?.let { vc.engine.read(it.path) }
+                val existing = current?.let { SessionNotes.parseMeta(it.path, it.text) }
                 val newBytes = req.transcript.toByteArray(Charsets.UTF_8).size.toLong()
-                if (existing != null && newBytes <= existing.bytes) {
-                    val rev = vc.engine.read(existing.path)?.revision ?: ""
-                    return@post call.respond(CaptureResultDto(existing.path, rev, deduped = true))
+                if (current != null && existing != null && newBytes <= existing.bytes) {
+                    return@post call.respond(CaptureResultDto(existing.path, current.revision, deduped = true))
                 }
-                val path = existing?.path ?: SessionNotes.pathFor(req.endedAt, req.project, req.sessionId)
+                val path = listed?.path ?: SessionNotes.pathFor(req.endedAt, req.project, req.sessionId)
                 val startedAt = existing?.startedAt?.takeIf { it > 0 }?.let { minOf(it, req.startedAt) } ?: req.startedAt
                 // A rewrite carries `distilled: false` again on purpose: the new tail has not been distilled.
                 val note = SessionNotes.buildNote(req.project ?: existing?.project, req.sessionId, startedAt, req.endedAt, req.transcript)
-                val expectedRevision = existing?.let { vc.engine.read(it.path)?.revision }
+                val expectedRevision = current?.revision
                 // writeBytes (not write) — raw transcripts routinely contain secrets; the capture store
                 // keeps them verbatim and quarantines them from recall, so the write-path secret scanner
                 // is deliberately bypassed here (it would otherwise Block a transcript carrying a token).

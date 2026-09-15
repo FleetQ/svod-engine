@@ -11,6 +11,7 @@ Companion to `architecture-openviking-borrow.md`. Every case names what it catch
 | C2 | same `sessionId`, equal or shorter transcript | `deduped=true`, `updated=false`, stored body unchanged |
 | C3 | distilled session receives a longer transcript | `distilled` back to `false` |
 | C4 | re-capture keeps `startedAt` = min, `endedAt` = new | frontmatter values |
+| C6 **(neg)** | 10 rounds × 8 concurrent captures of growing sizes | stored size equals the largest capture that answered 200 (a smaller one must not land after it) |
 | C5 | contract | `CaptureResult.updated` in openapi; contract version 0.32.0 everywhere (`VersionConsistencyTest`) |
 
 C2 guards the grow-only rule: without it a late small payload would truncate a long session.
