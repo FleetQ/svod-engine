@@ -22,7 +22,7 @@ with a conflict, never silently overwritten.
 [Why Svod](#why-svod-exists) ·
 [Feature tour](#what-it-does-feature-tour) ·
 [Architecture](#how-it-works-90-second-architecture) ·
-[Agent interface (14 MCP tools)](#the-agent-interface--14-mcp-tools) ·
+[Agent interface (20 MCP tools)](#the-agent-interface--20-mcp-tools) ·
 [Connecting an LLM agent](#connecting-an-llm-agent) ·
 [App API for UIs](#the-ui-interface--local-app-api) ·
 [Download & install](#download--install) ·
@@ -121,14 +121,18 @@ Full detail: [`docs/architecture.md`](docs/architecture.md) and the ADRs in
 
 ---
 
-## The agent interface — 14 MCP tools
+## The agent interface — 20 MCP tools
 
 Per-agent bearer token authenticates and **becomes the git commit author**. Roles are
 enforced *before* the engine is touched.
 
-**Read (any role):** `read` · `list` · `search` · `context_pack` · `history` · `diff` ·
-`get_revision` · `link` · `graph_query`
-**Write (WRITE role):** `write` · `delete` · `move` · `promote` · `remember`
+**Read (any role):** `read` · `list` · `tree` · `grep` · `search` · `context_pack` · `history` ·
+`diff` · `get_revision` · `link` · `graph_query` · `graph_communities` · `graph_community` · `graph_status`
+**Write (WRITE role):** `write` · `edit` · `delete` · `move` · `promote` · `remember`
+
+- `tree` shows the folder structure with recursive file counts; `grep` finds exact text or a regex
+  and returns line hits. `grep` obeys recall's visibility: captured sessions never, `messy/` drafts
+  only with a `messy/` prefix, `<private>` content never.
 
 - `search` runs hybrid retrieval (BM25 + vectors, RRF-fused, plus any reranker) with `mode`
   (`keyword`/`semantic`/`hybrid`) and filters; `context_pack` goes one step further — it assembles

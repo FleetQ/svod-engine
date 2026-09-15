@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.31.0
+  version: 0.32.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -2370,7 +2370,8 @@ components:
       properties:
         path: { type: string }
         revision: { type: string }
-        deduped: { type: boolean, description: true when the sessionId was already captured }
+        deduped: { type: boolean, description: "true when nothing was written: the sessionId is already stored with an equal or larger transcript" }
+        updated: { type: boolean, description: "true when an existing session note was rewritten with a larger transcript (distilled resets to false). Since 0.32.0." }
 
     Session:
       type: object

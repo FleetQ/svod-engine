@@ -330,6 +330,29 @@ class SvodMcpServer(
         tool("list", "List note paths (optionally filtered by prefix).", mapOf("pathPrefix" to "string"), emptyList()) { req ->
             val (t, d) = routed(req); d ?: t!!.list(agent, req.str("pathPrefix")).toCallToolResult()
         }
+        tool(
+            "tree",
+            "The vault's folder structure: folders under 'pathPrefix' down to 'depth' (default 2, max 10), each with its " +
+                "recursive file count, plus the files directly at the prefix. Use it to orient in a vault before searching — " +
+                "'list' returns every path, which on a real vault is thousands. Give folders with a trailing slash, e.g. 'projects/'.",
+            mapOf("pathPrefix" to "string", "depth" to "integer"),
+            emptyList(),
+        ) { req ->
+            val (t, d) = routed(req); d ?: t!!.tree(agent, req.str("pathPrefix"), req.int("depth", 2)).toCallToolResult()
+        }
+        tool(
+            "grep",
+            "Exact text or regex over note bodies, returning line hits {path, line, text}. Use it for strings ranked search " +
+                "tokenises badly — versions, hosts, ports, identifiers, error messages; use search for meaning. 'literal=true' " +
+                "treats the pattern as plain text. Follows recall's visibility: captured sessions are never searched, messy/ " +
+                "drafts only with a 'messy/' pathPrefix (unless the vault includes them in recall), private content never. " +
+                "'truncated' = more hits than 'limit' (default 50, max 500); 'timedOut' = the 2 s budget ran out, results are partial.",
+            mapOf("pattern" to "string", "pathPrefix" to "string", "literal" to "boolean", "ignoreCase" to "boolean", "limit" to "integer"),
+            listOf("pattern"),
+        ) { req ->
+            val (t, d) = routed(req)
+            d ?: t!!.grep(agent, req.str("pattern") ?: "", req.str("pathPrefix"), req.bool("literal", false), req.bool("ignoreCase", false), req.int("limit", 50)).toCallToolResult()
+        }
         tool("history", "Commit history for a note.", mapOf("path" to "string", "max" to "integer"), listOf("path")) { req ->
             val (t, d) = routed(req); d ?: t!!.history(agent, req.str("path")!!, req.int("max", 50)).toCallToolResult()
         }

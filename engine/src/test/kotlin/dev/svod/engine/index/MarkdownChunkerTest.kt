@@ -105,4 +105,23 @@ class MarkdownChunkerTest {
         val stripped = MarkdownChunker.stripPrivateSpans("a<private>x\ny</private>b<PRIVATE>z</PRIVATE>c")
         assertEquals("abc", stripped)
     }
+
+    @Test
+    fun `an unclosed private tag hides everything after it`() {
+        // A typo or a half-finished edit must fail closed: before, the missing </private> meant no match
+        // at all, and the whole tail reached the index, context_pack and graph prompts.
+        assertEquals("abc", MarkdownChunker.stripPrivateSpans("a<private>x</private>bc<private>SECRET\ntail"))
+        val doc = MarkdownChunker.parse("# H\nvisible\n<private>\nSECRET_UNCLOSED\nmore")
+        assertTrue(doc.chunks.none { it.text.contains("SECRET_UNCLOSED") || it.text.contains("more") }, "the unclosed tail never enters a chunk")
+        assertTrue(doc.chunks.any { it.text.contains("visible") }, "text before the tag stays")
+    }
+
+    @Test
+    fun `maskPrivateSpans keeps the line count of closed and unclosed spans`() {
+        val raw = "one\n<private>a\nb</private>\nfour\n<private>c\nd\ne"
+        val masked = MarkdownChunker.maskPrivateSpans(raw)
+        assertEquals(raw.lines().size, masked.lines().size)
+        assertEquals("four", masked.lines()[3])
+        assertTrue(listOf("a", "b", "c", "d", "e").none { secret -> masked.lines().any { it == secret || it.contains("<private>") } })
+    }
 }

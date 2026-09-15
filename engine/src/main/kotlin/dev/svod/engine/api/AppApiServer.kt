@@ -879,21 +879,35 @@ class AppApiServer(
             post("/api/v1/memory/capture") {
                 val vc = vault() ?: return@post call.notFound("vault")
                 val req = call.receive<CaptureRequestDto>()
-                // Idempotent on sessionId: a re-capture returns the existing note, never a duplicate.
-                val existing = sessionMetas(vc).firstOrNull { it.sessionId == req.sessionId }
-                if (existing != null) {
-                    val rev = vc.engine.read(existing.path)?.revision ?: ""
-                    return@post call.respond(CaptureResultDto(existing.path, rev, deduped = true))
+                // One note per sessionId, and it follows the session. The hook fires many times per session
+                // (Stop, PreCompact, SessionEnd), and Claude Code transcripts only grow — compaction keeps
+                // the earlier turns in the JSONL. Returning the first note untouched stored only the first
+                // turn of every session. So a LARGER transcript rewrites the note in place; an equal or
+                // smaller one is a duplicate or a late delivery and writes nothing, so a stored session can
+                // never shrink.
+                val listed = sessionMetas(vc).firstOrNull { it.sessionId == req.sessionId }
+                // The size check and the revision the write is guarded by must come from ONE read. Taking the
+                // revision from a second read let a smaller capture pass the size check, pick up the revision
+                // of a larger capture that landed in between, and overwrite it. Now that case is a 409 and the
+                // hook retries on its next event.
+                val current = listed?.let { vc.engine.read(it.path) }
+                val existing = current?.let { SessionNotes.parseMeta(it.path, it.text) }
+                val newBytes = req.transcript.toByteArray(Charsets.UTF_8).size.toLong()
+                if (current != null && existing != null && newBytes <= existing.bytes) {
+                    return@post call.respond(CaptureResultDto(existing.path, current.revision, deduped = true))
                 }
-                val path = SessionNotes.pathFor(req.endedAt, req.project, req.sessionId)
-                val note = SessionNotes.buildNote(req.project, req.sessionId, req.startedAt, req.endedAt, req.transcript)
+                val path = listed?.path ?: SessionNotes.pathFor(req.endedAt, req.project, req.sessionId)
+                val startedAt = existing?.startedAt?.takeIf { it > 0 }?.let { minOf(it, req.startedAt) } ?: req.startedAt
+                // A rewrite carries `distilled: false` again on purpose: the new tail has not been distilled.
+                val note = SessionNotes.buildNote(req.project ?: existing?.project, req.sessionId, startedAt, req.endedAt, req.transcript)
+                val expectedRevision = current?.revision
                 // writeBytes (not write) — raw transcripts routinely contain secrets; the capture store
                 // keeps them verbatim and quarantines them from recall, so the write-path secret scanner
                 // is deliberately bypassed here (it would otherwise Block a transcript carrying a token).
-                when (val o = vc.engine.writeBytes(path, note.toByteArray(Charsets.UTF_8), null, principal().author)) {
+                when (val o = vc.engine.writeBytes(path, note.toByteArray(Charsets.UTF_8), expectedRevision, principal().author)) {
                     is WriteOutcome.Success -> {
                         publishCommit(vc, o, "memory.capture", principal().author)
-                        call.respond(CaptureResultDto(o.path, o.revision, deduped = false))
+                        call.respond(CaptureResultDto(o.path, o.revision, deduped = false, updated = existing != null))
                     }
                     is WriteOutcome.Conflict -> { publishConflict(vc, o.path); call.respond(HttpStatusCode.Conflict, o.toConflictDto()) }
                     is WriteOutcome.NotFound -> call.notFound(o.path)

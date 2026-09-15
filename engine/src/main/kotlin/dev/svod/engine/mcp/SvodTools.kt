@@ -72,6 +72,104 @@ class SvodTools(
         ToolResult.ok { putJsonArray("paths") { paths.forEach { add(it) } } }
     }
 
+    /**
+     * The folder structure under [pathPrefix] to [depth]: each folder with its RECURSIVE file count, plus
+     * the files sitting directly at the prefix. Same visibility as [list] — it only aggregates those
+     * paths — at a few hundred tokens where `list` on a real vault returns thousands of paths.
+     */
+    suspend fun tree(agent: AgentIdentity, pathPrefix: String?, depth: Int): ToolResult = guarded(agent, "tree", write = false) {
+        val prefix = pathPrefix.orEmpty()
+        val maxDepth = depth.coerceIn(1, TREE_MAX_DEPTH)
+        val paths = engine.list().filter { it.startsWith(prefix) }
+        val folders = java.util.TreeMap<String, Int>()
+        var rootFiles = 0
+        for (p in paths) {
+            val segments = p.substring(prefix.length).split('/')
+            if (segments.size == 1) { rootFiles++; continue }
+            var folder = prefix
+            for (i in 0 until minOf(segments.size - 1, maxDepth)) {
+                folder += segments[i] + "/"
+                folders.merge(folder, 1, Int::plus)
+            }
+        }
+        ToolResult.ok {
+            put("prefix", prefix); put("depth", maxDepth); put("totalFiles", paths.size); put("rootFiles", rootFiles)
+            put("truncated", folders.size > TREE_MAX_FOLDERS)
+            putJsonArray("folders") {
+                folders.entries.take(TREE_MAX_FOLDERS).forEach { (path, files) -> addJsonObject { put("path", path); put("files", files) } }
+            }
+        }
+    }
+
+    /**
+     * Exact text or regex over `.md` note bodies, as line hits. A recall surface, so it follows recall's
+     * visibility rather than `read`'s: captured sessions never (like `LuceneIndex.buildFilter`, no escape),
+     * `messy/` only through search's two escapes (the config toggle, or a `messy/` prefix), `private: true`
+     * notes never, and `<private>` spans masked with their newlines kept so a reported line number is the
+     * line in the file.
+     */
+    suspend fun grep(
+        agent: AgentIdentity,
+        pattern: String,
+        pathPrefix: String?,
+        literal: Boolean,
+        ignoreCase: Boolean,
+        limit: Int,
+    ): ToolResult = guarded(agent, "grep", write = false) {
+        if (pattern.isEmpty()) return@guarded ToolResult.badRequest("pattern must not be empty")
+        val flags = if (ignoreCase) java.util.regex.Pattern.CASE_INSENSITIVE or java.util.regex.Pattern.UNICODE_CASE else 0
+        val regex = try {
+            java.util.regex.Pattern.compile(if (literal) java.util.regex.Pattern.quote(pattern) else pattern, flags)
+        } catch (e: java.util.regex.PatternSyntaxException) {
+            return@guarded ToolResult.badRequest("invalid regex: ${e.description}")
+        }
+        val max = limit.coerceIn(1, GREP_MAX_LIMIT)
+        val browsingMessy = pathPrefix?.startsWith("messy/") == true
+        val includeMessy = index.includesMessyInRecall
+        val notes = engine.readAllNotes()
+        val hits = ArrayList<Triple<String, Int, String>>()
+        var scanned = 0
+        var truncated = false
+        var timedOut = false
+        var unsearchableLines = 0
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val deadline = System.nanoTime() + GREP_BUDGET_NANOS
+            scan@ for (path in notes.keys.sorted()) {
+                if (path.startsWith(dev.svod.engine.memory.SESSIONS_PREFIX)) continue
+                if (pathPrefix != null && !path.startsWith(pathPrefix)) continue
+                if (path.startsWith("messy/") && !includeMessy && !browsingMessy) continue
+                val raw = notes.getValue(path)
+                if (dev.svod.engine.index.MarkdownChunker.isPrivateNote(raw)) continue
+                if (System.nanoTime() > deadline) { timedOut = true; break }
+                scanned++
+                for ((i, line) in dev.svod.engine.index.MarkdownChunker.maskPrivateSpans(raw).lines().withIndex()) {
+                    val found = try {
+                        regex.matcher(DeadlineCharSequence(line, deadline)).find()
+                    } catch (_: GrepDeadline) {
+                        timedOut = true
+                        break@scan
+                    } catch (_: StackOverflowError) {
+                        // java.util.regex recurses per repetition of an alternation group, so a pattern like
+                        // `(a|b)*c` overflows the stack on a long line — and real vaults have lines over 5,000
+                        // chars. Count the line as unsearchable instead of failing the whole call.
+                        unsearchableLines++
+                        false
+                    }
+                    if (!found) continue
+                    if (hits.size == max) { truncated = true; break@scan }
+                    hits += Triple(path, i + 1, line.trim().take(GREP_TEXT_CHARS))
+                }
+            }
+        }
+        ToolResult.ok {
+            put("pattern", pattern); put("notesScanned", scanned); put("truncated", truncated); put("timedOut", timedOut)
+            put("unsearchableLines", unsearchableLines)
+            putJsonArray("hits") {
+                hits.forEach { (path, line, text) -> addJsonObject { put("path", path); put("line", line); put("text", text) } }
+            }
+        }
+    }
+
     suspend fun search(agent: AgentIdentity, query: SearchQuery): ToolResult = guarded(agent, "search", write = false) {
         val result = index.search(query)
         ToolResult.ok {

@@ -1,6 +1,9 @@
 package dev.svod.engine.api
 
 import dev.svod.engine.core.Author
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -21,29 +24,92 @@ class MemoryApiTest {
     private fun str(o: kotlinx.serialization.json.JsonObject, k: String) = o[k]!!.jsonPrimitive.content
 
     // Test transcripts/projects are plain ASCII (no quotes/backslashes), so inline JSON is safe here.
-    private fun capture(fx: ApiFixture, sessionId: String, project: String?, transcript: String, endedAt: Long): String {
+    private fun capture(fx: ApiFixture, sessionId: String, project: String?, transcript: String, endedAt: Long, startedAt: Long = 1000): String {
         val proj = if (project == null) "" else """"project":"$project","""
-        val body = """{"sessionId":"$sessionId",$proj"transcript":"$transcript","startedAt":1000,"endedAt":$endedAt}"""
+        val body = """{"sessionId":"$sessionId",$proj"transcript":"$transcript","startedAt":$startedAt,"endedAt":$endedAt}"""
         return fx.post("/api/v1/memory/capture", body).body()
     }
 
+    private fun flag(o: kotlinx.serialization.json.JsonObject, k: String) = o[k]!!.jsonPrimitive.content.toBoolean()
+
     @Test
-    fun `capture is idempotent on sessionId`() = runBlocking {
+    fun `a longer transcript for a captured session rewrites the same note`() = runBlocking {
         ApiFixture.create().use { fx ->
-            val first = capture(fx, "sess-aaaa1111", "proj", "hello transcript", 1700)
-            val firstObj = obj(first)
-            assertEquals(false, firstObj["deduped"]!!.jsonPrimitive.content.toBoolean(), first)
-            val path = str(firstObj, "path")
+            val first = obj(capture(fx, "sess-aaaa1111", "proj", "hello transcript", 1700))
+            assertEquals(false, flag(first, "deduped"), first.toString())
+            assertEquals(false, flag(first, "updated"), first.toString())
+            val path = str(first, "path")
             assertTrue(path.startsWith("messy/sessions/"), path)
 
-            // Re-capture same sessionId (even with a different endedAt) → same note, deduped, no duplicate.
-            val second = capture(fx, "sess-aaaa1111", "proj", "hello transcript again", 9999)
-            val secondObj = obj(second)
-            assertEquals(true, secondObj["deduped"]!!.jsonPrimitive.content.toBoolean(), second)
-            assertEquals(path, str(secondObj, "path"))
+            // The hook fires again later in the same session: the transcript has grown. This is the case
+            // that used to come back deduped, leaving only the first turn of every session stored.
+            val longer = "hello transcript and two more turns"
+            val second = obj(capture(fx, "sess-aaaa1111", "proj", longer, 9999, startedAt = 5000))
+            assertEquals(false, flag(second, "deduped"), second.toString())
+            assertEquals(true, flag(second, "updated"), second.toString())
+            assertEquals(path, str(second, "path"), "the note keeps its path")
 
             val sessions = arr(fx.get("/api/v1/memory/sessions").body())
-            assertEquals(1, sessions.size, "no duplicate note for the same sessionId")
+            assertEquals(1, sessions.size, "still one note for the sessionId")
+            val s = sessions[0].jsonObject
+            assertEquals(longer.length.toString(), str(s, "bytes"))
+            assertEquals("1000", str(s, "startedAt"), "startedAt keeps the earliest value")
+            assertEquals("9999", str(s, "endedAt"))
+            assertTrue(fx.engine.read(path)!!.text.endsWith(longer), "the body is the new transcript")
+        }
+    }
+
+    @Test
+    fun `an equal or shorter transcript never overwrites a captured session`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            val full = "the full long transcript"
+            val path = str(obj(capture(fx, "sess-bbbb2222", "proj", full, 1700)), "path")
+            val revision = fx.engine.read(path)!!.revision
+
+            for (late in listOf(full.uppercase(), "short")) { // same size, then smaller
+                val r = obj(capture(fx, "sess-bbbb2222", "proj", late, 9999))
+                assertEquals(true, flag(r, "deduped"), r.toString())
+                assertEquals(false, flag(r, "updated"), r.toString())
+                assertEquals(path, str(r, "path"))
+            }
+            assertEquals(revision, fx.engine.read(path)!!.revision, "nothing was written")
+            assertTrue(fx.engine.read(path)!!.text.endsWith(full), "the stored session did not shrink")
+        }
+    }
+
+    @Test
+    fun `concurrent captures of one session never leave it smaller than a capture that was written`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            capture(fx, "sess-race0000", "proj", "x".repeat(10), 1000)
+            repeat(10) { round ->
+                // Every size in a round beats what is stored, so each request passes the size check it
+                // reads; only the revision guard can stop a smaller one from landing after a larger one.
+                val sizes = (1..8).map { 100 * (round + 1) + it * 7 }.shuffled()
+                val written = java.util.concurrent.ConcurrentLinkedQueue<Int>()
+                sizes.map { size ->
+                    async(Dispatchers.IO) {
+                        val body = """{"sessionId":"sess-race0000","project":"proj","transcript":"${"x".repeat(size)}","startedAt":1000,"endedAt":${2000 + size}}"""
+                        val r = fx.post("/api/v1/memory/capture", body)
+                        if (r.statusCode() == 200 && !flag(obj(r.body()), "deduped")) written += size
+                    }
+                }.awaitAll()
+                val stored = str(arr(fx.get("/api/v1/memory/sessions").body()).single().jsonObject, "bytes").toInt()
+                assertEquals(written.maxOrNull() ?: stored, stored, "round $round: writes that succeeded were $written")
+            }
+        }
+    }
+
+    @Test
+    fun `a distilled session that grows is undistilled again`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            val path = str(obj(capture(fx, "sess-cccc3333", "proj", "first part", 1000)), "path")
+            fx.post("/api/v1/memory/sessions/mark-distilled", """{"paths":["$path"],"noteRefs":[]}""")
+            assertEquals(1, arr(fx.get("/api/v1/memory/sessions?distilled=true").body()).size)
+
+            capture(fx, "sess-cccc3333", "proj", "first part and the rest of the session", 2000)
+
+            assertEquals(0, arr(fx.get("/api/v1/memory/sessions?distilled=true").body()).size, "the new tail is not distilled")
+            assertEquals(1, arr(fx.get("/api/v1/memory/sessions?distilled=false").body()).size)
         }
     }
 

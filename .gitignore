@@ -28,3 +28,7 @@ dist/secrets/
 # per-engine state written next to the config (people audit + key activity) — never commit
 dist/audit-api.log
 dist/user-activity.json
+
+# Kotlin compiler session files
+.kotlin/
+**/.kotlin/

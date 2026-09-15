@@ -3,6 +3,51 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.22.0 — 2026-09-15 (App API contract 0.32.0)
+
+### Fixed — capture stored only the first turn of every session
+
+`POST /api/v1/memory/capture` returned the existing note untouched for a known `sessionId`, while
+the Claude Code hook posts after every response. So each session was stored as it looked after its
+first response: the 8 live captured sessions were 965 B – 5.8 KB. Now a **larger** transcript
+rewrites the note in place (same path, `startedAt` keeps the earliest value, `distilled` resets to
+`false` because the new tail is undistilled) and answers `updated: true`; an equal or smaller one
+writes nothing (`deduped: true`), so a late delivery can never shrink a stored session. Transcripts
+only grow within a session — compaction keeps the earlier turns in the JSONL (checked on a 6.6 MB
+transcript that was compacted once).
+
+The hook side (in `svod-ui-macos/.claude/`) now posts on `PreCompact` and `SessionEnd`, and on
+`Stop` only when the transcript has doubled since the last accepted capture — a handful of commits
+per session instead of one per response.
+
+### Security — an unclosed `<private>` tag failed open
+
+The span regex required a closing `</private>`. An opening tag without one (a typo, a half-finished
+edit) matched nothing, so the whole "private" tail went into the index, `context_pack` blocks, graph
+summary prompts — and would have gone into the new `grep`. An unclosed tag now hides everything to
+the end of the note. Found by the review of this release. Notes already indexed with such a tail
+keep it in the index until the note changes or the vault is re-indexed.
+
+The cost is a note that only *mentions* the tag, e.g. in inline code: its text after the mention
+leaves recall too. Measured on the live vaults before choosing this: 2 of 3,906 notes have an
+unclosed `<private>`, both mentions in code, both under `messy/` (already outside default recall);
+none is a real typo.
+
+### Added — MCP `tree` and `grep` (18 → 20 tools)
+
+- **`tree(pathPrefix?, depth=2)`** — folders with recursive file counts. `list` on a real vault is
+  thousands of paths; this is the cheap way to orient.
+- **`grep(pattern, pathPrefix?, literal, ignoreCase, limit)`** — exact text or regex, line hits
+  `{path, line, text}`. For what BM25 tokenises badly: versions, hosts, ports, identifiers. It follows
+  recall's visibility, not `read`'s: `messy/sessions/` never, `messy/` only by explicit prefix (or the
+  `includeMessyInRecall` toggle), `private: true` notes never, `<private>` spans masked with their
+  newlines kept so line numbers match the file. A 2 s budget enforced inside the matcher stops a
+  catastrophic regex from pinning a CPU (`timedOut: true`). A line the regex engine cannot search
+  without overflowing the stack (`(a|b)*c` over a very long line) is counted in `unsearchableLines`
+  instead of failing the call.
+
+Contract 0.31.0 → **0.32.0** (additive: `CaptureResult.updated`; capture semantics documented).
+
 ## v1.21.0 — 2026-09-05 (App API contract 0.31.0)
 
 ### Security — the shared-vault review closed (`docs/security-shared-vault.md`)
