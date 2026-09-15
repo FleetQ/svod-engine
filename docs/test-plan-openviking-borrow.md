@@ -12,7 +12,7 @@ Companion to `architecture-openviking-borrow.md`. Every case names what it catch
 | C3 | distilled session receives a longer transcript | `distilled` back to `false` |
 | C4 | re-capture keeps `startedAt` = min, `endedAt` = new | frontmatter values |
 | C6 **(neg)** | 10 rounds × 8 concurrent captures of growing sizes | stored size equals the largest capture that answered 200 (a smaller one must not land after it) |
-| C5 | contract | `CaptureResult.updated` in openapi; contract version 0.32.0 everywhere (`VersionConsistencyTest`) |
+| C5 | contract | version 0.32.0 in openapi, `ApiCompatibility` and `/settings` (`VersionConsistencyTest`; pinned in `GraphRagUnitTest`). `CaptureResult.updated` is documented in openapi, but no test asserts the spec field |
 
 C2 guards the grow-only rule: without it a late small payload would truncate a long session.
 
@@ -22,7 +22,7 @@ C2 guards the grow-only rule: without it a late small payload would truncate a l
 |---|---|---|
 | T1 | notes in `a/x.md`, `a/b/y.md`, `a/b/c/z.md`, `r.md`; depth 1 | folders `[a/ (3)]`, `rootFiles=1`, `totalFiles=4` |
 | T2 | same, depth 2 | `a/ (3)`, `a/b/ (2)` — counts are recursive |
-| T3 | `pathPrefix = "a/"` | folders relative to the prefix, `rootFiles=1` (`a/x.md`) |
+| T3 | `pathPrefix = "a/"`, depth 5 | folders `a/b/ (2)`, `a/b/c/ (1)` — full vault paths, not relative to the prefix; `rootFiles=1` (`a/x.md`), `totalFiles=3` |
 | T4 | read-only agent | allowed |
 
 ## G — `grep`
