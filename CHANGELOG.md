@@ -17,6 +17,17 @@ notes hold a tag. The regex now runs only on text that contains an opening tag, 
 identical output on every note for both `maskPrivateSpans` and `stripPrivateSpans`. The index,
 `context_pack` and graph summary prompts call the same functions.
 
+### Changed — MCP `grep` no longer builds a String for every line
+
+With the pre-check deployed, whole-vault `grep` on the live engine still took 2.6–5.2 s wall-clock
+and timed out in 3 of the first 4 calls after a restart. The scan still allocated: `lines()` built a
+String per line (1.1 M lines; one note alone is 22.4 MB), 372 MB per whole-vault call. `grep` now
+runs one `Matcher` per note and moves it line by line with `region()`. The default anchoring and
+opaque bounds give each line the same `^`, `$`, `\A`, `\z`, `\b` and lookaround behaviour as a
+separate String: over the real vault, 10 such patterns return identical hits (path, line, text), and
+allocation drops from 372 MB to under 1 MB per scan (90 → 64 ms; 227 → 194 ms with `ignoreCase`, in a
+test JVM). Line breaks are split as `String.lines()` splits them (CRLF, LF, lone CR).
+
 ## v1.22.0 — 2026-09-15 (App API contract 0.32.0)
 
 ### Fixed — capture stored only the first turn of every session

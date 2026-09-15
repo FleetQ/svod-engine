@@ -142,9 +142,21 @@ class SvodTools(
                 if (dev.svod.engine.index.MarkdownChunker.isPrivateNote(raw)) continue
                 if (System.nanoTime() > deadline) { timedOut = true; break }
                 scanned++
-                for ((i, line) in dev.svod.engine.index.MarkdownChunker.maskPrivateSpans(raw).lines().withIndex()) {
+                // One Matcher per note, moved line by line with region(). The default anchoring and opaque
+                // bounds make `^`, `$`, `\A`, `\z`, `\b` and lookaround see only the line, exactly as on a
+                // separate String (same hits for 10 such patterns over the real personal vault), without
+                // allocating one: splitting with lines() allocated 372 MB per whole-vault call there.
+                val text = dev.svod.engine.index.MarkdownChunker.maskPrivateSpans(raw)
+                val matcher = regex.matcher(DeadlineCharSequence(text, deadline))
+                val n = text.length
+                var start = 0
+                var lineNo = 0
+                while (true) {
+                    var end = start
+                    while (end < n && text[end] != '\n' && text[end] != '\r') end++
+                    lineNo++
                     val found = try {
-                        regex.matcher(DeadlineCharSequence(line, deadline)).find()
+                        matcher.region(start, end).find()
                     } catch (_: GrepDeadline) {
                         timedOut = true
                         break@scan
@@ -155,9 +167,13 @@ class SvodTools(
                         unsearchableLines++
                         false
                     }
-                    if (!found) continue
-                    if (hits.size == max) { truncated = true; break@scan }
-                    hits += Triple(path, i + 1, line.trim().take(GREP_TEXT_CHARS))
+                    if (found) {
+                        if (hits.size == max) { truncated = true; break@scan }
+                        hits += Triple(path, lineNo, text.substring(start, end).trim().take(GREP_TEXT_CHARS))
+                    }
+                    if (end >= n) break
+                    // Line breaks as String.lines() splits them: CRLF, LF or a lone CR.
+                    start = if (text[end] == '\r' && end + 1 < n && text[end + 1] == '\n') end + 2 else end + 1
                 }
             }
         }

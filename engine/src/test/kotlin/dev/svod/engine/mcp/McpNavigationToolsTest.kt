@@ -91,6 +91,21 @@ class McpNavigationToolsTest {
     }
 
     @Test
+    fun `grep matches each line on its own across LF, CRLF and CR breaks`() = runBlocking {
+        McpFixture().use { fx ->
+            fx.note("breaks.md", "first line\r\nsecond\rthird\n\nfifth")
+
+            suspend fun lines(pattern: String) = fx.grep(pattern).hits().map { it["line"]!!.jsonPrimitive.int }
+            assertEquals(listOf(2), lines("^second$"), "CRLF ends line 1, a lone CR ends line 2")
+            assertEquals(listOf(3), lines("^third$"))
+            assertEquals(listOf(5), lines("\\Afifth\\z"), "\\A and \\z anchor at the line, not the note")
+            assertEquals(listOf(4), lines("^$"), "the empty line between LF LF")
+            assertEquals(emptyList(), lines("d\\s+t"), "a match never spans a line break")
+            assertEquals("second", fx.grep("^second$").hits()[0]["text"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test
     fun `grep never returns private content and keeps line numbers true to the file`() = runBlocking {
         McpFixture().use { fx ->
             fx.note("p/spans.md", "# Spans\nline two\n<private>\nLEAK_SPAN_NEEDLE\n</private>\nPUBLIC_NEEDLE here")
