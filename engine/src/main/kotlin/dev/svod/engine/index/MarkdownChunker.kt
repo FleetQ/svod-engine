@@ -60,14 +60,32 @@ object MarkdownChunker {
      */
     private val PRIVATE_SPAN = Regex("<private>(?:.*?</private>|.*)", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
 
+    /**
+     * Whether [text] holds an opening tag, found without running [PRIVATE_SPAN]. Kotlin compiles
+     * IGNORE_CASE with UNICODE_CASE, so the regex lowercases every character it scans, and most notes
+     * have no tag at all: on the live `personal` vault (46 M chars) 59 of 95 JFR samples of an MCP
+     * `grep` call were in that scan, and 3 of 6 calls ran out of their 2 s budget. `regionMatches`
+     * with ignoreCase accepts exactly the characters the regex does at each tag position (ASCII case
+     * variants, plus `İ` and `ı` for `i`; checked for every code point), so a text it rejects has no span.
+     */
+    private fun hasPrivateTag(text: String): Boolean {
+        var i = text.indexOf('<')
+        while (i >= 0) {
+            if (text.regionMatches(i, "<private>", 0, 9, ignoreCase = true)) return true
+            i = text.indexOf('<', i + 1)
+        }
+        return false
+    }
+
     /** Remove `<private>…</private>` spans from [text]. Used before chunking AND by context_pack. */
-    fun stripPrivateSpans(text: String): String = PRIVATE_SPAN.replace(text, "")
+    fun stripPrivateSpans(text: String): String = if (hasPrivateTag(text)) PRIVATE_SPAN.replace(text, "") else text
 
     /**
      * Blank out `<private>…</private>` spans but keep their line breaks, so a line number computed on
      * the result is the line in the raw file — MCP `grep` reports them to agents that may then `edit`.
      */
-    fun maskPrivateSpans(text: String): String = PRIVATE_SPAN.replace(text) { m -> "\n".repeat(m.value.count { it == '\n' }) }
+    fun maskPrivateSpans(text: String): String =
+        if (hasPrivateTag(text)) PRIVATE_SPAN.replace(text) { m -> "\n".repeat(m.value.count { it == '\n' }) } else text
 
     /** `private: true` in [raw]'s frontmatter, without chunking the body the way [parse] does. */
     fun isPrivateNote(raw: String): Boolean = splitFrontmatter(raw).first?.let { isPrivate(parseYaml(it)) } ?: false

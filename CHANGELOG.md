@@ -3,6 +3,20 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.22.1 — 2026-09-15 (App API contract 0.32.0, unchanged)
+
+### Fixed — MCP `grep` ran out of its time budget on a large vault
+
+On the live `personal` vault (3,217 notes, 46.8 M characters) 3 of 6 whole-vault `grep` calls on
+v1.22.0 returned `timedOut: true` with notes left unscanned. A JFR recording of those calls put 59
+of 95 grep samples in `MarkdownChunker.maskPrivateSpans`: Kotlin compiles `IGNORE_CASE` with
+`UNICODE_CASE`, so the `<private>` regex lowercased every character of every note, while only 3
+notes hold a tag. The regex now runs only on text that contains an opening tag, found with
+`regionMatches(ignoreCase = true)`, which accepts every case variant the regex does (`<PRIVATE>`,
+`<prıvate>`, `<prİvate>`). Masking all 3,217 notes went from ~300 ms to 8 ms in a test JVM, with
+identical output on every note for both `maskPrivateSpans` and `stripPrivateSpans`. The index,
+`context_pack` and graph summary prompts call the same functions.
+
 ## v1.22.0 — 2026-09-15 (App API contract 0.32.0)
 
 ### Fixed — capture stored only the first turn of every session
