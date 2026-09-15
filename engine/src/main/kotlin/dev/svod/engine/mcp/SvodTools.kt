@@ -144,7 +144,7 @@ class SvodTools(
                 scanned++
                 // One Matcher per note, moved line by line with region(). The default anchoring and opaque
                 // bounds make `^`, `$`, `\A`, `\z`, `\b` and lookaround see only the line, exactly as on a
-                // separate String (same hits for 10 such patterns over the real personal vault), without
+                // separate String (same hits over the real personal vault and in a 112-pattern fuzz run), without
                 // allocating one: splitting with lines() allocated 372 MB per whole-vault call there.
                 val text = dev.svod.engine.index.MarkdownChunker.maskPrivateSpans(raw)
                 val matcher = regex.matcher(DeadlineCharSequence(text, deadline))

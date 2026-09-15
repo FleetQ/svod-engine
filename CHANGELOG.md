@@ -27,8 +27,9 @@ return identical hits (path, line, text) and a tenth matches nothing either way;
 112 patterns over 4,027 texts found no difference. Line breaks are split as `String.lines()` splits
 them (CRLF, LF, lone CR). Allocation per scan dropped from 372 MB to under 1 MB and time from 90 to
 64 ms (227 → 194 ms with `ignoreCase`) in one test-JVM run; a second run measured 390 MB and
-107 → 61 ms. The time budget is now also checked across short lines: before, every line got a fresh
-read counter, so a line under 4,096 reads never looked at the clock.
+107 → 61 ms. The read counter now runs across the whole note instead of restarting on every line, so
+short lines count toward the clock check; a pattern that reads no characters (such as `\z`) still
+only checks the budget between notes.
 
 ### Known limit — timeouts right after a restart
 
