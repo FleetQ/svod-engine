@@ -46,7 +46,7 @@ newBytes >  old -> rewrite the SAME path, expectedRevision   deduped=false updat
 - `PreCompact` / `SessionEnd`: always POST.
 - `Stop`: POST only on the first capture of a session, or once the compacted transcript is at
   least **2×** the size last accepted. State: `${TMPDIR}/svod-capture/<session_id>` holding that
-  byte count, written only after a 2xx. Commits per session ≈ log2(final/first) + compactions + 1
+  byte count, written only when `curl -f` reports no error (the engine answers this route with 200 or an error, never a redirect). Commits per session ≈ log2(final/first) + compactions + 1
   (a 3 KB → 216 KB session: ~7), instead of one per response.
 - A crash or killed terminal (no `SessionEnd`) loses at most the part since the last doubling.
 - Compact-summary entries (`isCompactSummary: true`) are dropped: they restate earlier turns.

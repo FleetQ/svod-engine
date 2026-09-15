@@ -14,7 +14,7 @@ rewrites the note in place (same path, `startedAt` keeps the earliest value, `di
 `false` because the new tail is undistilled) and answers `updated: true`; an equal or smaller one
 writes nothing (`deduped: true`), so a late delivery can never shrink a stored session. Transcripts
 only grow within a session — compaction keeps the earlier turns in the JSONL (checked on a 6.6 MB
-transcript with two compactions).
+transcript that was compacted once).
 
 The hook side (in `svod-ui-macos/.claude/`) now posts on `PreCompact` and `SessionEnd`, and on
 `Stop` only when the transcript has doubled since the last accepted capture — a handful of commits
