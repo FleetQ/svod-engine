@@ -107,6 +107,24 @@ class MarkdownChunkerTest {
     }
 
     @Test
+    fun `every case variant the regex accepts is still stripped and masked`() {
+        // The tag pre-check must not skip what PRIVATE_SPAN matches. `ı` and `İ` fold to `i` only under
+        // Unicode case rules, which is what a lowercase()-and-contains shortcut would get wrong.
+        for (tag in listOf("<PrIvAtE>", "<prıvate>", "<prİvate>")) {
+            assertEquals("ab", MarkdownChunker.stripPrivateSpans("a${tag}SECRET</private>b"), tag)
+            assertEquals("a\nb", MarkdownChunker.maskPrivateSpans("a${tag}SE\nCRET</private>b"), tag)
+        }
+        assertEquals("x", MarkdownChunker.stripPrivateSpans("x<private>"), "a tag that ends the text")
+    }
+
+    @Test
+    fun `text without an opening tag comes back unchanged`() {
+        val text = "a <b>bold</b> <privat> < private> <private </private> <\n<"
+        assertEquals(text, MarkdownChunker.stripPrivateSpans(text))
+        assertEquals(text, MarkdownChunker.maskPrivateSpans(text))
+    }
+
+    @Test
     fun `an unclosed private tag hides everything after it`() {
         // A typo or a half-finished edit must fail closed: before, the missing </private> meant no match
         // at all, and the whole tail reached the index, context_pack and graph prompts.

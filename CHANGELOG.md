@@ -3,6 +3,42 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.22.1 — 2026-09-15 (App API contract 0.32.0, unchanged)
+
+### Changed — the private-span regex is skipped for notes without an opening tag
+
+`MarkdownChunker.stripPrivateSpans` and `maskPrivateSpans` ran a case-insensitive `<private>` regex
+over every note. Kotlin compiles `IGNORE_CASE` with `UNICODE_CASE`, so the regex lowercased every
+character, while only 3 of the 3,217 notes in the live `personal` vault (46.8 M characters) hold a
+tag. On v1.22.0, measured by hand on the live engine, 3 of 6 whole-vault MCP `grep` calls returned
+`timedOut: true`, and 59 of 95 grep samples in a JFR recording were in that scan. The regex now runs
+only when `regionMatches(ignoreCase = true)` finds an opening tag, which accepts exactly the
+characters the regex accepts at each tag position (checked for every code point). Masking all notes
+went from ~300 ms to 8 ms in a test JVM, with identical output on every note. The index,
+`context_pack` and graph summary prompts call the same functions.
+
+### Changed — MCP `grep` no longer builds a String for every line
+
+`grep` split each note with `lines()`, one String per line (1.1 M lines; one note alone is 22.4 MB),
+which allocated 372 MB per whole-vault call. It now runs one `Matcher` per note and moves it line by
+line with `region()`. The default anchoring and opaque bounds give each line the same `^`, `$`, `\A`,
+`\z`, `\b` and lookaround behaviour as a separate String. Over the real vault, 9 patterns with hits
+return identical hits (path, line, text) and a tenth matches nothing either way; a fuzz comparison of
+112 patterns over 4,027 texts found no difference. Line breaks are split as `String.lines()` splits
+them (CRLF, LF, lone CR). Allocation per scan dropped from 372 MB to under 1 MB and time from 90 to
+64 ms (227 → 194 ms with `ignoreCase`) in one test-JVM run; a second run measured 390 MB and
+107 → 61 ms. The read counter now runs across the whole note instead of restarting on every line, so
+short lines count toward the clock check; a pattern that reads no characters (such as `\z`) still
+only checks the budget between notes.
+
+### Known limit — timeouts right after a restart
+
+Measured by hand on the live engine after deploying both changes, on a machine with 7.4 of 8.2 GB of
+swap in use: the first 3 whole-vault `grep` calls after a restart still returned `timedOut: true`;
+the next 7 calls and 5 `ignoreCase` calls did not (1.4–2.8 s wall-clock). With only the first change
+deployed, 4 of 5 `ignoreCase` calls had timed out. Machine load was not controlled, so these runs
+show a direction, not the size of the effect. A timed-out call returns the hits found so far.
+
 ## v1.22.0 — 2026-09-15 (App API contract 0.32.0)
 
 ### Fixed — capture stored only the first turn of every session
