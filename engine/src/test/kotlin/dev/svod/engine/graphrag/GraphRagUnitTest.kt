@@ -38,8 +38,8 @@ class GraphRagUnitTest {
 
     @Test
     fun `contract version was bumped for the additive graph routes`() {
-        // Bumped deliberately in v1.20.0: people as App API principals (ADR-0019).
-        assertEquals("0.31.0", ApiCompatibility.CURRENT_CONTRACT_VERSION)
+        // Bumped deliberately in v1.22.0: capture rewrites a grown session (CaptureResult.updated).
+        assertEquals("0.32.0", ApiCompatibility.CURRENT_CONTRACT_VERSION)
     }
 
     // ---- B4/B5: edge canonicalisation ----

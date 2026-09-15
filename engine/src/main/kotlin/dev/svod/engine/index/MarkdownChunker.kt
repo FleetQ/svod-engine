@@ -52,11 +52,25 @@ object MarkdownChunker {
     private val FRONTMATTER = Regex("^\\uFEFF?---\\r?\\n(.*?)\\r?\\n---\\r?\\n?", RegexOption.DOT_MATCHES_ALL)
     private val HEADING = Regex("^(#{1,6})\\s+(.*)$")
 
-    /** `<private>…</private>` spans excluded from the index (leak guard); the committed bytes keep them. */
-    private val PRIVATE_SPAN = Regex("<private>.*?</private>", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+    /**
+     * `<private>…</private>` spans excluded from the index (leak guard); the committed bytes keep them.
+     * An opening tag with no closing tag hides everything to the end of the text. Requiring the closing
+     * tag failed open: a typo or a half-finished edit put the whole "private" tail into the index,
+     * `context_pack`, graph summary prompts and `grep`.
+     */
+    private val PRIVATE_SPAN = Regex("<private>(?:.*?</private>|.*)", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
 
     /** Remove `<private>…</private>` spans from [text]. Used before chunking AND by context_pack. */
     fun stripPrivateSpans(text: String): String = PRIVATE_SPAN.replace(text, "")
+
+    /**
+     * Blank out `<private>…</private>` spans but keep their line breaks, so a line number computed on
+     * the result is the line in the raw file — MCP `grep` reports them to agents that may then `edit`.
+     */
+    fun maskPrivateSpans(text: String): String = PRIVATE_SPAN.replace(text) { m -> "\n".repeat(m.value.count { it == '\n' }) }
+
+    /** `private: true` in [raw]'s frontmatter, without chunking the body the way [parse] does. */
+    fun isPrivateNote(raw: String): Boolean = splitFrontmatter(raw).first?.let { isPrivate(parseYaml(it)) } ?: false
 
     private fun isPrivate(fm: Map<String, Any?>): Boolean = when (val v = fm["private"]) {
         is Boolean -> v

@@ -22,7 +22,14 @@ data class CaptureRequestDto(
 )
 
 @Serializable
-data class CaptureResultDto(val path: String, val revision: String, val deduped: Boolean)
+data class CaptureResultDto(
+    val path: String,
+    val revision: String,
+    /** Nothing was written: the session is already stored with an equal or larger transcript. */
+    val deduped: Boolean,
+    /** An existing session note was rewritten with a larger transcript. Since 0.32.0. */
+    val updated: Boolean = false,
+)
 
 @Serializable
 data class SessionDto(

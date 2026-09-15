@@ -61,6 +61,9 @@ class IndexService(
     private val includeMessyInRecall: Boolean = false,
 ) : AutoCloseable {
 
+    /** Whether `messy/` drafts take part in recall — the snapshot `LuceneIndex.buildFilter` obeys, for recall surfaces outside the index. */
+    val includesMessyInRecall: Boolean get() = includeMessyInRecall
+
     /** The active embedder. Swappable at runtime via [setEmbedder] (provider change). */
     @Volatile
     private var embedder: Embedder = embedder
