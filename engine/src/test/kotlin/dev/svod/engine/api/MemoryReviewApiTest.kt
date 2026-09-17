@@ -443,4 +443,26 @@ class MemoryReviewApiTest {
             assertEquals(200, rulebook(fx, "?limit=1000")["items"]!!.jsonArray.size)
         }
     }
+
+    @Test
+    fun `B4 a bold first line is the title, and neither a code comment nor a later section heading is`(): Unit = runBlocking {
+        ApiFixture.create().use { fx ->
+            // The shape of a live deploy policy whose `# comment` inside a bash block became its title.
+            val body = "**Разгръщане на код не пресъздава данните.**\n\n" +
+                "```bash\n# първо данните, без --build\ndocker compose up -d postgres\n```\n\n" +
+                "Пипа само услугите с код.\n\n## Свързан капан\n\nОще текст.\n"
+            note(fx, "memory/policy/deploy.md", "type: policy\nstatus: active", body)
+            note(fx, "memory/policy/code-first.md", "type: policy\nstatus: active", "~~~\n# not a title\n~~~\nReal first line.\n")
+            fx.index.waitIdle()
+
+            val rows = rulebook(fx)["items"]!!.jsonArray.map { it.jsonObject }.associateBy { it.s("path") }
+            assertEquals("Разгръщане на код не пресъздава данните.", rows["memory/policy/deploy.md"]!!.s("title"))
+            assertEquals("Пипа само услугите с код.", rows["memory/policy/deploy.md"]!!.s("summary"))
+            assertEquals("Real first line.", rows["memory/policy/code-first.md"]!!.s("title"))
+
+            note(fx, "memory/fact/q.md", "type: fact\nstatus: provisional", body)
+            fx.index.waitIdle()
+            assertEquals("Разгръщане на код не пресъздава данните.", items(review(fx)).single().s("title"))
+        }
+    }
 }
