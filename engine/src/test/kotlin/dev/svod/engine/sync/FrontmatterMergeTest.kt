@@ -78,4 +78,13 @@ class FrontmatterMergeTest {
         val diff = FrontmatterMerge.merge(null, "# A\nmine\n", "# A\ntheirs\n")
         assertTrue(diff is FrontmatterMerge.Outcome.Conflict)
     }
+
+    @Test
+    fun `a two-sided frontmatter merge keeps key order and unquoted dates and instants as written`() {
+        val base = "---\ntitle: Note\nday: 2026-09-01\nat: 2026-09-01T10:00:00Z\nzeta: 1\nalpha: 2\n---\nbody\n"
+        val ours = "---\ntitle: Note\nday: 2026-09-01\nat: 2026-09-01T10:00:00Z\nzeta: 1\nalpha: 3\n---\nbody\n"
+        val theirs = "---\ntitle: Note\nday: 2026-09-01\nat: 2026-09-01T10:00:00Z\nzeta: 9\nalpha: 2\nbeta: new\n---\nbody\n"
+        val c = merged(FrontmatterMerge.merge(base, ours, theirs))
+        kotlin.test.assertEquals("---\ntitle: Note\nday: 2026-09-01\nat: 2026-09-01T10:00:00Z\nzeta: 9\nalpha: 3\nbeta: new\n---\nbody\n", c)
+    }
 }

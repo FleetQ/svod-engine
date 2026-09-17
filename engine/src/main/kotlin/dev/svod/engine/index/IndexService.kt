@@ -498,6 +498,9 @@ class IndexService(
     fun enumerate(filters: SearchFilters, limit: Int = 500): List<String> =
         index.enumeratePaths(index.buildFilter(filters, includeMessy = includeMessyInRecall), limit)
 
+    /** Paths of memories awaiting review ([LuceneIndex.reviewFilter]), capped at [limit], sorted. */
+    fun enumerateReview(limit: Int): List<String> = index.enumeratePaths(index.reviewFilter(), limit)
+
     fun search(q: SearchQuery): SearchResult {
         val start = System.nanoTime()
         // Blank text AND no user-facing filter ⇒ nothing to search (the lifecycle defaults alone must
@@ -683,7 +686,7 @@ class IndexService(
     /** Prepared documents for one file: blob id, tags/created, memory meta, and resolved chunk docs. */
     private class FileDocs(val blob: String, val tags: List<String>, val created: Long?, val memory: LuceneIndex.MemoryMeta, val docs: List<LuceneIndex.ChunkDoc>)
 
-    private fun memoryMetaOf(doc: ParsedDoc) = LuceneIndex.MemoryMeta(doc.type, doc.status, doc.supersededBy, doc.expiresAt)
+    private fun memoryMetaOf(doc: ParsedDoc) = LuceneIndex.MemoryMeta(doc.type, doc.status, doc.supersededBy, doc.expiresAt, doc.needsReview)
 
     /**
      * Build the Lucene docs for [path] at [commit]. [embed]=false ⇒ text + reused vectors only (the

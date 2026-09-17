@@ -13,6 +13,7 @@ import dev.svod.engine.memory.ClassificationPlan
 import dev.svod.engine.memory.FactClassifier
 import dev.svod.engine.memory.MemoryAdjudicator
 import dev.svod.engine.memory.MemoryCandidate
+import dev.svod.engine.memory.frontmatterFences
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
@@ -602,8 +603,19 @@ class SvodTools(
     suspend fun remember(
         agent: AgentIdentity, content: String, type: String?, subject: String?, confidence: Double?,
         source: String?, status: String?, into: String?, supersedes: String?,
+        /** ISO instant or date (start of day UTC); must be in the future. Stored as `expires_at`. */
+        expiresAt: String? = null,
     ): ToolResult = guarded(agent, "remember", write = true) {
         if (content.isBlank()) return@guarded ToolResult.badRequest("content must not be blank")
+        val expires = expiresAt?.trim()?.takeIf { it.isNotEmpty() }?.let { raw ->
+            val instant = runCatching { java.time.Instant.parse(raw) }
+                .recoverCatching { java.time.LocalDate.parse(raw).atStartOfDay(java.time.ZoneOffset.UTC).toInstant() }
+                .getOrNull()
+                ?: return@guarded ToolResult.badRequest("expiresAt must be an ISO-8601 instant or date, got '$raw'")
+            // A past expiry would write a memory that recall hides the moment it lands.
+            if (!instant.isAfter(java.time.Instant.now())) return@guarded ToolResult.badRequest("expiresAt must be in the future, got '$raw'")
+            instant
+        }
         val t = type?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "fact"
         val st = status?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: defaultStatusFor(t)
         val dir = (into ?: "memory").trim('/').ifEmpty { "memory" }
@@ -668,6 +680,7 @@ class SvodTools(
                 contradicts = related?.path?.takeIf { plan.classification == Classification.CONTRADICTION },
                 supersedes = related?.path?.takeIf { plan.classification == Classification.UPDATE },
                 needsReview = plan.classification == Classification.UNCERTAIN,
+                expiresAt = expires,
             )
             val files = LinkedHashMap<String, String>()
             files[path] = note
@@ -727,8 +740,9 @@ class SvodTools(
     private fun statusOf(text: String): String? =
         dev.svod.engine.index.MarkdownChunker.parse(text).status
 
-    /** Re-serialize [oldText] with status=revoked + superseded_by=[newPath], preserving its body. */
+    /** [oldText] with status=revoked + superseded_by=[newPath]; other frontmatter lines and the body kept as written. */
     private fun revoke(oldText: String, newPath: String): String {
+        dev.svod.engine.memory.patchFrontmatter(oldText, linkedMapOf("status" to "revoked", "superseded_by" to newPath), emptySet())?.let { return it }
         val parsed = dev.svod.engine.index.MarkdownChunker.parse(oldText)
         val fm = LinkedHashMap<String, Any?>(parsed.frontmatter)
         fm["status"] = "revoked"
@@ -749,6 +763,7 @@ class SvodTools(
         supersedes: String? = null,
         /** Classification could not be settled; the note is persisted flagged for a human. */
         needsReview: Boolean = false,
+        expiresAt: java.time.Instant? = null,
     ): String {
         val fm = LinkedHashMap<String, Any?>()
         fm["type"] = type
@@ -759,17 +774,9 @@ class SvodTools(
         contradicts?.let { fm["contradicts"] = it }
         supersedes?.let { fm["supersedes"] = it }
         if (needsReview) fm["needs-review"] = true
+        expiresAt?.let { fm["expires_at"] = it.toString() }
         fm["created"] = java.time.Instant.now().toString()
         return frontmatterFences(fm) + content + "\n"
-    }
-
-    private fun frontmatterFences(fm: Map<String, Any?>): String {
-        val opts = org.yaml.snakeyaml.DumperOptions().apply {
-            defaultFlowStyle = org.yaml.snakeyaml.DumperOptions.FlowStyle.BLOCK
-            isAllowUnicode = true
-        }
-        val yaml = org.yaml.snakeyaml.Yaml(opts).dump(fm).trimEnd('\n')
-        return "---\n$yaml\n---\n"
     }
 
     // ---- internals ----

@@ -262,6 +262,38 @@ class AppApiContractTest {
     }
 
     @Test
+    fun `memory review, rule book and dashboard responses conform to the contract`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            val ui = Author("ui", "ui@svod.local")
+            fx.engine.write("memory/fact/p.md", "---\ntype: fact\nstatus: provisional\nconfidence: 0.7\ncreated: 2026-09-01T00:00:00Z\n---\nA fact.", null, ui)
+            fx.engine.write("memory/fact/sup.md", "---\ntype: fact\nstatus: revoked\nsuperseded_by: memory/fact/p.md\n---\nOld.", null, ui)
+            fx.engine.write("memory/policy/a.md", "---\ntype: policy\nstatus: active\nsubject: tests\n---\nWrite tests first.", null, ui)
+            fx.index.waitIdle()
+            val ap = "/api/v1/memory"
+
+            validate("$ap/review", Request.Method.GET, 200, fx.get("$ap/review").body())
+            validate("$ap/rulebook", Request.Method.GET, 200, fx.get("$ap/rulebook?types=policy,preference&limit=5").body())
+            validate("$ap/dashboard", Request.Method.GET, 200, fx.get("$ap/dashboard").body())
+
+            val approved = fx.post("$ap/review", """{"path":"memory/fact/p.md","action":"approve"}""")
+            assertEquals(200, approved.statusCode(), approved.body())
+            validate("$ap/review", Request.Method.POST, 200, approved.body())
+            val stale = fx.post("$ap/review", """{"path":"memory/fact/p.md","action":"reopen","expectedRevision":"0000000"}""")
+            assertEquals(409, stale.statusCode(), stale.body())
+            validate("$ap/review", Request.Method.POST, 409, stale.body())
+            val superseded = fx.post("$ap/review", """{"path":"memory/fact/sup.md","action":"approve"}""")
+            assertEquals(409, superseded.statusCode(), superseded.body())
+            validate("$ap/review", Request.Method.POST, 409, superseded.body())
+            val bad = fx.post("$ap/review", """{"path":"memory/fact/p.md","action":"maybe"}""")
+            assertEquals(400, bad.statusCode())
+            validate("$ap/review", Request.Method.POST, 400, bad.body())
+            val missing = fx.post("$ap/review", """{"path":"memory/fact/none.md","action":"approve"}""")
+            assertEquals(404, missing.statusCode())
+            validate("$ap/review", Request.Method.POST, 404, missing.body())
+        }
+    }
+
+    @Test
     fun `every path declared in the contract is implemented`() {
         val openApi = OpenAPIV3Parser().read(specPath.toString())
         val declared = openApi.paths.keys.toSet()
@@ -283,6 +315,7 @@ class AppApiContractTest {
             "/api/v1/index/reembed", "/api/v1/index/pause", "/api/v1/index/resume",
             "/api/v1/memory/capture", "/api/v1/memory/sessions", "/api/v1/memory/sessions/mark-distilled",
             "/api/v1/memory/proposals", "/api/v1/memory/proposals/{id}", "/api/v1/memory/dashboard",
+            "/api/v1/memory/review", "/api/v1/memory/rulebook",
         )
         assertEquals(declared, implemented, "contract paths and implemented routes must match exactly")
         assertTrue(Files.exists(specPath), "contract file present")

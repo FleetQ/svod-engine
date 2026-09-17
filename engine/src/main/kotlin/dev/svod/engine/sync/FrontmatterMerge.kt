@@ -5,7 +5,12 @@ import org.eclipse.jgit.diff.RawTextComparator
 import org.eclipse.jgit.merge.MergeAlgorithm
 import org.eclipse.jgit.merge.MergeFormatter
 import org.yaml.snakeyaml.DumperOptions
+import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
+import org.yaml.snakeyaml.constructor.Constructor
+import org.yaml.snakeyaml.nodes.Tag
+import org.yaml.snakeyaml.representer.Representer
+import org.yaml.snakeyaml.resolver.Resolver
 import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets.UTF_8
 
@@ -19,6 +24,10 @@ import java.nio.charset.StandardCharsets.UTF_8
  *
  * Conflicts are *surfaced*, never auto-resolved: a `Conflict` carries base/ours/theirs so a
  * 3-way merge UI (or an agent) can resolve it. Clean merges are deterministic.
+ *
+ * A merged frontmatter block is re-serialized from the merged map, so YAML comments and the original
+ * quoting are lost on a two-sided merge. Key order (ours first, then keys only theirs added) and the
+ * text of unquoted dates and instants are kept.
  */
 object FrontmatterMerge {
 
@@ -57,8 +66,8 @@ object FrontmatterMerge {
         val t = theirs ?: emptyMap()
 
         val absent = Any() // sentinel for "key not present"
-        val merged = sortedMapOf<String, Any?>()
-        for (key in (o.keys + t.keys + b.keys).toSortedSet()) {
+        val merged = LinkedHashMap<String, Any?>()
+        for (key in LinkedHashSet(o.keys + t.keys + b.keys)) {
             val bv = if (b.containsKey(key)) b[key] else absent
             val ov = if (o.containsKey(key)) o[key] else absent
             val tv = if (t.containsKey(key)) t[key] else absent
@@ -83,14 +92,33 @@ object FrontmatterMerge {
         return out.toList()
     }
 
-    private fun serializeFrontmatter(fm: Map<String, Any?>): String {
+    private fun serializeFrontmatter(fm: Map<String, Any?>): String = yaml().dump(fm).trimEnd('\n').let { "---\n$it\n---\n" }
+
+    /**
+     * SnakeYAML's default resolver loads an unquoted `2026-09-01` as a Date and dumps it back as
+     * `2026-09-01T00:00:00Z`, so a merge rewrote dates neither side changed. Without the implicit
+     * timestamp resolver both load and dump see a plain string, written back unquoted as it was.
+     */
+    private class NoTimestampResolver : Resolver() {
+        override fun addImplicitResolvers() {
+            addImplicitResolver(Tag.BOOL, Resolver.BOOL, "yYnNtTfFoO")
+            addImplicitResolver(Tag.INT, Resolver.INT, "-+0123456789")
+            addImplicitResolver(Tag.FLOAT, Resolver.FLOAT, "-+0123456789.")
+            addImplicitResolver(Tag.MERGE, Resolver.MERGE, "<")
+            addImplicitResolver(Tag.NULL, Resolver.NULL, "~nN\u0000")
+            addImplicitResolver(Tag.NULL, Resolver.EMPTY, null)
+            addImplicitResolver(Tag.YAML, Resolver.YAML, "!&*")
+        }
+    }
+
+    private fun yaml(): Yaml {
         val options = DumperOptions().apply {
             defaultFlowStyle = DumperOptions.FlowStyle.BLOCK
             isPrettyFlow = true
             isAllowUnicode = true // emit Cyrillic/UTF-8 literally, not \uXXXX
         }
-        val yaml = Yaml(options).dump(fm).trimEnd('\n')
-        return "---\n$yaml\n---\n"
+        val loader = LoaderOptions()
+        return Yaml(Constructor(loader), Representer(options), options, loader, NoTimestampResolver())
     }
 
     // ---- body (line-level, git's algorithm) ----
@@ -120,7 +148,7 @@ object FrontmatterMerge {
             fun parse(text: String): Doc {
                 val m = FENCE.find(text) ?: return Doc(null, text)
                 val fm = try {
-                    (Yaml().load(m.groupValues[1]) as? Map<String, Any?>) ?: emptyMap()
+                    (yaml().load<Any?>(m.groupValues[1]) as? Map<String, Any?>) ?: emptyMap()
                 } catch (_: Exception) {
                     return Doc(null, text) // malformed frontmatter → treat whole thing as body
                 }

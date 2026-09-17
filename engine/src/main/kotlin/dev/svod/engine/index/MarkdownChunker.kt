@@ -21,6 +21,8 @@ data class ParsedDoc(
     val status: String?,
     val supersededBy: String?,
     val expiresAt: Long?,
+    /** `needs-review: true` — classification could not settle this memory; a person has to look at it. */
+    val needsReview: Boolean,
     /** `private: true` frontmatter — the whole note is kept out of the index (FTS + embeddings). */
     val private: Boolean,
     /** RAW body, private spans intact — used for re-serialization/dedup, NOT for indexing. */
@@ -90,7 +92,9 @@ object MarkdownChunker {
     /** `private: true` in [raw]'s frontmatter, without chunking the body the way [parse] does. */
     fun isPrivateNote(raw: String): Boolean = splitFrontmatter(raw).first?.let { isPrivate(parseYaml(it)) } ?: false
 
-    private fun isPrivate(fm: Map<String, Any?>): Boolean = when (val v = fm["private"]) {
+    private fun isPrivate(fm: Map<String, Any?>): Boolean = isTrue(fm["private"])
+
+    private fun isTrue(v: Any?): Boolean = when (v) {
         is Boolean -> v
         is String -> v.trim().lowercase() in setOf("true", "yes", "1", "on")
         else -> false
@@ -118,12 +122,13 @@ object MarkdownChunker {
         val status = (fm["status"] as? Any?)?.toString()?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
         val supersededBy = (fm["superseded_by"] ?: fm["supersededBy"])?.toString()?.trim()?.takeIf { it.isNotEmpty() }
         val expiresAt = firstEpoch(fm, "expires_at", "expiresAt", "expires")
+        val needsReview = isTrue(fm["needs-review"] ?: fm["needsReview"])
         val private = isPrivate(fm)
 
         // `.body` stays RAW (private spans intact) so re-serialization/dedup never mutate stored bytes;
         // chunks are built from a private-stripped body and dropped entirely for a `private: true` note.
         val chunks = if (private) emptyList() else chunk(stripPrivateSpans(body))
-        return ParsedDoc(fm, tags, title, created, modified, type, status, supersededBy, expiresAt, private, body, chunks)
+        return ParsedDoc(fm, tags, title, created, modified, type, status, supersededBy, expiresAt, needsReview, private, body, chunks)
     }
 
     private fun splitFrontmatter(raw: String): Pair<String?, String> {

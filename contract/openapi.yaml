@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.32.0
+  version: 0.33.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -1384,6 +1384,105 @@ paths:
               schema: { $ref: "#/components/schemas/MemoryDashboard" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/memory/review:
+    get:
+      tags: [memory]
+      summary: Memories awaiting a person's review (0.33.0)
+      operationId: memoryReviewList
+      description: >
+        Memory notes that are `provisional` or carry `needs-review: true`, excluding revoked, superseded
+        and expired ones, captured sessions (`messy/sessions/`) and `private: true` notes. Each file is
+        re-read, so a note changed after indexing is judged by its current frontmatter. Order:
+        `needsReview` or `contradicts` first, then newest `created`, then path. `<private>` spans are
+        removed from `excerpt` (≤ 280 characters). `total` counts the whole queue, not just `items`.
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum items returned (default 200, capped at 500).
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The review queue
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryReviewList" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [memory]
+      summary: Approve, decline or reopen a memory (0.33.0)
+      operationId: memoryReviewAction
+      description: >
+        A frontmatter rewrite committed as the calling person; the body is not changed. approve →
+        `status: active`, decline → `status: revoked` (both drop `needs-review`), reopen →
+        `status: provisional` (the undo of either). Every action stamps `reviewed_at` and `reviewed_by`.
+        Only memory notes (frontmatter `status` or `type`, not under `messy/sessions/`) are reviewable.
+        The review queue has no MCP tool. That is a default for agents that follow it, not a security
+        boundary: MCP `remember` honors a caller's `status`, and `write`/`edit` can change frontmatter.
+        Readers get 403.
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemoryReviewAction" }
+      responses:
+        "200":
+          description: The rewritten memory
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryReviewResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: >
+            A stale `expectedRevision` (ConflictBody, current state returned), or `error: superseded` (Error)
+            when the memory has already been replaced by another.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ConflictBody"
+                  - $ref: "#/components/schemas/Error"
+        "422":
+          description: The rewritten note was refused by the secret scanner
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/memory/rulebook:
+    get:
+      tags: [memory]
+      summary: Index of the confirmed rule book (0.33.0)
+      operationId: memoryRulebook
+      description: >
+        One line per default-visible memory of the requested types (active: not provisional, revoked,
+        superseded or expired; not under `messy/`; not `private: true`), sorted by type then title. Not
+        ranked. `summary` is the first non-heading body line with `<private>` spans removed
+        (≤ 160 characters). Meant for a session-start hook: the model reads a note on demand.
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+        - name: types
+          in: query
+          required: false
+          description: Comma-separated memory types (default `policy,preference`).
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          description: Maximum items returned (default 40, capped at 200).
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The rule-book index
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryRulebook" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
 components:
   parameters:
     PathQuery:
@@ -2442,7 +2541,7 @@ components:
 
     MemoryDashboard:
       type: object
-      required: [sessionsCaptured, sessionsDistilled, notesWritten, capturedBytes, distilledBytes, compressionRatio, openProposals]
+      required: [sessionsCaptured, sessionsDistilled, notesWritten, capturedBytes, distilledBytes, compressionRatio, openProposals, awaitingReview]
       properties:
         sessionsCaptured: { type: integer }
         sessionsDistilled: { type: integer }
@@ -2452,3 +2551,63 @@ components:
         compressionRatio: { type: number, format: double, description: "capturedBytes / max(1, distilledBytes)" }
         lastDistillAt: { type: integer, format: int64, nullable: true }
         openProposals: { type: integer }
+        awaitingReview: { type: integer, description: "Memories in the review queue; equals GET /memory/review total (0.33.0)" }
+
+    MemoryReviewItem:
+      type: object
+      required: [path, title, excerpt, needsReview, revision]
+      properties:
+        path: { type: string }
+        title: { type: string }
+        excerpt: { type: string, description: "Body with <private> spans removed, whitespace collapsed, ≤ 280 characters" }
+        type: { type: string, nullable: true }
+        status: { type: string, nullable: true }
+        subject: { type: string, nullable: true }
+        confidence: { type: number, format: double, nullable: true }
+        source: { type: string, nullable: true }
+        created: { type: string, nullable: true, description: ISO-8601 instant }
+        contradicts: { type: string, nullable: true, description: Path of the memory this one contradicts }
+        supersedes: { type: string, nullable: true, description: Path of the memory this one replaced }
+        needsReview: { type: boolean }
+        revision: { type: string, description: Pass back as expectedRevision }
+
+    MemoryReviewList:
+      type: object
+      required: [total, items]
+      properties:
+        total: { type: integer }
+        items: { type: array, items: { $ref: "#/components/schemas/MemoryReviewItem" } }
+
+    MemoryReviewAction:
+      type: object
+      required: [path, action]
+      properties:
+        path: { type: string }
+        action: { type: string, enum: [approve, decline, reopen] }
+        expectedRevision: { type: string, nullable: true, description: "Omitted: the revision read by the engine" }
+
+    MemoryReviewResult:
+      type: object
+      required: [path, revision, commit, status]
+      properties:
+        path: { type: string }
+        revision: { type: string }
+        commit: { type: string }
+        status: { type: string, enum: [active, revoked, provisional] }
+
+    MemoryRulebookItem:
+      type: object
+      required: [path, title, type, summary]
+      properties:
+        path: { type: string }
+        title: { type: string }
+        type: { type: string }
+        subject: { type: string, nullable: true }
+        summary: { type: string }
+
+    MemoryRulebook:
+      type: object
+      required: [awaitingReview, items]
+      properties:
+        awaitingReview: { type: integer }
+        items: { type: array, items: { $ref: "#/components/schemas/MemoryRulebookItem" } }

@@ -92,5 +92,58 @@ class MemoryToolsTest {
         } finally { index.close(); engine.close() }
     }
 
+    @Test
+    fun `supersession revokes a hand-written memory without rewriting its other frontmatter lines`() = runBlocking {
+        McpFixture().use { fx ->
+            val old = "memory/fact/handwritten.md"
+            val raw = "---\ntype: fact\n# keep me\nstatus: active\ncreated: 2026-09-01T10:00:00Z\nsubject: \"база\"\n---\nDB in us-east-1.\n"
+            fx.engine.write(old, raw, null, fx.write.author)
+            val r = fx.tools.remember(fx.write, "DB moved to eu-west-1.", "fact", null, null, null, null, null, supersedes = old)
+            assertEquals("written", str(r, "status"), r.data.toString())
+            val text = fx.engine.read(old)!!.text
+            assertEquals(
+                "---\ntype: fact\n# keep me\nstatus: revoked\ncreated: 2026-09-01T10:00:00Z\nsubject: \"база\"\nsuperseded_by: '${str(r, "path")}'\n---\nDB in us-east-1.\n",
+                text,
+            )
+        }
+    }
+
+    @Test
+    fun `E1 remember stores a future expiresAt as an ISO instant and recall hides the memory after it`() = runBlocking {
+        McpFixture().use { fx ->
+            val dated = fx.tools.remember(fx.write, "Freeze window for the audit.", "preference", null, null, null, null, null, null, expiresAt = "2999-06-01")
+            assertEquals("written", str(dated, "status"), dated.data.toString())
+            assertEquals("2999-06-01T00:00:00Z", MarkdownChunker.parse(fx.engine.read(str(dated, "path")!!)!!.text).frontmatter["expires_at"])
+
+            val soon = java.time.Instant.now().plusSeconds(3).truncatedTo(java.time.temporal.ChronoUnit.SECONDS)
+            val r = fx.tools.remember(fx.write, "Kestrel maintenance banner is up.", "preference", null, null, null, null, null, null, expiresAt = soon.toString())
+            assertEquals("written", str(r, "status"), r.data.toString())
+            val path = str(r, "path")!!
+            val doc = MarkdownChunker.parse(fx.engine.read(path)!!.text)
+            assertEquals(soon.toString(), doc.frontmatter["expires_at"])
+            assertEquals(soon.epochSecond, doc.expiresAt)
+
+            fx.index.waitIdle()
+            fun hits() = fx.index.search(SearchQuery("kestrel", SearchFilters(), dev.svod.engine.index.SearchMode.KEYWORD, 10)).hits.map { it.path }
+            assertTrue(path in hits(), "visible before it expires")
+            while (java.time.Instant.now().epochSecond <= soon.epochSecond) Thread.sleep(100)
+            assertTrue(path !in hits(), "hidden once expires_at has passed")
+        }
+    }
+
+    @Test
+    fun `E2 a past or unparseable expiresAt is a bad request and writes nothing`() = runBlocking {
+        McpFixture().use { fx ->
+            val head = fx.engine.head()
+            for (bad in listOf("2001-01-01", "2001-01-01T00:00:00Z", "next tuesday")) {
+                val r = fx.tools.remember(fx.write, "Should not persist $bad.", "fact", null, null, null, null, null, null, expiresAt = bad)
+                assertTrue(r.isError, "expiresAt '$bad' must be refused")
+                assertEquals("bad_request", str(r, "status"), r.data.toString())
+            }
+            assertEquals(emptyList(), fx.engine.list().filter { it.startsWith("memory/") }, "no memory note written")
+            assertEquals(head, fx.engine.head(), "no commit")
+        }
+    }
+
     private fun WRITE_IDENTITY(): AgentIdentity = AgentRegistry(listOf(WRITE_AGENT)).byAgentId("scribe")!!
 }

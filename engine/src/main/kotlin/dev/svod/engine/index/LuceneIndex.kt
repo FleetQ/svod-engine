@@ -111,7 +111,13 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
     }
 
     /** Memory typing/lifecycle fields parsed from frontmatter, indexed for filtering. */
-    data class MemoryMeta(val type: String? = null, val status: String? = null, val supersededBy: String? = null, val expiresAt: Long? = null)
+    data class MemoryMeta(
+        val type: String? = null,
+        val status: String? = null,
+        val supersededBy: String? = null,
+        val expiresAt: Long? = null,
+        val needsReview: Boolean = false,
+    )
 
     /** Replace all chunks for [path] with [docs]. Caller has already resolved vectors. */
     fun upsertFile(path: String, blob: String, tags: List<String>, created: Long?, docs: List<ChunkDoc>, memory: MemoryMeta = MemoryMeta()) {
@@ -135,6 +141,10 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
                 d.add(StoredField("supersededBy", memory.supersededBy))
             }
             memory.expiresAt?.let { d.add(LongPoint("expiresAt", it)) }
+            // Not written before 1.23.0 and no schema bump forces a re-embed, so an older note gains the
+            // term only when it is next indexed. The review queue also matches `provisional`, which
+            // covered every needs-review note that existed when this was added.
+            if (memory.needsReview) d.add(StringField("needsReview", "true", Field.Store.NO))
             if (cd.vector != null) {
                 d.add(KnnFloatVectorField(VEC_FIELD, cd.vector, VectorSimilarityFunction.COSINE))
                 d.add(StoredField(VEC_BYTES_FIELD, floatsToBytes(cd.vector)))
@@ -236,6 +246,25 @@ class LuceneIndex(private val dir: Path) : AutoCloseable {
         // Lucene: a clause set with only MUST_NOT matches nothing — anchor with match-all.
         if (positives == 0) b.add(MatchAllDocsQuery(), BooleanClause.Occur.MUST)
         return b.build()
+    }
+
+    /**
+     * Memories a person still has to look at: `provisional` or `needs-review`, and not revoked,
+     * superseded, expired or a captured session. Unlike [buildFilter] it keeps `messy/` drafts —
+     * the default recall filter is exactly what hides these notes, so it cannot find them.
+     */
+    fun reviewFilter(nowEpoch: Long = System.currentTimeMillis() / 1000): Query {
+        val wanted = BooleanQuery.Builder()
+            .add(TermQuery(Term("status", "provisional")), BooleanClause.Occur.SHOULD)
+            .add(TermQuery(Term("needsReview", "true")), BooleanClause.Occur.SHOULD)
+            .build()
+        return BooleanQuery.Builder()
+            .add(wanted, BooleanClause.Occur.FILTER)
+            .add(TermQuery(Term("status", "revoked")), BooleanClause.Occur.MUST_NOT)
+            .add(TermQuery(Term("superseded", "true")), BooleanClause.Occur.MUST_NOT)
+            .add(LongPoint.newRangeQuery("expiresAt", Long.MIN_VALUE, nowEpoch), BooleanClause.Occur.MUST_NOT)
+            .add(PrefixQuery(Term("path", "messy/sessions/")), BooleanClause.Occur.MUST_NOT)
+            .build()
     }
 
     /** Distinct note paths matching [filter] (or all, when null), capped at [limit]. For Path A enumeration. */
