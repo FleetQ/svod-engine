@@ -42,8 +42,9 @@ book; declined ones stop polluting classification (a revoked memory is skipped a
 - **Auto-recall on every prompt** — dropped on 2026-09-15 with measurements; nothing new here changes that.
 - **Changing the fact/policy → provisional default.** The queue makes the gate usable; removing the gate
   is a separate product decision for the operator, reversible later.
-- **An MCP tool that approves memories.** The gate exists so an agent cannot confirm its own memory.
-  Approval stays with a person (App API).
+- **An MCP tool that approves memories.** Review stays with a person (App API) for agents that follow
+  the defaults. It is not a security boundary: `remember` honors a caller's `status`, and `write`/`edit`
+  can change frontmatter.
 - **`derives` / `extends` relations, dreaming, container tags, profile buckets, MemoryBench provider** — see research doc.
 - **Re-indexing existing notes for S2.** A schema bump forces a full re-embed (hours on bge-m3). Both
   `needs-review` notes that exist today are also `provisional`, so the queue already finds them; the new

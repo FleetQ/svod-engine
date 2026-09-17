@@ -267,6 +267,8 @@ class McpStatelessProtocolTest {
                     assertTrue("does NOT change a memory's 'status'" in description("promote"), description("promote"))
                     assertTrue("expiresAt" in description("remember"), description("remember"))
                     assertTrue("approves them in the Svod app" in description("remember"), description("remember"))
+                    assertTrue("Do not pass status='active' for a fact or policy" in description("remember"), description("remember"))
+                    assertTrue("Do not pass status='active' for a fact or policy" in SvodMcpServer.INSTRUCTIONS)
                     val rememberProps = tools["remember"]!!.jsonObject["inputSchema"]!!.jsonObject["properties"]!!.jsonObject
                     assertEquals("string", rememberProps["expiresAt"]!!.jsonObject["type"]!!.jsonPrimitive.content)
                     assertTrue("grep" in description("search"), description("search"))

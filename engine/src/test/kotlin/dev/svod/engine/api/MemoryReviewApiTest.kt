@@ -164,6 +164,23 @@ class MemoryReviewApiTest {
     }
 
     @Test
+    fun `R3 a note that turned private on disk before reindexing is neither listed nor counted`(): Unit = runBlocking {
+        ApiFixture.create().use { fx ->
+            note(fx, "memory/fact/secret.md", "type: fact\nstatus: provisional", "Soon private.")
+            fx.index.waitIdle()
+            assertEquals(1, review(fx)["total"]!!.jsonPrimitive.int)
+
+            // Behind the engine's back, so the index still lists it as provisional.
+            Files.writeString(fx.root.resolve("memory/fact/secret.md"), "---\ntype: fact\nstatus: provisional\nprivate: true\n---\nSoon private.")
+            val list = review(fx)
+            assertEquals(emptyList(), paths(list))
+            assertEquals(0, list["total"]!!.jsonPrimitive.int)
+            assertEquals(0, obj(fx.get("/api/v1/memory/dashboard").body())["awaitingReview"]!!.jsonPrimitive.int)
+            assertEquals(0, rulebook(fx)["awaitingReview"]!!.jsonPrimitive.int)
+        }
+    }
+
+    @Test
     fun `R7 Cyrillic path and body round-trip through list and approve`(): Unit = runBlocking {
         ApiFixture.create().use { fx ->
             val path = "memory/факт/бележка.md"

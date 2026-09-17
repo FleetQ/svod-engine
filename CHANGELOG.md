@@ -21,8 +21,10 @@ the live `personal` vault on 2026-09-17 that left 98 provisional memory notes ag
   (`status: provisional`) a memory. It rewrites only the frontmatter, stamps `reviewed_at` and
   `reviewed_by`, and commits through the normal write path as the calling person. A stale
   `expectedRevision` is a 409 conflict; a superseded memory is a 409 `superseded`; a note with neither
-  `status` nor `type` is a 400. Readers get 403 from the existing role check. There is no MCP
-  equivalent on purpose: an agent must not be able to confirm its own memory.
+  `status` nor `type` is a 400. Readers get 403 from the existing role check. The review queue has no
+  MCP tool. That keeps review with a person for agents that follow the defaults, but it is not a
+  security boundary: MCP `remember` still honors a caller's `status`, and `write`/`edit` can change
+  frontmatter.
 - `GET /api/v1/memory/rulebook` returns one line per active policy and preference (path, title, type,
   subject, first body line), sorted by type and title, plus the queue count. It is meant for a
   session-start hook; limit defaults to 40, max 200.
@@ -44,9 +46,17 @@ nothing.
 ### Changed — MCP server instructions and tool descriptions
 
 The MCP server now sends `instructions` in the `initialize` result and in `server/discover`: which
-tool fits which job, that fact/policy memories stay hidden until a person approves them, and that
-`promote` does not change a memory's status. The `promote`, `remember`, `search` and `list`
-descriptions say the same where it matters.
+tool fits which job, that a fact or policy defaults to provisional and stays hidden until a person
+approves it, that agents should not pass `status: active` for a fact or policy, and that `promote`
+does not change a memory's status. The `promote`, `remember`, `search` and `list` descriptions say
+the same where it matters.
+
+### Fixed — a sync merge no longer reorders frontmatter keys or rewrites unquoted dates
+
+`FrontmatterMerge` sorted the merged keys alphabetically and loaded unquoted dates and instants as
+timestamps, so `day: 2026-09-01` came back as `day: 2026-09-01T00:00:00Z`. Keys now keep the local
+order, followed by keys only the other side added, and unquoted dates and instants are written back
+as they were. Comments in a merged frontmatter block are still lost.
 
 ## v1.22.1 — 2026-09-15 (App API contract 0.32.0, unchanged)
 

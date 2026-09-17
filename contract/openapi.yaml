@@ -1418,7 +1418,9 @@ paths:
         `status: active`, decline → `status: revoked` (both drop `needs-review`), reopen →
         `status: provisional` (the undo of either). Every action stamps `reviewed_at` and `reviewed_by`.
         Only memory notes (frontmatter `status` or `type`, not under `messy/sessions/`) are reviewable.
-        There is deliberately no MCP equivalent: an agent cannot confirm its own memory. Readers get 403.
+        The review queue has no MCP tool. That is a default for agents that follow it, not a security
+        boundary: MCP `remember` honors a caller's `status`, and `write`/`edit` can change frontmatter.
+        Readers get 403.
       parameters:
         - $ref: "#/components/parameters/VaultQuery"
       requestBody:

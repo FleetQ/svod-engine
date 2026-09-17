@@ -324,7 +324,7 @@ class SvodMcpServer(
                 t!!.contextPack(agent, q, req.int("tokenBudget", 2000), req.bool("enumerate", false), req.bool("graphExpand", false)).toCallToolResult()
             }
         }
-        tool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Classifies the incoming memory against existing memory of the same type+subject and returns 'classification' (NEW|DUPLICATE|UPDATE|CONTRADICTION|UNCERTAIN) with 'relatedNote' and 'confidence': DUPLICATE is a no-op, UPDATE revokes+links its predecessor, CONTRADICTION keeps BOTH sides linked by 'contradicts' (never overwrites), UNCERTAIN is stored with 'needs-review: true'. fact/policy enter 'provisional': hidden from search and context_pack until a person approves them in the Svod app (no tool approves a memory). Use 'supersedes' to declare a replacement explicitly. 'expiresAt' (ISO-8601 instant or date, must be in the future) stores 'expires_at'; recall hides the memory after it. Do not use it for scratch notes or drafts: write those under messy/.", mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string", "expiresAt" to "string"), listOf("content")) { req ->
+        tool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Classifies the incoming memory against existing memory of the same type+subject and returns 'classification' (NEW|DUPLICATE|UPDATE|CONTRADICTION|UNCERTAIN) with 'relatedNote' and 'confidence': DUPLICATE is a no-op, UPDATE revokes+links its predecessor, CONTRADICTION keeps BOTH sides linked by 'contradicts' (never overwrites), UNCERTAIN is stored with 'needs-review: true'. fact/policy default to 'provisional': hidden from search and context_pack until a person approves them in the Svod app (the review queue has no MCP tool). Do not pass status='active' for a fact or policy: that skips the person's review. Use 'supersedes' to declare a replacement explicitly. 'expiresAt' (ISO-8601 instant or date, must be in the future) stores 'expires_at'; recall hides the memory after it. Do not use it for scratch notes or drafts: write those under messy/.", mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string", "expiresAt" to "string"), listOf("content")) { req ->
             val (t, d) = routed(req)
             d ?: t!!.remember(agent, req.str("content") ?: "", req.str("type"), req.str("subject"), req.double("confidence"), req.str("source"), req.str("status"), req.str("into"), req.str("supersedes"), req.str("expiresAt")).toCallToolResult()
         }
@@ -417,16 +417,17 @@ class SvodMcpServer(
 
         /**
          * Which tool for which job, sent once at connect. Tool descriptions alone let agents treat
-         * `promote` as the way to confirm a memory; it never touched `status`, and nothing an agent
-         * can call does.
+         * `promote` as the way to confirm a memory; it never touched `status`. The provisional default
+         * only holds for agents that follow it: `remember` honors a caller's `status`.
          */
         internal const val INSTRUCTIONS =
             "Svod is a versioned markdown vault. Pick the tool by the job: 'search' finds notes by meaning; 'grep' finds " +
                 "exact strings (versions, hosts, identifiers, error messages); 'tree' orients you in the folder structure " +
                 "('list' returns every path); 'context_pack' with enumerate=true and a type loads the whole rule book, e.g. " +
                 "all active policies; 'read' fetches one note. 'remember' stores a durable typed memory. A fact or policy " +
-                "stays 'provisional', hidden from search and context_pack, until a person approves it in the Svod app; no " +
-                "tool approves a memory, and 'promote' does not change a memory's status. Write changes with 'edit' or " +
+                "defaults to 'provisional', hidden from search and context_pack until a person approves it in the Svod app. " +
+                "Do not pass status='active' for a fact or policy: that skips the person's review. The review queue has no " +
+                "tool here, and 'promote' does not change a memory's status. Write changes with 'edit' or " +
                 "'write' and pass expectedRevision from your last read."
         private val log = org.slf4j.LoggerFactory.getLogger(SvodMcpServer::class.java)
     }

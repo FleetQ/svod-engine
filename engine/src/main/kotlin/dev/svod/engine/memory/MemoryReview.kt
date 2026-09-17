@@ -62,7 +62,8 @@ fun patchFrontmatter(raw: String, set: Map<String, String>, remove: Set<String>)
 /**
  * The review queue for agent-written memory. `remember` stores fact/policy as `provisional`, which the
  * default recall filter hides, so without a person confirming them most memories never reach an agent.
- * Approval is deliberately not an MCP tool: the gate exists so an agent cannot confirm its own memory.
+ * Approval has no MCP tool, which keeps review with a person for agents that follow the defaults. It is not
+ * a security boundary: `remember` honors a caller's `status`, and `write`/`edit` can change frontmatter.
  */
 object MemoryReview {
 
