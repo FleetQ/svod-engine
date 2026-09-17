@@ -38,8 +38,8 @@ class GraphRagUnitTest {
 
     @Test
     fun `contract version was bumped for the additive graph routes`() {
-        // Bumped deliberately in v1.22.0: capture rewrites a grown session (CaptureResult.updated).
-        assertEquals("0.32.0", ApiCompatibility.CURRENT_CONTRACT_VERSION)
+        // Bumped deliberately in v1.23.0: memory review queue, rule book, dashboard awaitingReview.
+        assertEquals("0.33.0", ApiCompatibility.CURRENT_CONTRACT_VERSION)
     }
 
     // ---- B4/B5: edge canonicalisation ----

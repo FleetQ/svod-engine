@@ -88,4 +88,38 @@ data class MemoryDashboardDto(
     val compressionRatio: Double,
     val lastDistillAt: Long? = null,
     val openProposals: Int,
+    /** Memories in the review queue (same count as `GET /memory/review` `total`). Since 0.33.0. */
+    val awaitingReview: Int,
 )
+
+@Serializable
+data class MemoryReviewItemDto(
+    val path: String,
+    val title: String,
+    val excerpt: String,
+    val type: String? = null,
+    val status: String? = null,
+    val subject: String? = null,
+    val confidence: Double? = null,
+    val source: String? = null,
+    val created: String? = null,
+    val contradicts: String? = null,
+    val supersedes: String? = null,
+    val needsReview: Boolean,
+    val revision: String,
+)
+
+@Serializable
+data class MemoryReviewListDto(val total: Int, val items: List<MemoryReviewItemDto>)
+
+@Serializable
+data class MemoryReviewActionDto(val path: String, val action: String, val expectedRevision: String? = null)
+
+@Serializable
+data class MemoryReviewResultDto(val path: String, val revision: String, val commit: String, val status: String)
+
+@Serializable
+data class MemoryRulebookItemDto(val path: String, val title: String, val type: String, val subject: String? = null, val summary: String)
+
+@Serializable
+data class MemoryRulebookDto(val awaitingReview: Int, val items: List<MemoryRulebookItemDto>)

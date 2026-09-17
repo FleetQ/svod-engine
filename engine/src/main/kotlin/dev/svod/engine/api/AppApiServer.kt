@@ -11,6 +11,7 @@ import dev.svod.engine.index.IndexService
 import dev.svod.engine.index.SearchFilters
 import dev.svod.engine.index.SearchMode
 import dev.svod.engine.index.SearchQuery
+import dev.svod.engine.memory.MemoryReview
 import dev.svod.engine.memory.MemoryStore
 import dev.svod.engine.memory.Proposal
 import dev.svod.engine.memory.SESSIONS_PREFIX
@@ -973,6 +974,54 @@ class AppApiServer(
                 call.respond(memoryDashboard(vc))
             }
 
+            get("/api/v1/memory/review") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: MemoryReview.DEFAULT_LIMIT
+                val (items, total) = MemoryReview.list(vc.engine, vc.index, limit)
+                call.respond(MemoryReviewListDto(total, items.map {
+                    MemoryReviewItemDto(
+                        it.path, it.title, it.excerpt, it.type, it.status, it.subject, it.confidence, it.source,
+                        it.created, it.contradicts, it.supersedes, it.needsReview, it.revision,
+                    )
+                }))
+            }
+
+            // Readers never get here: AppApiAuth refuses every non-GET without a write grant.
+            post("/api/v1/memory/review") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val req = call.receive<MemoryReviewActionDto>()
+                val action = MemoryReview.Action.of(req.action)
+                    ?: return@post call.badRequest("action must be approve, decline or reopen")
+                val author = principal().author
+                when (val r = MemoryReview.apply(vc.engine, req.path, action, req.expectedRevision, author)) {
+                    is MemoryReview.ReviewOutcome.Missing -> call.notFound(r.path)
+                    is MemoryReview.ReviewOutcome.NotMemory -> call.badRequest("${r.path} is not a memory note (no status or type in its frontmatter)")
+                    is MemoryReview.ReviewOutcome.Superseded -> call.respond(
+                        HttpStatusCode.Conflict,
+                        ErrorDto("superseded", "${r.path} is superseded by ${r.supersededBy}; review that memory instead"),
+                    )
+                    is MemoryReview.ReviewOutcome.Written -> when (val o = r.outcome) {
+                        is WriteOutcome.Success -> {
+                            publishCommit(vc, o, "memory.review", author)
+                            call.respond(MemoryReviewResultDto(o.path, o.revision, o.commit, r.status))
+                        }
+                        else -> respondOutcome(vc, o, "memory.review")
+                    }
+                }
+            }
+
+            get("/api/v1/memory/rulebook") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                val types = call.request.queryParameters["types"]?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
+                    ?.takeIf { it.isNotEmpty() } ?: MemoryReview.RULEBOOK_DEFAULT_TYPES
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: MemoryReview.RULEBOOK_DEFAULT_LIMIT
+                val items = MemoryReview.rulebook(vc.engine, vc.index, types, limit)
+                call.respond(MemoryRulebookDto(
+                    MemoryReview.awaitingCount(vc.engine, vc.index),
+                    items.map { MemoryRulebookItemDto(it.path, it.title, it.type, it.subject, it.summary) },
+                ))
+            }
+
             webSocket("/api/v1/events") {
                 // A person receives events only for vaults they can read; untagged events (engine
                 // status) pass through — every vault-scoped publisher tags its events.
@@ -1124,6 +1173,7 @@ class AppApiServer(
             compressionRatio = capturedBytes.toDouble() / maxOf(1L, distilledBytes),
             lastDistillAt = store.lastDistillAt(),
             openProposals = store.proposals().count { it.status == "open" },
+            awaitingReview = MemoryReview.awaitingCount(vc.engine, vc.index),
         )
     }
 

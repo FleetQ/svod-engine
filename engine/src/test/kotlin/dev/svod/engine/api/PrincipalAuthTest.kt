@@ -553,4 +553,25 @@ class PrincipalAuthTest {
             assertEquals(401, fx.get("/api/v1/tree?vault=b", key = key2).statusCode())
         }
     }
+
+    @Test
+    fun `a reader cannot review a memory, an editor can and becomes the reviewer`(): Unit = runBlocking {
+        Fixture().use { fx ->
+            val path = "memory/fact/review.md"
+            fx.a.engine.write(path, "---\ntype: fact\nstatus: provisional\n---\nReviewed fact.", null, dev.svod.engine.core.Author("seed", "seed@co"))
+            val before = fx.a.engine.read(path)!!
+            val body = """{"path":"$path","action":"approve"}"""
+
+            val denied = fx.req("POST", "/api/v1/memory/review?vault=a", "k-reader", body)
+            assertEquals(403, denied.statusCode(), denied.body())
+            assertEquals(before, fx.a.engine.read(path), "a reader's review changes nothing")
+            assertEquals(200, fx.req("GET", "/api/v1/memory/review?vault=a", "k-reader").statusCode(), "a reader may still see the queue")
+
+            val ok = fx.req("POST", "/api/v1/memory/review?vault=a", "k-editor", body)
+            assertEquals(200, ok.statusCode(), ok.body())
+            val text = fx.a.engine.read(path)!!.text
+            assertTrue("status: active" in text && "reviewed_by: Мария" in text, text)
+            assertEquals("Мария", fx.a.engine.history(path).first().authorName)
+        }
+    }
 }
