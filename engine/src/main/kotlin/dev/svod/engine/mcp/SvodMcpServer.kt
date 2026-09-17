@@ -187,7 +187,7 @@ class SvodMcpServer(
         }
 
         val tools = buildTools(agent)
-        val responses = messages.mapNotNull { dispatchStateless(it, tools, SERVER_NAME, SERVER_VERSION) }
+        val responses = messages.mapNotNull { dispatchStateless(it, tools, SERVER_NAME, SERVER_VERSION, INSTRUCTIONS) }
         when {
             responses.isEmpty() -> call.respond(HttpStatusCode.Accepted)
             parsed is JsonArray -> respondJson(call, HttpStatusCode.OK, JsonArray(responses))
@@ -254,6 +254,7 @@ class SvodMcpServer(
         val server = Server(
             Implementation(name = SERVER_NAME, version = SERVER_VERSION),
             ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = false))),
+            instructions = INSTRUCTIONS,
         )
         buildTools(agent).forEach { tool ->
             server.addTool(tool.name, tool.description, tool.schema()) { req -> tool.handler(req) }
@@ -308,10 +309,10 @@ class SvodMcpServer(
         tool("move", "Move/rename a note.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
             val (t, d) = routed(req); d ?: t!!.move(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
-        tool("promote", "Promote a draft from messy/ into the curated vault.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
+        tool("promote", "Move a draft note from messy/ into the curated vault (a file move, nothing else). It does NOT change a memory's 'status': a provisional fact or policy stays provisional and hidden from recall until a person approves it in the Svod app. Do not use it on notes outside messy/.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
             val (t, d) = routed(req); d ?: t!!.promote(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
-        tool("search", "Hybrid search (keyword/semantic/hybrid) with filters.", mapOf("query" to "string", "mode" to "string", "limit" to "integer"), listOf("query")) { req ->
+        tool("search", "Hybrid search (keyword/semantic/hybrid) with filters: finds notes by meaning. For exact strings (versions, hosts, identifiers, error messages) use grep; for the folder structure use tree. Provisional, revoked, superseded and expired memories are hidden by default.", mapOf("query" to "string", "mode" to "string", "limit" to "integer"), listOf("query")) { req ->
             val (t, d) = routed(req); d ?: t!!.search(agent, req.toSearchQuery()).toCallToolResult()
         }
         tool("context_pack", "Assemble a cited context block. Default: token-budgeted hybrid recall. enumerate=true: return EVERY note matching the filters (type/tags) in full, unranked — the 'rule book' (all active policies/preferences) every turn. graphExpand=true: also pull the 1-hop wikilink neighbourhood of the top hits into any leftover budget (those blocks are marked viaGraph) — worth it when you need the CONTEXT around an answer (what a decision links to, what cites it), not when you just need the matching text.", mapOf("query" to "string", "mode" to "string", "tokenBudget" to "integer", "type" to "string", "status" to "string", "enumerate" to "boolean", "graphExpand" to "boolean"), emptyList()) { req ->
@@ -323,11 +324,11 @@ class SvodMcpServer(
                 t!!.contextPack(agent, q, req.int("tokenBudget", 2000), req.bool("enumerate", false), req.bool("graphExpand", false)).toCallToolResult()
             }
         }
-        tool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Classifies the incoming memory against existing memory of the same type+subject and returns 'classification' (NEW|DUPLICATE|UPDATE|CONTRADICTION|UNCERTAIN) with 'relatedNote' and 'confidence': DUPLICATE is a no-op, UPDATE revokes+links its predecessor, CONTRADICTION keeps BOTH sides linked by 'contradicts' (never overwrites), UNCERTAIN is stored with 'needs-review: true'. fact/policy enter 'provisional'. Use 'supersedes' to declare a replacement explicitly.", mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string"), listOf("content")) { req ->
+        tool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Classifies the incoming memory against existing memory of the same type+subject and returns 'classification' (NEW|DUPLICATE|UPDATE|CONTRADICTION|UNCERTAIN) with 'relatedNote' and 'confidence': DUPLICATE is a no-op, UPDATE revokes+links its predecessor, CONTRADICTION keeps BOTH sides linked by 'contradicts' (never overwrites), UNCERTAIN is stored with 'needs-review: true'. fact/policy enter 'provisional': hidden from search and context_pack until a person approves them in the Svod app (no tool approves a memory). Use 'supersedes' to declare a replacement explicitly. 'expiresAt' (ISO-8601 instant or date, must be in the future) stores 'expires_at'; recall hides the memory after it. Do not use it for scratch notes or drafts: write those under messy/.", mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string", "expiresAt" to "string"), listOf("content")) { req ->
             val (t, d) = routed(req)
-            d ?: t!!.remember(agent, req.str("content") ?: "", req.str("type"), req.str("subject"), req.double("confidence"), req.str("source"), req.str("status"), req.str("into"), req.str("supersedes")).toCallToolResult()
+            d ?: t!!.remember(agent, req.str("content") ?: "", req.str("type"), req.str("subject"), req.double("confidence"), req.str("source"), req.str("status"), req.str("into"), req.str("supersedes"), req.str("expiresAt")).toCallToolResult()
         }
-        tool("list", "List note paths (optionally filtered by prefix).", mapOf("pathPrefix" to "string"), emptyList()) { req ->
+        tool("list", "List every note path (optionally filtered by prefix). On a real vault that is thousands of paths: use tree to orient and search or grep to find a note.", mapOf("pathPrefix" to "string"), emptyList()) { req ->
             val (t, d) = routed(req); d ?: t!!.list(agent, req.str("pathPrefix")).toCallToolResult()
         }
         tool(
@@ -413,6 +414,20 @@ class SvodMcpServer(
         private const val SESSION_HEADER = "mcp-session-id"
         private const val SERVER_NAME = "svod"
         private const val SERVER_VERSION = "0.1.0"
+
+        /**
+         * Which tool for which job, sent once at connect. Tool descriptions alone let agents treat
+         * `promote` as the way to confirm a memory; it never touched `status`, and nothing an agent
+         * can call does.
+         */
+        internal const val INSTRUCTIONS =
+            "Svod is a versioned markdown vault. Pick the tool by the job: 'search' finds notes by meaning; 'grep' finds " +
+                "exact strings (versions, hosts, identifiers, error messages); 'tree' orients you in the folder structure " +
+                "('list' returns every path); 'context_pack' with enumerate=true and a type loads the whole rule book, e.g. " +
+                "all active policies; 'read' fetches one note. 'remember' stores a durable typed memory. A fact or policy " +
+                "stays 'provisional', hidden from search and context_pack, until a person approves it in the Svod app; no " +
+                "tool approves a memory, and 'promote' does not change a memory's status. Write changes with 'edit' or " +
+                "'write' and pass expectedRevision from your last read."
         private val log = org.slf4j.LoggerFactory.getLogger(SvodMcpServer::class.java)
     }
 }

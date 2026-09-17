@@ -243,6 +243,40 @@ class McpStatelessProtocolTest {
     }
 
     @Test
+    fun `M1 M2 both wire formats carry the server instructions and the memory-gate tool wording`() = runBlocking {
+        McpFixture().use { fx ->
+            val server = SvodMcpServer(fx.tools, fx.registry).start(0)
+            try {
+                val legacyHttp = HttpClient(ClientCIO) {
+                    install(SSE)
+                    install(DefaultRequest) { header(HttpHeaders.Authorization, "Bearer write-token") }
+                }
+                val legacy = Client(Implementation(name = "legacy-test-client", version = "1.0.0"))
+                legacy.connect(StreamableHttpClientTransport(client = legacyHttp, url = "http://127.0.0.1:${server.port}/mcp"))
+                try {
+                    assertEquals(SvodMcpServer.INSTRUCTIONS, legacy.serverInstructions, "initialize result carries instructions")
+                } finally { legacy.close(); legacyHttp.close() }
+
+                client().use { http ->
+                    val discover = http.rpc(server.port, """{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{${meta()}}}""")
+                    assertEquals(SvodMcpServer.INSTRUCTIONS, discover.jsonBody()["result"]!!.jsonObject["instructions"]!!.jsonPrimitive.content)
+
+                    val tools = http.rpc(server.port, """{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{${meta()}}}""")
+                        .jsonBody()["result"]!!.jsonObject["tools"]!!.jsonArray.associateBy { it.jsonObject["name"]!!.jsonPrimitive.content }
+                    fun description(name: String) = tools[name]!!.jsonObject["description"]!!.jsonPrimitive.content
+                    assertTrue("does NOT change a memory's 'status'" in description("promote"), description("promote"))
+                    assertTrue("expiresAt" in description("remember"), description("remember"))
+                    assertTrue("approves them in the Svod app" in description("remember"), description("remember"))
+                    val rememberProps = tools["remember"]!!.jsonObject["inputSchema"]!!.jsonObject["properties"]!!.jsonObject
+                    assertEquals("string", rememberProps["expiresAt"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+                    assertTrue("grep" in description("search"), description("search"))
+                    assertTrue("tree" in description("list"), description("list"))
+                }
+            } finally { server.stop() }
+        }
+    }
+
+    @Test
     fun `an unknown bearer token is rejected on the stateless path too`() = runBlocking {
         McpFixture().use { fx ->
             val server = SvodMcpServer(fx.tools, fx.registry).start(0)

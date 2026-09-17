@@ -150,6 +150,7 @@ internal suspend fun dispatchStateless(
     tools: List<ToolDef>,
     serverName: String,
     serverVersion: String,
+    instructions: String? = null,
 ): JsonObject? {
     val method = body.rpcMethod()
     val id = body.rpcId()
@@ -165,6 +166,7 @@ internal suspend fun dispatchStateless(
             put("protocolVersion", meta.protocolVersion?.takeIf { it in McpProtocol.SUPPORTED } ?: McpProtocol.V2026_07_28)
             putJsonObject("serverInfo") { put("name", serverName); put("version", serverVersion) }
             putJsonObject("capabilities") { putJsonObject("tools") { put("listChanged", false) } }
+            instructions?.let { put("instructions", it) }
         })
 
         "tools/list" -> jsonRpcResult(id, buildJsonObject {
