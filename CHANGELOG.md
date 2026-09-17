@@ -3,6 +3,51 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.23.0 — 2026-09-17 (App API contract 0.33.0)
+
+### Added — a review queue for agent-written memory
+
+`remember` stores a fact or policy as `status: provisional`, and the default recall filter hides
+provisional notes until a person confirms them. There was no way to confirm one short of editing the
+file by hand: the MCP `promote` tool only moves a draft out of `messy/` and never touches `status`. On
+the live `personal` vault on 2026-09-17 that left 98 provisional memory notes against 40 active ones.
+
+- `GET /api/v1/memory/review` lists memories that are `provisional` or carry `needs-review: true`,
+  without revoked, superseded or expired ones, captured sessions and `private: true` notes.
+  `needs-review` and `contradicts` come first, then the newest `created`. Every listed file is
+  re-read, so a note changed after indexing is judged by its current frontmatter. Excerpts have
+  `<private>` spans removed. `total` counts the whole queue; `limit` defaults to 200, max 500.
+- `POST /api/v1/memory/review` approves (`status: active`), declines (`status: revoked`) or reopens
+  (`status: provisional`) a memory. It rewrites only the frontmatter, stamps `reviewed_at` and
+  `reviewed_by`, and commits through the normal write path as the calling person. A stale
+  `expectedRevision` is a 409 conflict; a superseded memory is a 409 `superseded`; a note with neither
+  `status` nor `type` is a 400. Readers get 403 from the existing role check. There is no MCP
+  equivalent on purpose: an agent must not be able to confirm its own memory.
+- `GET /api/v1/memory/rulebook` returns one line per active policy and preference (path, title, type,
+  subject, first body line), sorted by type and title, plus the queue count. It is meant for a
+  session-start hook; limit defaults to 40, max 200.
+- `GET /api/v1/memory/dashboard` gains `awaitingReview`.
+
+### Added — `needsReview` index term
+
+The index now writes a `needsReview` term, so the queue also finds an UNCERTAIN memory that is not
+provisional. There is no schema bump, because that would force a full re-embed; notes gain the term
+the next time they are indexed. Both `needs-review` notes on the live vault are also provisional,
+so the queue already finds them.
+
+### Added — `remember` accepts `expiresAt`
+
+An ISO-8601 instant or date (start of day UTC), stored as `expires_at`. The engine already read and
+filtered `expires_at`, but nothing wrote it. A past or unparseable value is a bad request and writes
+nothing.
+
+### Changed — MCP server instructions and tool descriptions
+
+The MCP server now sends `instructions` in the `initialize` result and in `server/discover`: which
+tool fits which job, that fact/policy memories stay hidden until a person approves them, and that
+`promote` does not change a memory's status. The `promote`, `remember`, `search` and `list`
+descriptions say the same where it matters.
+
 ## v1.22.1 — 2026-09-15 (App API contract 0.32.0, unchanged)
 
 ### Changed — the private-span regex is skipped for notes without an opening tag
