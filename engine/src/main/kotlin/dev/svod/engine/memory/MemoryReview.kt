@@ -117,6 +117,8 @@ object MemoryReview {
     private const val SCAN_CAP = 10_000
 
     private val HEADING = Regex("^#{1,6}\\s+(.*)$")
+    private val FENCE = Regex("^(`{3,}|~{3,})")
+    private val BOLD_LINE = Regex("^(\\*\\*|__)(.+)\\1$")
     private val WHITESPACE = Regex("\\s+")
 
     /** Up to [limit] queue items in review order (design D4), plus the full count. */
@@ -179,11 +181,13 @@ object MemoryReview {
                 if (path.startsWith("messy/")) continue
                 val (_, doc) = cache.get(path) ?: continue
                 if (doc.private || doc.type != type || !recallVisible(doc, now)) continue
-                val masked = MarkdownChunker.stripPrivateSpans(doc.body)
-                val summary = masked.lineSequence().map { it.trim() }
-                    .firstOrNull { it.isNotEmpty() && !HEADING.matches(it) }
+                val lines = proseLines(MarkdownChunker.stripPrivateSpans(doc.body))
+                val title = titleOf(path, doc, lines)
+                // The first line usually IS the title of a memory note; repeating it as the summary says nothing.
+                val summary = lines.filterNot { HEADING.matches(it) }.map(::plain)
+                    .firstOrNull { it != title }
                     .orEmpty().take(SUMMARY_CHARS)
-                items += RulebookItem(path, titleOf(path, doc, masked), type, stringOf(doc, "subject"), summary)
+                items += RulebookItem(path, title, type, stringOf(doc, "subject"), summary)
             }
         }
         items.sortWith(compareBy<RulebookItem> { it.type }.thenBy { it.title.lowercase() }.thenBy { it.path })
@@ -204,7 +208,7 @@ object MemoryReview {
         val masked = MarkdownChunker.stripPrivateSpans(doc.body)
         return ReviewItem(
             path = path,
-            title = titleOf(path, doc, masked),
+            title = titleOf(path, doc, proseLines(masked)),
             excerpt = masked.replace(WHITESPACE, " ").trim().take(EXCERPT_CHARS),
             type = doc.type,
             status = doc.status,
@@ -223,14 +227,38 @@ object MemoryReview {
         )
     }
 
-    /** Frontmatter title, else the first heading, else the first line of the masked body, else the file name. */
-    private fun titleOf(path: String, doc: ParsedDoc, maskedBody: String): String {
+    /**
+     * Frontmatter title, else the body's first line — its text when it is a heading, without bold
+     * markers otherwise — else the file name. Only the FIRST line can be a heading title: a heading
+     * further down names a section, not the note.
+     */
+    private fun titleOf(path: String, doc: ParsedDoc, lines: List<String>): String {
         doc.title?.takeIf { it.isNotEmpty() }?.let { return it }
-        val lines = maskedBody.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
-        lines.firstNotNullOfOrNull { HEADING.find(it)?.groupValues?.get(1)?.trim()?.takeIf(String::isNotEmpty) }?.let { return it }
-        lines.firstOrNull()?.let { return it.take(TITLE_CHARS) }
-        return path.substringAfterLast('/').removeSuffix(".md")
+        val first = lines.firstOrNull() ?: return path.substringAfterLast('/').removeSuffix(".md")
+        HEADING.find(first)?.groupValues?.get(1)?.trim()?.takeIf(String::isNotEmpty)?.let { return it }
+        return plain(first).take(TITLE_CHARS)
     }
+
+    /**
+     * Trimmed non-empty lines outside fenced code blocks. A `# comment` in a shell sample is not a
+     * heading: on the live vault it became the title of a deploy policy.
+     */
+    private fun proseLines(body: String): List<String> {
+        val out = ArrayList<String>()
+        var fence: String? = null
+        for (raw in body.lineSequence()) {
+            val line = raw.trim()
+            val marker = FENCE.find(line)?.groupValues?.get(1)
+            if (fence == null) {
+                if (marker != null) fence = marker else if (line.isNotEmpty()) out += line
+            } else if (marker != null && marker[0] == fence[0] && marker.length >= fence.length && line == marker) {
+                fence = null
+            }
+        }
+        return out
+    }
+
+    private fun plain(line: String): String = BOLD_LINE.matchEntire(line)?.groupValues?.get(2)?.trim() ?: line
 
     private fun stringOf(doc: ParsedDoc, key: String): String? =
         doc.frontmatter[key]?.toString()?.trim()?.takeIf { it.isNotEmpty() }

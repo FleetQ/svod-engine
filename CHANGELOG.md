@@ -3,6 +3,18 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.23.1 — 2026-09-17 (App API contract 0.33.0, unchanged)
+
+### Fixed — review and rule-book titles picked a `#` comment from a code block
+
+The title of a memory note without a frontmatter `title` was the first line that looked like a
+heading anywhere in the body, code blocks included. On the live `personal` vault a deploy policy
+whose body starts with a bold sentence and later shows a bash block got the shell comment
+`# първо данните, без --build: нищо, ако вече вървят` as its title, and the rule book repeated the
+real first sentence as the summary. Titles and summaries now skip fenced code blocks; the title is
+the first line (its text if it is a heading, without `**`/`__` otherwise), and the summary is the
+first non-heading line that differs from the title.
+
 ## v1.23.0 — 2026-09-17 (App API contract 0.33.0)
 
 ### Added — a review queue for agent-written memory
