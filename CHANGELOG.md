@@ -56,7 +56,10 @@ the same where it matters.
 `FrontmatterMerge` sorted the merged keys alphabetically and loaded unquoted dates and instants as
 timestamps, so `day: 2026-09-01` came back as `day: 2026-09-01T00:00:00Z`. Keys now keep the local
 order, followed by keys only the other side added, and unquoted dates and instants are written back
-as they were. Comments in a merged frontmatter block are still lost.
+as they were. Comments in a merged frontmatter block are still lost, and so is quoting: a quoted
+date such as `created: '2026-09-17T08:00:00Z'` comes back unquoted. The value means the same to the
+engine, which reads these keys as either a date or a string. Two spellings of the same instant
+(`…Z` and `…+02:00`) no longer compare equal in a merge and are treated as a conflict.
 
 ## v1.22.1 — 2026-09-15 (App API contract 0.32.0, unchanged)
 
