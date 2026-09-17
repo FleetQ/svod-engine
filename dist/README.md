@@ -48,6 +48,19 @@ launchctl kickstart -k gui/$(id -u)/dev.svod.engine
 then polls `GET http://127.0.0.1:7517/ready` until `200 {"ready":true,...}` and connects.
 `/health` is liveness; `/ready` is readiness (index built, servers up).
 
+### Discovery file
+
+On every start the engine writes `~/.config/svod/engine.json` (override: `SVOD_DISCOVERY_FILE`):
+
+```json
+{"host":"127.0.0.1","appApiPort":7517,"mcpPort":7518,"pid":12345,"launchdLabel":"dev.svod.engine"}
+```
+
+`launchdLabel` is present only under launchd. When the app's configured loopback endpoint does not
+answer, it reads this file, checks `/ready` on the listed port and switches to it. Its Start and Stop
+buttons use the listed label. An install with non-default ports or another label needs no app
+settings.
+
 ### Socket activation — decision
 
 True launchd *socket activation* (launchd holds the listening socket and passes the fd to

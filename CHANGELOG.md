@@ -3,6 +3,22 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.24.0 — 2026-09-17 (App API contract 0.33.0, unchanged)
+
+### Added — the engine tells the app where it is
+
+The macOS app looks for the engine at `127.0.0.1:7517` and starts it through the launchd label
+`dev.svod.engine`. An engine configured with other ports or installed under another label was
+reachable, but the app only showed "offline", and its Start and Stop buttons drove a label that did
+not exist. On 2026-09-17 a fresh app install on a second Mac hit exactly that: the engine ran on
+7619 under `com.katsarov.svod-engine`.
+
+On every start the daemon now writes `~/.config/svod/engine.json` with its host, the ports it
+actually bound (`appApiPort`, `mcpPort`), its pid and, when run by launchd, its label (from
+`XPC_SERVICE_NAME`). The file holds no secrets. It is replaced atomically, and a failed write is
+logged without stopping the engine. `SVOD_DISCOVERY_FILE` overrides the path. Only the daemon entry
+point writes it, so tests and one-shot `import`/`clone` runs leave the file alone.
+
 ## v1.23.1 — 2026-09-17 (App API contract 0.33.0, unchanged)
 
 ### Fixed — review and rule-book titles picked a `#` comment from a code block
