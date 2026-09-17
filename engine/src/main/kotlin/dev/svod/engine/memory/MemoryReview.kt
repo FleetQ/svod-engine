@@ -18,6 +18,47 @@ fun frontmatterFences(fm: Map<String, Any?>): String {
     return "---\n$yaml\n---\n"
 }
 
+private val FRONTMATTER_BLOCK = Regex("^\\uFEFF?---\\r?\\n(.*?)\\r?\\n---\\r?\\n?", RegexOption.DOT_MATCHES_ALL)
+private val TOP_LEVEL_KEY = Regex("^([A-Za-z_][A-Za-z0-9_-]*)\\s*:(.*)$")
+private val PLAIN_SCALAR = Regex("^[a-z]+$")
+
+/**
+ * [raw] with top-level frontmatter keys in [set] replaced (or appended) and keys in [remove] deleted,
+ * line by line, so every other byte stays as written. Re-dumping the whole map instead rewrote lines the
+ * caller never touched: SnakeYAML loads an unquoted `created: 2026-09-01T10:00:00Z` as a Date and dumps
+ * it in another form, and comments are lost. Returns null when the patch is not unambiguous (a touched
+ * key repeated, or holding a block, multi-line or flow value) or the result does not parse back to
+ * exactly the expected frontmatter and body; the caller then falls back to [frontmatterFences].
+ */
+fun patchFrontmatter(raw: String, set: Map<String, String>, remove: Set<String>): String? {
+    val m = FRONTMATTER_BLOCK.find(raw) ?: return null
+    val block = m.groups[1]!!
+    val newline = if (raw.substring(0, block.range.first).endsWith("\r\n")) "\r\n" else "\n"
+    val lines = block.value.split("\n").map { it.removeSuffix("\r") }.toMutableList()
+    val touched = set.keys + remove
+
+    val index = HashMap<String, Int>()
+    for ((i, line) in lines.withIndex()) {
+        val key = TOP_LEVEL_KEY.find(line)?.groupValues?.get(1) ?: continue
+        if (key !in touched) continue
+        if (index.put(key, i) != null) return null
+        val value = TOP_LEVEL_KEY.find(line)!!.groupValues[2].trim()
+        val continued = lines.getOrNull(i + 1)?.let { it.startsWith(" ") || it.startsWith("\t") || it.startsWith("-") } == true
+        if (value.isEmpty() || value[0] in "|>[{&*!" || continued) return null
+    }
+
+    fun scalar(v: String) = if (PLAIN_SCALAR.matches(v)) v else "'" + v.replace("'", "''") + "'"
+    for ((key, value) in set) index[key]?.let { lines[it] = "$key: ${scalar(value)}" }
+    for (i in index.filterKeys { it in remove }.values.sortedDescending()) lines.removeAt(i)
+    for ((key, value) in set) if (key !in index) lines += "$key: ${scalar(value)}"
+
+    val patched = raw.substring(0, block.range.first) + lines.joinToString(newline) + raw.substring(block.range.last + 1)
+    val before = MarkdownChunker.parse(raw)
+    val after = MarkdownChunker.parse(patched)
+    val expected = LinkedHashMap(before.frontmatter).apply { keys.removeAll(remove); putAll(set) }
+    return patched.takeIf { after.frontmatter == expected && after.body == before.body }
+}
+
 /**
  * The review queue for agent-written memory. `remember` stores fact/policy as `provisional`, which the
  * default recall filter hides, so without a person confirming them most memories never reach an agent.
@@ -79,15 +120,7 @@ object MemoryReview {
 
     /** Up to [limit] queue items in review order (design D4), plus the full count. */
     suspend fun list(engine: SvodEngine, index: IndexService, limit: Int): Pair<List<ReviewItem>, Int> {
-        val now = System.currentTimeMillis() / 1000
-        val items = ArrayList<ReviewItem>()
-        for (path in index.enumerateReview(SCAN_CAP)) {
-            val f = engine.read(path) ?: continue
-            val doc = MarkdownChunker.parse(f.text)
-            // The index can lag a file that was just written; the file decides.
-            if (!awaitsReview(path, doc, now)) continue
-            items += itemOf(path, f.revision, doc)
-        }
+        val items = queue(NoteCache(engine), index).map { (path, revision, doc) -> itemOf(path, revision, doc) }.toMutableList()
         items.sortWith(
             compareByDescending<ReviewItem> { it.needsReview || it.contradicts != null }
                 .thenByDescending { it.created?.let(java.time.Instant::parse) }
@@ -96,7 +129,24 @@ object MemoryReview {
         return items.take(limit.coerceIn(0, MAX_LIMIT)) to items.size
     }
 
-    suspend fun awaitingCount(engine: SvodEngine, index: IndexService): Int = list(engine, index, 0).second
+    /** The queue size, i.e. `list(...).second`, without building excerpts or sorting. */
+    suspend fun awaitingCount(engine: SvodEngine, index: IndexService): Int = queue(NoteCache(engine), index).size
+
+    /** One read and parse per path per call, shared by the rule book and its queue count. */
+    private class NoteCache(private val engine: SvodEngine) {
+        private val notes = HashMap<String, Pair<String, ParsedDoc>?>()
+        suspend fun get(path: String): Pair<String, ParsedDoc>? =
+            if (path in notes) notes[path] else engine.read(path)?.let { it.revision to MarkdownChunker.parse(it.text) }.also { notes[path] = it }
+    }
+
+    private suspend fun queue(cache: NoteCache, index: IndexService): List<Triple<String, String, ParsedDoc>> {
+        val now = System.currentTimeMillis() / 1000
+        return index.enumerateReview(SCAN_CAP).mapNotNull { path ->
+            val (revision, doc) = cache.get(path) ?: return@mapNotNull null
+            // The index can lag a file that was just written; the file decides.
+            Triple(path, revision, doc).takeIf { awaitsReview(path, doc, now) }
+        }
+    }
 
     /** Apply [action] to the memory at [path] as a frontmatter rewrite committed by [author]. */
     suspend fun apply(engine: SvodEngine, path: String, action: Action, expectedRevision: String?, author: Author): ReviewOutcome {
@@ -107,16 +157,11 @@ object MemoryReview {
         }
         doc.supersededBy?.let { return ReviewOutcome.Superseded(path, it) }
 
-        val fm = LinkedHashMap<String, Any?>(doc.frontmatter)
-        fm["status"] = action.status
-        if (action != Action.REOPEN) {
-            fm.remove("needs-review")
-            fm.remove("needsReview")
-        }
-        fm["reviewed_at"] = java.time.Instant.now().toString()
-        fm["reviewed_by"] = author.name
-        // Body appended untouched: a review changes the memory's state, never what it says.
-        val text = frontmatterFences(fm) + doc.body
+        val set = linkedMapOf("status" to action.status, "reviewed_at" to java.time.Instant.now().toString(), "reviewed_by" to author.name)
+        val remove = if (action != Action.REOPEN) setOf("needs-review", "needsReview") else emptySet()
+        // The body is never touched: a review changes the memory's state, never what it says.
+        val text = patchFrontmatter(current.text, set, remove)
+            ?: (frontmatterFences(LinkedHashMap<String, Any?>(doc.frontmatter).apply { keys.removeAll(remove); putAll(set) }) + doc.body)
         return ReviewOutcome.Written(engine.write(path, text, expectedRevision ?: current.revision, author), action.status)
     }
 
@@ -124,14 +169,14 @@ object MemoryReview {
      * The confirmed rule book: default-visible notes of [types] as one line each, sorted by type then
      * title. An index for a session start, not the notes themselves — the model reads one on demand.
      */
-    suspend fun rulebook(engine: SvodEngine, index: IndexService, types: List<String>, limit: Int): List<RulebookItem> {
+    suspend fun rulebook(engine: SvodEngine, index: IndexService, types: List<String>, limit: Int): Pair<List<RulebookItem>, Int> {
         val now = System.currentTimeMillis() / 1000
+        val cache = NoteCache(engine)
         val items = ArrayList<RulebookItem>()
         for (type in types.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.distinct()) {
             for (path in index.enumerate(SearchFilters(type = type), SCAN_CAP)) {
                 if (path.startsWith("messy/")) continue
-                val f = engine.read(path) ?: continue
-                val doc = MarkdownChunker.parse(f.text)
+                val (_, doc) = cache.get(path) ?: continue
                 if (doc.private || doc.type != type || !recallVisible(doc, now)) continue
                 val masked = MarkdownChunker.stripPrivateSpans(doc.body)
                 val summary = masked.lineSequence().map { it.trim() }
@@ -141,7 +186,7 @@ object MemoryReview {
             }
         }
         items.sortWith(compareBy<RulebookItem> { it.type }.thenBy { it.title.lowercase() }.thenBy { it.path })
-        return items.take(limit.coerceIn(0, RULEBOOK_MAX_LIMIT))
+        return items.take(limit.coerceIn(0, RULEBOOK_MAX_LIMIT)) to queue(cache, index).size
     }
 
     private fun awaitsReview(path: String, doc: ParsedDoc, now: Long): Boolean =

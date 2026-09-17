@@ -224,6 +224,36 @@ class MemoryReviewApiTest {
     }
 
     @Test
+    fun `A1 review actions leave untouched frontmatter lines byte-identical`(): Unit = runBlocking {
+        ApiFixture.create().use { fx ->
+            val path = "memory/fact/handwritten.md"
+            val kept = listOf(
+                "type: fact",
+                "# written by hand, keep this comment",
+                "created: 2026-09-01T10:00:00Z",
+                "date: 2026-09-01",
+                "subject: \"база данни\"",
+            )
+            val raw = "---\n${kept[0]}\n${kept[1]}\nstatus: provisional\n${kept[2]}\n${kept[3]}\n${kept[4]}\nneeds-review: true\n---\nBody line.\n"
+            fx.engine.write(path, raw, null, UI)
+
+            for (action in listOf("approve", "reopen", "decline", "reopen")) {
+                val r = act(fx, path, action)
+                assertEquals(200, r.statusCode(), r.body())
+                val text = fx.engine.read(path)!!.text
+                val lines = text.lines()
+                for (line in kept) assertTrue(line in lines, "after $action, '$line' is gone:\n$text")
+                assertEquals(kept, lines.filter { it in kept }, "after $action the kept lines stay in order")
+                assertTrue(text.endsWith("---\nBody line.\n"), text)
+                assertEquals(obj(r.body()).s("status"), MarkdownChunker.parse(text).status)
+            }
+            val last = fx.engine.read(path)!!.text
+            assertFalse("needs-review" in last, last)
+            assertEquals(1, last.lines().count { it.startsWith("reviewed_at:") }, last)
+        }
+    }
+
+    @Test
     fun `A2 decline revokes the memory and keeps it hidden`(): Unit = runBlocking {
         ApiFixture.create().use { fx ->
             val path = "memory/fact/decline.md"

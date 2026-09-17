@@ -740,8 +740,9 @@ class SvodTools(
     private fun statusOf(text: String): String? =
         dev.svod.engine.index.MarkdownChunker.parse(text).status
 
-    /** Re-serialize [oldText] with status=revoked + superseded_by=[newPath], preserving its body. */
+    /** [oldText] with status=revoked + superseded_by=[newPath]; other frontmatter lines and the body kept as written. */
     private fun revoke(oldText: String, newPath: String): String {
+        dev.svod.engine.memory.patchFrontmatter(oldText, linkedMapOf("status" to "revoked", "superseded_by" to newPath), emptySet())?.let { return it }
         val parsed = dev.svod.engine.index.MarkdownChunker.parse(oldText)
         val fm = LinkedHashMap<String, Any?>(parsed.frontmatter)
         fm["status"] = "revoked"

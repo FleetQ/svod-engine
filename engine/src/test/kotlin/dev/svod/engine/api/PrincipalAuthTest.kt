@@ -570,7 +570,9 @@ class PrincipalAuthTest {
             val ok = fx.req("POST", "/api/v1/memory/review?vault=a", "k-editor", body)
             assertEquals(200, ok.statusCode(), ok.body())
             val text = fx.a.engine.read(path)!!.text
-            assertTrue("status: active" in text && "reviewed_by: Мария" in text, text)
+            val fm = dev.svod.engine.index.MarkdownChunker.parse(text).frontmatter
+            assertEquals("active", fm["status"], text)
+            assertEquals("Мария", fm["reviewed_by"], text)
             assertEquals("Мария", fx.a.engine.history(path).first().authorName)
         }
     }

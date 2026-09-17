@@ -1015,9 +1015,9 @@ class AppApiServer(
                 val types = call.request.queryParameters["types"]?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
                     ?.takeIf { it.isNotEmpty() } ?: MemoryReview.RULEBOOK_DEFAULT_TYPES
                 val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: MemoryReview.RULEBOOK_DEFAULT_LIMIT
-                val items = MemoryReview.rulebook(vc.engine, vc.index, types, limit)
+                val (items, awaiting) = MemoryReview.rulebook(vc.engine, vc.index, types, limit)
                 call.respond(MemoryRulebookDto(
-                    MemoryReview.awaitingCount(vc.engine, vc.index),
+                    awaiting,
                     items.map { MemoryRulebookItemDto(it.path, it.title, it.type, it.subject, it.summary) },
                 ))
             }

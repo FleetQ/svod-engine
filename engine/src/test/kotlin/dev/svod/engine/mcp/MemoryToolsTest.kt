@@ -93,6 +93,22 @@ class MemoryToolsTest {
     }
 
     @Test
+    fun `supersession revokes a hand-written memory without rewriting its other frontmatter lines`() = runBlocking {
+        McpFixture().use { fx ->
+            val old = "memory/fact/handwritten.md"
+            val raw = "---\ntype: fact\n# keep me\nstatus: active\ncreated: 2026-09-01T10:00:00Z\nsubject: \"база\"\n---\nDB in us-east-1.\n"
+            fx.engine.write(old, raw, null, fx.write.author)
+            val r = fx.tools.remember(fx.write, "DB moved to eu-west-1.", "fact", null, null, null, null, null, supersedes = old)
+            assertEquals("written", str(r, "status"), r.data.toString())
+            val text = fx.engine.read(old)!!.text
+            assertEquals(
+                "---\ntype: fact\n# keep me\nstatus: revoked\ncreated: 2026-09-01T10:00:00Z\nsubject: \"база\"\nsuperseded_by: '${str(r, "path")}'\n---\nDB in us-east-1.\n",
+                text,
+            )
+        }
+    }
+
+    @Test
     fun `E1 remember stores a future expiresAt as an ISO instant and recall hides the memory after it`() = runBlocking {
         McpFixture().use { fx ->
             val dated = fx.tools.remember(fx.write, "Freeze window for the audit.", "preference", null, null, null, null, null, null, expiresAt = "2999-06-01")
