@@ -1,6 +1,7 @@
 package dev.svod.engine
 
 import dev.svod.engine.core.SvodEngine
+import dev.svod.engine.lifecycle.EngineDiscovery
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
 import dev.svod.engine.migrate.ObsidianImport
@@ -32,6 +33,11 @@ fun main(args: Array<String>) {
 
     val node = SvodNode.start(config, configPath = configPath)
     Runtime.getRuntime().addShutdownHook(Thread({ node.shutdown() }, "svod-shutdown"))
+    // A failed write only costs the app its auto-discovery; the engine itself is fine.
+    runCatching {
+        val discoveryFile = System.getenv("SVOD_DISCOVERY_FILE")?.let { Paths.get(it) } ?: EngineDiscovery.DEFAULT_PATH
+        EngineDiscovery.write(discoveryFile, config.host, node.appApiPort, node.mcpPort)
+    }.onFailure { System.err.println("svod-engine: could not write the discovery file: ${it.message}") }
 
     println("svod-engine ready on java ${System.getProperty("java.version")}")
     println("  vault:   ${config.vaultPath}")
