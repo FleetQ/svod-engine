@@ -11,7 +11,30 @@ permissions:
   contents: write   # create the GitHub Release + upload assets
 
 jobs:
+  # The release is created as a DRAFT here and published by `finalize` only after every required
+  # asset is on it. Before, each build job published into the release itself: the first job to
+  # finish flipped it out of draft, so v1.24.0 went public carrying only the two Linux assets
+  # while the other two jobs were still failing their uploads.
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists — reusing it"
+            exit 0
+          fi
+          args=(--draft --generate-notes --title "$TAG")
+          case "$TAG" in *-*) args+=(--prerelease) ;; esac
+          gh release create "$TAG" "${args[@]}"
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -94,17 +117,35 @@ jobs:
           BIN="build/native/nativeCompile/svod-engine${{ matrix.exe }}"
           test -f "$BIN" && cp "$BIN" "svod-engine-${{ matrix.label }}${{ matrix.exe }}"
 
-      - name: Publish to the GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          fail_on_unmatched_files: false
-          # ONE job generates the body. All three matrix jobs publish into the same release, and
-          # each one with this set to true regenerated the notes and appended them — every release
-          # from at least v1.17.0 to v1.19.0 shipped its changelog printed three times.
-          generate_release_notes: ${{ matrix.label == 'linux-x64' }}
-          files: |
-            engine/SvodEngine-${{ matrix.label }}.tar.gz
-            engine/SvodEngine-${{ matrix.label }}.zip
-            engine/svod-engine-${{ matrix.label }}
+      # Uploads one file at a time and retries: GitHub drops these 100-220 MB uploads often
+      # enough ("Error saving asset", "other side closed") that one attempt is not a release.
+      # The notes come from `prepare`, so no job regenerates them (three matrix jobs generating
+      # notes is what printed the changelog three times in v1.17.0-v1.19.0).
+      - name: Upload this platform's assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        working-directory: ${{ github.workspace }}
+        run: |
+          .github/scripts/publish-release-assets.sh "${{ github.ref_name }}" \
+            engine/SvodEngine-${{ matrix.label }}.tar.gz \
+            engine/SvodEngine-${{ matrix.label }}.zip \
+            engine/svod-engine-${{ matrix.label }} \
             engine/svod-engine-${{ matrix.label }}.exe
+
+  # The app-images are what actually ships; the native-image binaries are best-effort (their build
+  # step is continue-on-error), so they are not required here.
+  finalize:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish the release once every required asset is on it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          .github/scripts/finalize-release.sh "${{ github.ref_name }}" \
+            SvodEngine-macos-arm64.tar.gz \
+            SvodEngine-linux-x64.tar.gz \
+            SvodEngine-windows-x64.zip
