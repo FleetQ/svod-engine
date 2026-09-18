@@ -127,11 +127,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
         working-directory: ${{ github.workspace }}
         run: |
+          # The native binary is named with this platform's extension and no other: on Windows,
+          # `test -f svod-engine-windows-x64` is TRUE for the .exe (Git Bash resolves the
+          # extension), so passing the bare name too made the job spend five attempts uploading
+          # a path gh cannot match ("no matches found") and then fail.
           .github/scripts/publish-release-assets.sh "${{ github.ref_name }}" \
             engine/SvodEngine-${{ matrix.label }}.tar.gz \
             engine/SvodEngine-${{ matrix.label }}.zip \
-            engine/svod-engine-${{ matrix.label }} \
-            engine/svod-engine-${{ matrix.label }}.exe
+            engine/svod-engine-${{ matrix.label }}${{ matrix.exe }}
 
   # The app-images are what actually ships; the native-image binaries are best-effort (their build
   # step is continue-on-error), so they are not required here.
