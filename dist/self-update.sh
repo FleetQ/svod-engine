@@ -17,9 +17,14 @@
 #                                                every jar with its version)
 #   native      …/svod-engine-<platform>         replaced from the native binary
 # Only the asset for THIS layout is downloaded, whatever URL the engine passed: engines up to
-# 1.25.0 pass the native binary, which the app-image and lib layouts cannot use. The asset's
-# sha256 comes from the GitHub release. After the swap the launchd job is restarted; if the
-# engine does not come back at the new version, the previous install is put back.
+# 1.25.0 pass the native binary, which the app-image and lib layouts cannot use. The release tag
+# and asset's sha256 are read without api.github.com when possible — the "latest" tag comes from
+# the redirect github.com/<repo>/releases/latest sends, and the checksum from the release's
+# SHA256SUMS asset — so an update works even when the anonymous API rate limit (60/hour per IP)
+# is used up. Older releases without SHA256SUMS, or a tag lookup that needs the API, fall back to
+# api.github.com (optionally with GITHUB_TOKEN/GH_TOKEN); a 403 there says when the limit resets.
+# After the swap the launchd job is restarted; if the engine does not come back at the new
+# version, the previous install is put back.
 #
 # Overrides: SVOD_LAUNCHD_LABEL, SVOD_APP_API_PORT, SVOD_INSTALL_PATH (app-image dir, lib dir or
 # binary), SVOD_UPDATE_FORCE=1 (reinstall the same version).
@@ -123,31 +128,81 @@ esac
 if [[ "$LAYOUT" == native ]]; then ASSET="svod-engine-$PLATFORM"; else ASSET="SvodEngine-$PLATFORM.tar.gz"; fi
 
 # ---- 3. pick the release -------------------------------------------------------------------
+API_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+
+# GETs an api.github.com URL into $2, headers into $3, prints the HTTP status (or "000" if curl
+# itself failed, e.g. DNS/connect error) — never trips `set -e`, so 403/404 can be handled below.
+api_get() {
+  local url="$1" out="$2" hdrs="$3" auth=()
+  [[ -n "$API_TOKEN" ]] && auth=(-H "Authorization: Bearer $API_TOKEN")
+  curl -sS --retry 3 -H "Accept: application/vnd.github+json" -H "User-Agent: svod-self-update" \
+    "${auth[@]+"${auth[@]}"}" -D "$hdrs" -o "$out" -w '%{http_code}' "$url" 2>/dev/null || echo "000"
+}
+
+# GitHub's anonymous limit is 60 requests/hour per IP; X-RateLimit-Reset is a unix timestamp.
+rate_limit_die() {
+  local hdrs="$1" url="$2" reset when
+  reset="$(awk -F': ' 'tolower($1) == "x-ratelimit-reset" {print $2}' "$hdrs" | tr -d '\r')"
+  if [[ -n "$reset" ]]; then
+    when="$(date -r "$reset" '+%F %T %Z' 2>/dev/null || echo "unix time $reset")"
+    die "GitHub's anonymous API rate limit (60 requests/hour per IP) is used up; it resets at $when. Set GITHUB_TOKEN to raise the limit, or retry after that time. ($url)"
+  fi
+  die "GitHub's anonymous API rate limit is used up; set GITHUB_TOKEN to raise it, or retry later. ($url)"
+}
+
 TAG=""
 if [[ "${2:-}" =~ /releases/download/([^/]+)/ ]]; then TAG="${BASH_REMATCH[1]}"
 elif [[ -n "${1:-}" ]]; then TAG="v${1#v}"
 fi
-if [[ -n "$TAG" ]]; then API="https://api.github.com/repos/$REPO/releases/tags/$TAG"
-else API="https://api.github.com/repos/$REPO/releases/latest"; fi
-REL="$TMP/release.json"
-curl -fsSL --retry 3 -H "Accept: application/vnd.github+json" -H "User-Agent: svod-self-update" "$API" -o "$REL" \
-  || die "can't read the release from $API"
-TAG="$(json_get "$REL" tag_name)"
-VERSION="${TAG#v}"
-[[ -n "$VERSION" ]] || die "release without a tag at $API"
 
-URL="" SHA=""
-i=0
-while name="$(plutil -extract "assets.$i.name" raw -o - "$REL" 2>/dev/null)"; do
-  if [[ "$name" == "$ASSET" ]]; then
-    URL="$(json_get "$REL" "assets.$i.browser_download_url")"
-    SHA="$(json_get "$REL" "assets.$i.digest")"; SHA="${SHA#sha256:}"
-    break
+if [[ -z "$TAG" ]]; then
+  # The redirect github.com/<repo>/releases/latest sends names the latest tag — unauthenticated,
+  # served by github.com rather than api.github.com, and not subject to its 60/hour rate limit.
+  redirect="$(curl -fsSI -o /dev/null -w '%{redirect_url}' "https://github.com/$REPO/releases/latest" 2>/dev/null || true)"
+  if [[ "$redirect" =~ /releases/tag/([^/?#]+) ]]; then
+    TAG="${BASH_REMATCH[1]}"
+    log "latest release: $TAG (via redirect, no API call)"
+  else
+    log "redirect lookup failed ('$redirect'); falling back to api.github.com"
+    REL="$TMP/release.json"; HDRS="$TMP/release.hdrs"
+    API="https://api.github.com/repos/$REPO/releases/latest"
+    code="$(api_get "$API" "$REL" "$HDRS")"
+    [[ "$code" == "403" ]] && rate_limit_die "$HDRS" "$API"
+    [[ "$code" == 2* ]] || die "can't read the release from $API (HTTP $code)"
+    TAG="$(json_get "$REL" tag_name)"
   fi
-  i=$((i + 1))
-done
-[[ -n "$URL" ]] || die "release $TAG has no $ASSET"
-[[ -n "$SHA" ]] || die "release $TAG gives no sha256 for $ASSET; refusing to install it unverified"
+fi
+VERSION="${TAG#v}"
+[[ -n "$VERSION" ]] || die "could not determine which release to install"
+
+URL="https://github.com/$REPO/releases/download/$TAG/$ASSET"
+
+# ---- checksum: the release's SHA256SUMS asset first, api.github.com's digest as fallback ----
+SHA=""
+SUMS="$TMP/SHA256SUMS"
+if curl -fsSL --retry 3 -o "$SUMS" "https://github.com/$REPO/releases/download/$TAG/SHA256SUMS" 2>/dev/null; then
+  SHA="$(awk -v f="$ASSET" '$2 == f {print $1; exit}' "$SUMS")"
+fi
+if [[ -z "$SHA" ]]; then
+  log "no SHA256SUMS for $TAG (older release?); falling back to api.github.com for the checksum"
+  REL="$TMP/release.json"; HDRS="$TMP/release.hdrs"
+  API="https://api.github.com/repos/$REPO/releases/tags/$TAG"
+  code="$(api_get "$API" "$REL" "$HDRS")"
+  if [[ "$code" == "403" ]]; then rate_limit_die "$HDRS" "$API"; fi
+  if [[ "$code" == 2* ]]; then
+    i=0
+    while name="$(plutil -extract "assets.$i.name" raw -o - "$REL" 2>/dev/null)"; do
+      if [[ "$name" == "$ASSET" ]]; then
+        SHA="$(json_get "$REL" "assets.$i.digest")"; SHA="${SHA#sha256:}"
+        break
+      fi
+      i=$((i + 1))
+    done
+  else
+    log "api.github.com gave HTTP $code for $API"
+  fi
+fi
+[[ -n "$SHA" ]] || die "no sha256 available for $ASSET in release $TAG (no SHA256SUMS asset and no usable API digest); refusing to install it unverified"
 
 if [[ -n "$CURRENT" ]]; then
   [[ "${CURRENT%%.*}" == "${VERSION%%.*}" ]] \

@@ -148,6 +148,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: .github/scripts/publish-release-assets.sh "${{ github.ref_name }}" dist/self-update.sh
+      # SHA256SUMS lets self-update.sh (and UpdateService) verify a download without ever calling
+      # api.github.com, which is capped at 60 requests/hour per IP and used up in a shared-NAT
+      # office. gh's own downloads are authenticated, so this step is not rate-limited.
+      - name: Generate and publish SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          rm -rf sums && mkdir sums
+          gh release download "${{ github.ref_name }}" -D sums --clobber
+          ( cd sums && sha256sum * > SHA256SUMS )
+          cat sums/SHA256SUMS
+          .github/scripts/publish-release-assets.sh "${{ github.ref_name }}" sums/SHA256SUMS
       - name: Publish the release once every required asset is on it
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -157,4 +170,5 @@ jobs:
             SvodEngine-macos-arm64.tar.gz \
             SvodEngine-linux-x64.tar.gz \
             SvodEngine-windows-x64.zip \
-            self-update.sh
+            self-update.sh \
+            SHA256SUMS
