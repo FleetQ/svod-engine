@@ -3,6 +3,27 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.25.4 — 2026-09-22 (App API contract 0.34.0, unchanged)
+
+### Fixed — update without a GitHub token: anonymous api.github.com is capped at 60/hour per IP
+
+A shared NAT, office, VPN, or just other tools sharing the same public IP use up GitHub's 60
+requests/hour anonymous limit, and both update paths (`self-update.sh` and the engine's "Update
+engine" button) called `api.github.com` for the release JSON, so updating failed with HTTP 403
+until the limit reset. Neither path calls the API anymore for a normal update:
+
+- The latest tag comes from the redirect `github.com/<repo>/releases/latest` sends (not
+  `api.github.com`, and not rate-limited).
+- The asset checksum comes from a new `SHA256SUMS` asset the release workflow generates and
+  uploads for every release from here on (standard `sha256sum` format).
+- Asset URLs are built directly as `releases/download/<tag>/<asset>` — no API call needed to find
+  them.
+
+The API is now only a fallback: for a redirect that didn't resolve, or a release published before
+`SHA256SUMS` existed. A 403 there now says it is GitHub's anonymous rate limit and when it resets,
+instead of a generic "can't read the release". `GITHUB_TOKEN`/`GH_TOKEN`, if set, are sent to that
+fallback to raise the limit, but are never required.
+
 ## v1.25.3 — 2026-09-22 (App API contract 0.34.0, unchanged)
 
 ### Fixed — self-update now refuses a Java too old for the release, before changing anything

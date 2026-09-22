@@ -25,18 +25,19 @@ class UpdateServiceTest {
 
     private fun service(
         current: String,
-        fetcher: suspend () -> UpdateService.ReleaseInfo?,
+        release: UpdateService.ReleaseInfo? = null,
+        error: String? = null,
         script: String? = null,
     ) = UpdateService(
         currentAppVersion = current,
-        releaseFetcher = fetcher,
+        releaseFetcher = { UpdateService.FetchResult(release, error) },
         selfUpdateScript = { script },
         logFile = Files.createTempDirectory("svod-update").resolve("self-update.log"),
     )
 
     @Test
     fun `newer same-major release is updateAvailable and compatible`() = runBlocking {
-        val svc = service("1.7.0", { release("1.8.0") })
+        val svc = service("1.7.0", release("1.8.0"))
         val result = svc.check()
         assertTrue(result.updateAvailable)
         assertTrue(result.compatible)
@@ -46,22 +47,22 @@ class UpdateServiceTest {
 
     @Test
     fun `same version is not updateAvailable`() = runBlocking {
-        val svc = service("1.7.0", { release("1.7.0") })
+        val svc = service("1.7.0", release("1.7.0"))
         val result = svc.check()
         assertFalse(result.updateAvailable)
     }
 
     @Test
     fun `major version bump is updateAvailable but not compatible`() = runBlocking {
-        val svc = service("1.7.0", { release("2.0.0") })
+        val svc = service("1.7.0", release("2.0.0"))
         val result = svc.check()
         assertTrue(result.updateAvailable)
         assertFalse(result.compatible)
     }
 
     @Test
-    fun `fetcher returning null gives no update without throwing`() = runBlocking {
-        val svc = service("1.7.0", { null })
+    fun `fetcher returning no release gives no update without throwing`() = runBlocking {
+        val svc = service("1.7.0", release = null)
         val result = svc.check()
         assertFalse(result.updateAvailable)
         assertNotNull(result.notes)
@@ -69,22 +70,30 @@ class UpdateServiceTest {
     }
 
     @Test
+    fun `a fetch error is surfaced as the check's notes`() = runBlocking {
+        val svc = service("1.7.0", release = null, error = "GitHub's anonymous API rate limit is used up")
+        val result = svc.check()
+        assertFalse(result.updateAvailable)
+        assertEquals("GitHub's anonymous API rate limit is used up", result.notes)
+    }
+
+    @Test
     fun `apply throws NotApplicable when no update is available`() = runBlocking {
-        val svc = service("1.7.0", { release("1.7.0") }, script = "/tmp/update.sh")
+        val svc = service("1.7.0", release("1.7.0"), script = "/tmp/update.sh")
         assertFailsWith<UpdateAdmin.NotApplicable> { svc.apply() }
         Unit
     }
 
     @Test
     fun `apply throws NotSupported when update is available but no script configured`() = runBlocking {
-        val svc = service("1.7.0", { release("1.8.0") }, script = null)
+        val svc = service("1.7.0", release("1.8.0"), script = null)
         assertFailsWith<UpdateAdmin.NotSupported> { svc.apply() }
         Unit
     }
 
     @Test
     fun `apply without a script names where to install one`() = runBlocking {
-        val svc = service("1.7.0", { release("1.8.0") }, script = null)
+        val svc = service("1.7.0", release("1.8.0"), script = null)
         val e = assertFailsWith<UpdateAdmin.NotSupported> { svc.apply() }
         assertTrue(e.message!!.contains(UpdateService.DEFAULT_SCRIPT.toString()), e.message)
     }
@@ -99,7 +108,7 @@ class UpdateServiceTest {
             currentAppVersion = "1.7.0",
             selfUpdateScript = { script.toString() },
             logFile = log,
-            releaseFetcher = { release("1.8.0") },
+            releaseFetcher = { UpdateService.FetchResult(release("1.8.0")) },
         )
         val r = svc.apply()
         assertTrue(r.started)
@@ -141,5 +150,70 @@ class UpdateServiceTest {
         val json = """{"tag_name":"v1.25.1","assets":[{"name":"svod-engine-macos-arm64","browser_download_url":"https://x/b","digest":"sha256:n1"}]}"""
         val r = assertNotNull(UpdateService.parseRelease(json, "macos-arm64"))
         assertEquals("svod-engine-macos-arm64", r.assetName)
+    }
+
+    @Test
+    fun `latest tag is read from the releases-latest redirect Location header`() {
+        assertEquals(
+            "v1.25.3",
+            UpdateService.parseLatestTagFromRedirect("https://github.com/FleetQ/svod-engine/releases/tag/v1.25.3"),
+        )
+    }
+
+    @Test
+    fun `redirect tag parsing ignores query strings and fragments`() {
+        assertEquals(
+            "v1.25.3",
+            UpdateService.parseLatestTagFromRedirect("https://github.com/FleetQ/svod-engine/releases/tag/v1.25.3?x=1#frag"),
+        )
+    }
+
+    @Test
+    fun `redirect tag parsing returns null for an unrelated or missing location`() {
+        assertNull(UpdateService.parseLatestTagFromRedirect(null))
+        assertNull(UpdateService.parseLatestTagFromRedirect("https://github.com/FleetQ/svod-engine"))
+    }
+
+    @Test
+    fun `SHA256SUMS parsing finds the matching asset's hex digest`() {
+        val sums = """
+            aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  SvodEngine-linux-x64.tar.gz
+            bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  SvodEngine-macos-arm64.tar.gz
+            cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc  self-update.sh
+        """.trimIndent()
+        assertEquals(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            UpdateService.parseSha256Sums(sums, "SvodEngine-macos-arm64.tar.gz"),
+        )
+    }
+
+    @Test
+    fun `SHA256SUMS parsing tolerates the binary-mode asterisk prefix`() {
+        val sums = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd *SvodEngine-macos-arm64.tar.gz"
+        assertEquals(
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            UpdateService.parseSha256Sums(sums, "SvodEngine-macos-arm64.tar.gz"),
+        )
+    }
+
+    @Test
+    fun `SHA256SUMS parsing returns null when the asset isn't listed`() {
+        val sums = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  SvodEngine-linux-x64.tar.gz"
+        assertNull(UpdateService.parseSha256Sums(sums, "SvodEngine-macos-arm64.tar.gz"))
+    }
+
+    @Test
+    fun `the 403 message names GitHub's anonymous rate limit and its reset time`() {
+        // 1790096516 = 2026-09-22T16:01:56Z
+        val msg = UpdateService.rateLimitMessage("1790096516")
+        assertTrue(msg.contains("rate limit"), msg)
+        assertTrue(msg.contains("60"), msg)
+        assertTrue(msg.contains("2026-09-22"), msg)
+    }
+
+    @Test
+    fun `the 403 message still names the rate limit when no reset header is given`() {
+        val msg = UpdateService.rateLimitMessage(null)
+        assertTrue(msg.contains("rate limit"), msg)
     }
 }

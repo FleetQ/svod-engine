@@ -16,6 +16,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.time.Duration
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 class UpdateService(
     private val currentAppVersion: String,
@@ -23,7 +26,7 @@ class UpdateService(
     // Resolved on every apply, so a script installed while the engine runs is picked up without a restart.
     private val selfUpdateScript: () -> String? = { resolveScript() },
     private val logFile: Path = DEFAULT_LOG,
-    private val releaseFetcher: suspend () -> ReleaseInfo?,
+    private val releaseFetcher: suspend () -> FetchResult,
 ) : UpdateAdmin {
 
     data class ReleaseInfo(
@@ -36,11 +39,15 @@ class UpdateService(
         val sha256: String?,
     )
 
+    /** [release] is null on failure, with [error] describing why (shown to the user as `notes`). */
+    data class FetchResult(val release: ReleaseInfo?, val error: String? = null)
+
     override suspend fun check(): UpdateCheckDto {
-        val latest = releaseFetcher() ?: return UpdateCheckDto(
+        val result = releaseFetcher()
+        val latest = result.release ?: return UpdateCheckDto(
             currentVersion = currentAppVersion,
             currentContract = currentContract,
-            notes = "could not reach the update server",
+            notes = result.error ?: "could not reach the update server",
             updateAvailable = false,
             compatible = false,
         )
@@ -76,6 +83,7 @@ class UpdateService(
     }
 
     companion object {
+        private const val REPO = "FleetQ/svod-engine"
         private val CONFIG_DIR: Path = Paths.get(System.getProperty("user.home"), ".config", "svod")
         val DEFAULT_SCRIPT: Path = CONFIG_DIR.resolve("self-update.sh")
         val DEFAULT_LOG: Path = CONFIG_DIR.resolve("self-update.log")
@@ -85,22 +93,121 @@ class UpdateService(
             env["SVOD_SELF_UPDATE_SCRIPT"]?.takeIf { it.isNotBlank() }
                 ?: defaultScript.takeIf { Files.isRegularFile(it) }?.toString()
 
-        fun productionFetcher(): suspend () -> ReleaseInfo? = {
-            runCatching {
-                val client = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(10))
-                    .build()
-                val request = HttpRequest.newBuilder()
-                    .uri(URI.create("https://api.github.com/repos/FleetQ/svod-engine/releases/latest"))
-                    .timeout(Duration.ofSeconds(10))
-                    .header("User-Agent", "svod-engine")
-                    .header("Accept", "application/vnd.github+json")
-                    .GET()
-                    .build()
-                val response = client.send(request, HttpResponse.BodyHandlers.ofString())
-                if (response.statusCode() != 200) null
-                else parseRelease(response.body())
-            }.getOrNull()
+        // GitHub's anonymous api.github.com limit is 60 requests/hour per IP, shared by every tool
+        // on the same NAT/office/VPN. A redirect from github.com/<repo>/releases/latest (not
+        // api.github.com) names the current tag without spending any of that budget, and the
+        // release's own SHA256SUMS asset gives the checksum the same way. The API is only a
+        // fallback: for a tag lookup the redirect didn't resolve, or a release published before
+        // SHA256SUMS existed.
+        fun productionFetcher(): suspend () -> FetchResult = {
+            runCatching { fetchLatestRelease() }.getOrElse { FetchResult(null, "could not reach the update server") }
+        }
+
+        private fun fetchLatestRelease(): FetchResult {
+            // Two clients on purpose: the tag comes from a redirect we have to READ, so that call
+            // must not follow it; a release asset is served as a 302 to release-assets.github-
+            // usercontent.com, so fetching SHA256SUMS must follow it or it never sees a 200.
+            val noRedirect = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .build()
+            val following = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build()
+            val hostLabel = currentHostLabel()
+            val assetName = "SvodEngine-$hostLabel.tar.gz"
+
+            val tag = resolveLatestTag(noRedirect)
+                ?: return fetchFromApi(following, "https://api.github.com/repos/$REPO/releases/latest", hostLabel)
+
+            val sha256 = fetchSha256FromSums(following, tag, assetName)
+                ?: return fetchFromApi(following, "https://api.github.com/repos/$REPO/releases/tags/$tag", hostLabel)
+
+            return FetchResult(
+                ReleaseInfo(
+                    tag = tag,
+                    appVersion = tag.removePrefix("v"),
+                    notes = null,
+                    publishedAt = null,
+                    assetName = assetName,
+                    assetUrl = "https://github.com/$REPO/releases/download/$tag/$assetName",
+                    sha256 = sha256,
+                ),
+            )
+        }
+
+        /** The tag named by the redirect `github.com/<repo>/releases/latest` sends, or null. */
+        private fun resolveLatestTag(client: HttpClient): String? = runCatching {
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create("https://github.com/$REPO/releases/latest"))
+                .timeout(Duration.ofSeconds(10))
+                .header("User-Agent", "svod-engine")
+                .GET()
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.discarding())
+            if (response.statusCode() !in 300..399) return null
+            parseLatestTagFromRedirect(response.headers().firstValue("Location").orElse(null))
+        }.getOrNull()
+
+        /** The release's own checksum asset, or null if it doesn't have one (older releases). */
+        private fun fetchSha256FromSums(client: HttpClient, tag: String, assetName: String): String? = runCatching {
+            val request = HttpRequest.newBuilder()
+                .uri(URI.create("https://github.com/$REPO/releases/download/$tag/SHA256SUMS"))
+                .timeout(Duration.ofSeconds(10))
+                .header("User-Agent", "svod-engine")
+                .GET()
+                .build()
+            val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+            if (response.statusCode() != 200) return null
+            parseSha256Sums(response.body(), assetName)
+        }.getOrNull()
+
+        private fun fetchFromApi(client: HttpClient, url: String, hostLabel: String): FetchResult {
+            val token = System.getenv("GITHUB_TOKEN") ?: System.getenv("GH_TOKEN")
+            val builder = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(10))
+                .header("User-Agent", "svod-engine")
+                .header("Accept", "application/vnd.github+json")
+            token?.let { builder.header("Authorization", "Bearer $it") }
+            val response = client.send(builder.GET().build(), HttpResponse.BodyHandlers.ofString())
+            return when {
+                response.statusCode() == 403 ->
+                    FetchResult(null, rateLimitMessage(response.headers().firstValue("X-RateLimit-Reset").orElse(null)))
+                response.statusCode() != 200 ->
+                    FetchResult(null, "could not reach the update server (HTTP ${response.statusCode()} from $url)")
+                else ->
+                    parseRelease(response.body(), hostLabel)?.let { FetchResult(it) }
+                        ?: FetchResult(null, "could not reach the update server")
+            }
+        }
+
+        /** The tag from a `Location: https://github.com/<repo>/releases/tag/<tag>` header, or null. */
+        internal fun parseLatestTagFromRedirect(location: String?): String? =
+            location?.let { Regex("/releases/tag/([^/?#]+)").find(it)?.groupValues?.get(1) }
+
+        /** The hex digest for [assetName] in a standard `sha256sum` `SHA256SUMS` file, or null. */
+        internal fun parseSha256Sums(text: String, assetName: String): String? =
+            text.lineSequence()
+                .mapNotNull { line ->
+                    val parts = line.trim().split(Regex("\\s+"), limit = 2)
+                    if (parts.size == 2 && parts[1].trimStart('*') == assetName) parts[0] else null
+                }
+                .firstOrNull()
+
+        /** api.github.com's anonymous limit is 60 requests/hour per IP; the reset header is a unix timestamp. */
+        internal fun rateLimitMessage(resetEpochSeconds: String?): String {
+            val resetAt = resetEpochSeconds?.toLongOrNull()?.let {
+                Instant.ofEpochSecond(it).atZone(ZoneId.systemDefault())
+                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm zzz"))
+            }
+            return if (resetAt != null) {
+                "GitHub's anonymous API rate limit (60 requests/hour per IP) is used up; it resets at $resetAt. " +
+                    "Set GITHUB_TOKEN to raise the limit, or try again after that time."
+            } else {
+                "GitHub's anonymous API rate limit is used up; set GITHUB_TOKEN to raise it, or try again later."
+            }
         }
 
         internal fun parseRelease(json: String, hostLabel: String = currentHostLabel()): ReleaseInfo? = runCatching {
