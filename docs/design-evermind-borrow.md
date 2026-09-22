@@ -13,7 +13,8 @@ the weekly narrative job ships **staged, not loaded**, and covers **all projects
    capture hook records every Claude Code session, including the ones our own scripts start. A job that reads
    sessions and is itself recorded as a session feeds on its own output.
 3. **Search degrades silently.** When the query embed fails, `IndexService.semanticLeg` returns an empty list and
-   a HYBRID search runs on keywords only and a SEMANTIC search returns nothing; when the reranker fails, `maybeRerank` returns the fused order. Both only
+   a HYBRID search runs on keywords only and a SEMANTIC search returns nothing (during a model rebuild both
+   fall back to keywords); when the reranker fails, `maybeRerank` returns the fused order. Both only
    log. The `/search` response and MCP `search` / `context_pack` look exactly like a healthy result. The same
    happens while semantic search is suppressed during an embedding-model rebuild.
 

@@ -10,6 +10,8 @@
 - D5 embedder `none` (inactive), HYBRID → `[]` (configuration, not failure).
 - D6 active reranker that throws → `["rerank"]`, order equals the fused order; healthy reranker → `[]`.
 - D7 blank query + tag filter (browse) with a failing embedder → `[]`.
+- D8 during an embedding-model rebuild (`setEmbedder`, semantic suppressed): HYBRID and SEMANTIC both report
+  `["semantic"]` and answer from keyword hits.
 
 ### API / MCP
 - A1 `GET /api/v1/search` JSON carries `"degraded": []` on a healthy vault and `["semantic"]` with a failing

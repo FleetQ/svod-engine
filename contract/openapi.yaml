@@ -1675,8 +1675,8 @@ components:
           description: >
             Retrieval steps this result went without (0.34.0). `semantic`: semantic was requested, the vault
             has an embedder, and the query embed failed or semantic is suppressed during a model rebuild —
-            in HYBRID mode the hits are keyword-only, in SEMANTIC mode there are no hits. `rerank`: the active
-            reranker failed — the hits keep the fused order.
+            the result has no semantic part: any hits come from keyword search only (a SEMANTIC search whose
+            query embed failed has none). `rerank`: the active reranker failed — the hits keep the fused order.
             Empty for a complete result. With `across=true` it is the union over the searched vaults.
           items: { type: string, enum: [semantic, rerank] }
 

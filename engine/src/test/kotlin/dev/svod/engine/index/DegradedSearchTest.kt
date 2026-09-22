@@ -108,6 +108,37 @@ class DegradedSearchTest {
         }
     }
 
+    /** Same dimension as FakeEmbedder (in-place re-embed, keyword index kept); blocks until released. */
+    private class BlockingEmbedder(val release: java.util.concurrent.CountDownLatch) : Embedder {
+        private val inner = FakeEmbedder("ok")
+        override val model = "blocking"
+        override val dim = 64
+        override fun knownDim() = 64
+        override fun embedPassages(texts: List<String>): List<FloatArray> { release.await(); return inner.embedPassages(texts) }
+        override fun embedQuery(text: String): FloatArray = inner.embedQuery(text)
+    }
+
+    @Test
+    fun `D8 during a model rebuild semantic is suppressed, reported, and both modes answer from keywords`() {
+        IndexFixture.create().use { fx ->
+            fx.seedShared()
+            val release = java.util.concurrent.CountDownLatch(1)
+            fx.open(FakeEmbedder("ok")).use { idx ->
+                try {
+                    idx.setEmbedder(BlockingEmbedder(release))
+                    for (mode in listOf(SearchMode.HYBRID, SearchMode.SEMANTIC)) {
+                        val r = idx.search(SearchQuery("apple", mode = mode))
+                        assertEquals(listOf(SearchResult.SEMANTIC), r.degraded, "$mode during rebuild")
+                        assertEquals(listOf("a.md"), r.hits.map { it.path }, "$mode falls back to keyword hits")
+                        assertTrue(r.hits.all { it.matchedKeyword && !it.matchedSemantic })
+                    }
+                } finally {
+                    release.countDown()
+                }
+            }
+        }
+    }
+
     @Test
     fun `D7 a filter-only browse has no query to embed and is not degraded`() {
         IndexFixture.create().use { fx ->

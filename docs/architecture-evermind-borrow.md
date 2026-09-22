@@ -77,5 +77,5 @@ for each project:
 - `MultiEngineClient` passes it through untouched.
 - `SearchModel.degraded: [String]`, set from each result, cleared with the results.
 - `CommandPaletteView`: one caption line under the filters when non-empty, worded by the current mode:
-  semantic + Hybrid → "keyword results only"; semantic + Semantic mode → "nothing to show in Semantic mode —
-  switch to Hybrid or Keyword"; rerank → "results are not reranked".
+  semantic with results → "keyword results only"; semantic with no results in Semantic mode → "nothing to show in
+  Semantic mode — switch to Hybrid or Keyword"; rerank → "results are not reranked".
