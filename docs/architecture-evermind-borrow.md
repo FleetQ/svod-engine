@@ -36,23 +36,25 @@ One Python file (stdlib only, `/usr/bin/python3`), pure functions + `main()`, so
 
 ```
 GET  /ready
-GET  /api/v1/settings?vault=V                  → vaultPath (only for logging)
 GET  /api/v1/memory/sessions?vault=V           → [{path, project, endedAt, bytes, …}]
-group by project (skip null project)
+group by project (skip null project; a bare legacy label such as "svod-ui-macos" folds into the
+  single host/owner/repo label whose last segment it equals)
 for each project:
-   GET /api/v1/file?path=narratives/<slug>.md  → current note + revision (404 ⇒ new)
+   GET /api/v1/file?path=narratives/<slug>.md  → current note + revision (404 ⇒ new; any other error ⇒ skip,
+                                                 never "new")
    new = sessions with endedAt > covered_until, excluding job runs
    if len(new) < MIN_NEW: skip
    bodies = GET /api/v1/file for each, newest-first until BYTE_BUDGET; strip frontmatter + <private>
    prompt = template + current narrative body + sessions (oldest-first)
    claude -p --model M --tools "" --no-session-persistence   (stdin = prompt, stdout = new body)
        env: SVOD_CAPTURE=off ; watchdog timeout
-   validate: non-empty, starts with "# ", no "<private>"
+   validate: first line is "# <project> — narrative"; no CJK/Hangul; no ы/э/ё for Bulgarian;
+             a literal <private> tag is rewritten to ‹private›
    PUT /api/v1/file?path=… {content, expectedRevision}
         200 → log ; 409 → skip (someone edited it) ; 422 → skip (secret found)
 ```
 
-- Slug = the engine's `SessionNotes.slug` rule: lowercase, every non letter/digit → `-`.
+- Slug = the engine's `SessionNotes.slug` rule: lowercase, every non letter/digit → `-`, trimmed, ≤ 40 chars.
 - Frontmatter written by the script, not the model:
   `type: narrative`, `project`, `covered_until` (epoch ms of the newest folded session), `sessions_folded`
   (cumulative), `updated` (ISO date), `source: project-narrative`. H1 comes from the model's body
@@ -60,7 +62,8 @@ for each project:
 - Job-run detection: body contains `RUNTIME CONTEXT (this run)` or `SVOD-NARRATIVE-JOB`. The narrative prompt
   itself carries `SVOD-NARRATIVE-JOB`.
 - Config (env): `SVOD_ENGINE` (default `http://127.0.0.1:7619`), `SVOD_VAULT` (`personal`), `NARRATIVE_MODEL`
-  (`claude-haiku-4-5`), `NARRATIVE_MIN_NEW` (2), `NARRATIVE_BYTE_BUDGET` (300000), `NARRATIVE_TIMEOUT` (600 s per
+  (`sonnet` — the first real run with Haiku mixed Chinese/Korean characters and Russian words into Bulgarian
+  and confused version numbers), `NARRATIVE_REBUILD=1` (rewrite from scratch), `NARRATIVE_MIN_NEW` (2), `NARRATIVE_BYTE_BUDGET` (300000), `NARRATIVE_TIMEOUT` (600 s per
   project), `NARRATIVE_PROJECTS` (optional comma list to restrict), `NARRATIVE_DRY_RUN=1` (no model, no write:
   prints the plan), `CLAUDE_BIN`.
 - Log: `~/Library/Logs/svod/project-narrative.log`. Exit 0 always (launchd job), like the distiller.

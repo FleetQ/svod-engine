@@ -38,7 +38,12 @@ Revert the `semanticLeg` change and the `maybeRerank` change one at a time; D1 a
 - N6 job-run sessions (distiller marker) are never sent to the model.
 - N7 byte budget: only the newest sessions that fit are sent, presented oldest-first; `covered_until` = newest.
 - N8 engine 409 → logged, next project still processed; 422 → same.
-- N9 model output empty / without H1 / containing `<private>` → nothing written.
+- N9 model output empty / without the `# <project> — narrative` H1 / with CJK or Hangul characters / with
+  Russian-only letters (ы э ё, when the language is Bulgarian) → nothing written. A literal `<private>` tag in
+  the answer is the feature's name, not private content (that was stripped before the model saw anything):
+  it is written as `‹private›`, because an unclosed tag would hide the rest of the note from search.
+- N13 `NARRATIVE_REBUILD=1` ignores the current narrative and `covered_until`; the write is still guarded by
+  `expectedRevision`.
 - N10 the model is invoked with `--tools ""` and `SVOD_CAPTURE=off` in its environment.
 - N11 dry run → no model call, no write.
 - N12 engine down → exit 0, one log line.
