@@ -138,7 +138,7 @@ The contract is the single source of truth: a test validates every live response
 | `SvodNode` | Assembles + owns the node; single-instance; readiness; ordered graceful shutdown. |
 | `ApiCompatibility` / `SelfUpdate` | Semver gate: a self-update must keep the App API major compatible. |
 | `dist/launchd/*.plist` | macOS user agent: RunAtLoad + KeepAlive; one-button start via `kickstart`. |
-| `dist/self-update.sh` | Update skeleton gated on the compat preflight. |
+| `dist/self-update.sh` | Installs a release into the running engine's layout (app-image, lib dir, native binary), restarts launchd, rolls back on failure. |
 
 The engine stays OS-agnostic; all macOS specifics live in `dist/`. launchd uses KeepAlive +
 kickstart rather than fd socket activation (JVM limitation). See [ADR-0007](adr/0007-lifecycle.md).

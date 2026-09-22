@@ -143,6 +143,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Attach the self-update script
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: .github/scripts/publish-release-assets.sh "${{ github.ref_name }}" dist/self-update.sh
       - name: Publish the release once every required asset is on it
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -151,4 +156,5 @@ jobs:
           .github/scripts/finalize-release.sh "${{ github.ref_name }}" \
             SvodEngine-macos-arm64.tar.gz \
             SvodEngine-linux-x64.tar.gz \
-            SvodEngine-windows-x64.zip
+            SvodEngine-windows-x64.zip \
+            self-update.sh

@@ -1,70 +1,228 @@
 #!/usr/bin/env bash
-# Self-update for the Svod engine — invoked detached by UpdateService.apply()
-# (POST /api/v1/update/apply) with: <candidate-app-version> <asset-url> [sha256].
+# Self-update for a launchd-managed Svod engine on macOS.
 #
-# CONTRACT: the swap MUST be gated on the App API compatibility preflight. Same MAJOR
-# contract version => apply; major bump or downgrade => refuse (see ADR-0007 /
-# ApiCompatibility). This targets the launchd-managed app-image/installDist deployment;
-# it is opt-in: the engine only runs it when SVOD_SELF_UPDATE_SCRIPT points here.
+# The engine runs this (POST /api/v1/update/apply) as:  self-update.sh <version> <asset-url> [sha256]
+# Run it by hand with no arguments to install the latest release. The engine looks for it at
+# ~/.config/svod/self-update.sh (or $SVOD_SELF_UPDATE_SCRIPT); to set a machine up once:
+#
+#   mkdir -p ~/.config/svod && curl -fsSL -o ~/.config/svod/self-update.sh \
+#     https://github.com/FleetQ/svod-engine/releases/latest/download/self-update.sh \
+#     && bash ~/.config/svod/self-update.sh
+#
+# The install is read from the running engine (~/.config/svod/engine.json → its pid → command
+# line), so no paths are configured. Three layouts:
+#   app-image   …/SvodEngine.app                 replaced from SvodEngine-<platform>.tar.gz
+#   lib dir     java -cp …/lib/* (installDist)   jars synced from the same archive
+#   native      …/svod-engine-<platform>         replaced from the native binary
+# Only the asset for THIS layout is downloaded, whatever URL the engine passed: engines up to
+# 1.25.0 pass the native binary, which the app-image and lib layouts cannot use. The asset's
+# sha256 comes from the GitHub release. After the swap the launchd job is restarted; if the
+# engine does not come back at the new version, the previous install is put back.
+#
+# Overrides: SVOD_LAUNCHD_LABEL, SVOD_APP_API_PORT, SVOD_INSTALL_PATH (app-image dir, lib dir or
+# binary), SVOD_UPDATE_FORCE=1 (reinstall the same version).
 set -euo pipefail
 
-LABEL="${SVOD_LAUNCHD_LABEL:-dev.svod.engine}"
-PORT="${SVOD_APP_API_PORT:-7619}"
-# The install root holding the app-image / installDist tree to replace. Override for
-# your deployment; defaults to the launchd-managed app-image location.
-INSTALL_DIR="${SVOD_INSTALL_DIR:-$HOME/svod-engine-v1/SvodEngine.app}"
+REPO="FleetQ/svod-engine"
+CONFIG_DIR="$HOME/.config/svod"
+DISCOVERY="$CONFIG_DIR/engine.json"
+INSTALLED_SCRIPT="$CONFIG_DIR/self-update.sh"
+READY_TIMEOUT="${SVOD_UPDATE_READY_TIMEOUT:-180}"
 
-CANDIDATE_VERSION="${1:?usage: self-update.sh <candidate-version> <asset-url> [sha256]}"
-ASSET_URL="${2:?usage: self-update.sh <candidate-version> <asset-url> [sha256]}"
-ASSET_SHA256="${3:-}"
+log() { echo "[$(date '+%F %T')] $*"; }
+die() { log "ERROR: $*" >&2; exit 1; }
 
-RUNNING_VERSION="$(curl -fsS "http://127.0.0.1:${PORT}/api/v1/settings" 2>/dev/null | sed -n 's/.*"apiVersion":"\([^"]*\)".*/\1/p' || true)"
-echo "running contract: ${RUNNING_VERSION:-unknown}   candidate app-version: ${CANDIDATE_VERSION}"
+[[ "$(uname -s)" == "Darwin" ]] || die "this script restarts the engine through launchd, so it runs on macOS only"
 
-TMP="$(mktemp -d)"
-cleanup() { rm -rf "$TMP"; }
-trap cleanup EXIT
-
-# 1. Download the candidate artifact.
-ARCHIVE="$TMP/$(basename "${ASSET_URL%%\?*}")"
-echo "downloading ${ASSET_URL}"
-curl -fL --retry 3 -o "$ARCHIVE" "$ASSET_URL"
-
-# 2. Verify checksum before trusting it (fail closed on mismatch).
-if [[ -n "$ASSET_SHA256" ]]; then
-  actual="$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')"
-  if [[ "$actual" != "$ASSET_SHA256" ]]; then
-    echo "REFUSED: sha256 mismatch (expected $ASSET_SHA256, got $actual)" >&2
-    exit 1
-  fi
-  echo "sha256 OK"
-else
-  echo "WARNING: no sha256 provided — skipping integrity check" >&2
+# launchd kills every process left in a job's process group when the job exits. Started by the
+# engine, this script is in that group and would die the moment it restarts the engine — before
+# it can check the new version or roll back. Move into a group of our own first.
+if [[ -z "${SVOD_UPDATE_DETACHED:-}" ]]; then
+  export SVOD_UPDATE_DETACHED=1
+  exec /usr/bin/perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!\n"' /bin/bash "$0" "$@"
 fi
 
-# 3. Extract.
-echo "extracting"
-case "$ARCHIVE" in
-  *.tar.gz|*.tgz) tar -xzf "$ARCHIVE" -C "$TMP" ;;
-  *.zip)          unzip -q "$ARCHIVE" -d "$TMP" ;;
-  *)              echo "unknown archive type: $ARCHIVE" >&2; exit 1 ;;
+mkdir -p "$CONFIG_DIR"
+LOCK="$CONFIG_DIR/self-update.lock"
+/usr/bin/shlock -f "$LOCK" -p $$ || die "another self-update is running (lock $LOCK)"
+
+TMP="$(mktemp -d)"
+cleanup() { rm -rf "$TMP"; rm -f "$LOCK"; }
+trap cleanup EXIT
+
+# plutil reads JSON as well as plists; `raw` prints a scalar without quotes.
+json_get() { plutil -extract "$2" raw -o - "$1" 2>/dev/null || true; }
+
+# ---- 1. find the running engine ------------------------------------------------------------
+PID="" PORT="" LABEL=""
+if [[ -f "$DISCOVERY" ]]; then
+  PID="$(json_get "$DISCOVERY" pid)"
+  PORT="$(json_get "$DISCOVERY" appApiPort)"
+  LABEL="$(json_get "$DISCOVERY" launchdLabel)"
+fi
+LABEL="${SVOD_LAUNCHD_LABEL:-$LABEL}"
+PORT="${SVOD_APP_API_PORT:-${PORT:-7619}}"
+if [[ -z "$LABEL" ]]; then
+  LABEL="$(launchctl list | awk 'tolower($3) ~ /svod/ && tolower($3) ~ /engine/ {print $3; exit}')"
+fi
+[[ -n "$LABEL" ]] || die "no launchd job for the engine found; set SVOD_LAUNCHD_LABEL"
+if [[ -z "$PID" ]] || ! kill -0 "$PID" 2>/dev/null; then
+  PID="$(launchctl list "$LABEL" 2>/dev/null | sed -n 's/.*"PID" = \([0-9]*\);.*/\1/p')"
+fi
+
+running_version() {
+  local f="$TMP/check.json"
+  curl -fsS --max-time 20 "http://127.0.0.1:${PORT}/api/v1/update/check" -o "$f" 2>/dev/null || return 0
+  json_get "$f" currentVersion
+}
+CURRENT="$(running_version)"
+log "engine: label=$LABEL port=$PORT pid=${PID:-none} version=${CURRENT:-unknown}"
+
+# ---- 2. work out the install layout --------------------------------------------------------
+LAYOUT="" TARGET="${SVOD_INSTALL_PATH:-}"
+if [[ -z "$TARGET" ]]; then
+  [[ -n "$PID" ]] || die "the engine is not running, so its install can't be found; set SVOD_INSTALL_PATH"
+  CMD="$(ps -o command= -p "$PID")"
+  if [[ "$CMD" =~ ^(/.*SvodEngine\.app)/Contents/ ]]; then
+    TARGET="${BASH_REMATCH[1]}"
+  elif [[ "$CMD" == *" -cp "* || "$CMD" == *" -classpath "* ]]; then
+    cp="${CMD#* -cp }"; [[ "$cp" == "$CMD" ]] && cp="${CMD#* -classpath }"
+    first="${cp%%:*}"; first="${first%% dev.svod.engine.MainKt*}"; first="${first%% -*}"
+    if [[ "$first" == */\* ]]; then TARGET="${first%/\*}"; else TARGET="$(dirname "$first")"; fi
+  else
+    TARGET="$(lsof -a -p "$PID" -d txt -Fn 2>/dev/null | awk '/^n/ {print substr($0, 2); exit}')"
+  fi
+fi
+if [[ -d "$TARGET" && "$TARGET" == *.app ]]; then LAYOUT=appimage
+elif [[ -d "$TARGET" ]] && compgen -G "$TARGET/svod-engine-*.jar" >/dev/null; then LAYOUT=libdir
+elif [[ -f "$TARGET" && -x "$TARGET" && "$(basename "$TARGET")" == svod-engine* ]]; then LAYOUT=native
+else die "can't tell how the engine is installed (resolved '$TARGET'); set SVOD_INSTALL_PATH"
+fi
+log "install: $LAYOUT at $TARGET"
+
+case "$(uname -m)" in
+  arm64) PLATFORM=macos-arm64 ;;
+  *) die "no release build for $(uname -m) macOS" ;;
 esac
-NEW_APP="$(find "$TMP" -maxdepth 2 -name 'SvodEngine.app' -type d | head -1)"
-test -n "$NEW_APP" || { echo "no SvodEngine.app inside the archive" >&2; exit 1; }
+if [[ "$LAYOUT" == native ]]; then ASSET="svod-engine-$PLATFORM"; else ASSET="SvodEngine-$PLATFORM.tar.gz"; fi
 
-# 4. Atomic-ish swap: move the new tree in beside the old, then replace.
-echo "applying update -> ${INSTALL_DIR}"
-PARENT="$(dirname "$INSTALL_DIR")"
-mkdir -p "$PARENT"
-STAGED="$PARENT/.svod-update-staged.$$"
-rm -rf "$STAGED"
-mv "$NEW_APP" "$STAGED"
-rm -rf "${INSTALL_DIR}.old"
-[[ -e "$INSTALL_DIR" ]] && mv "$INSTALL_DIR" "${INSTALL_DIR}.old"
-mv "$STAGED" "$INSTALL_DIR"
+# ---- 3. pick the release -------------------------------------------------------------------
+TAG=""
+if [[ "${2:-}" =~ /releases/download/([^/]+)/ ]]; then TAG="${BASH_REMATCH[1]}"
+elif [[ -n "${1:-}" ]]; then TAG="v${1#v}"
+fi
+if [[ -n "$TAG" ]]; then API="https://api.github.com/repos/$REPO/releases/tags/$TAG"
+else API="https://api.github.com/repos/$REPO/releases/latest"; fi
+REL="$TMP/release.json"
+curl -fsSL --retry 3 -H "Accept: application/vnd.github+json" -H "User-Agent: svod-self-update" "$API" -o "$REL" \
+  || die "can't read the release from $API"
+TAG="$(json_get "$REL" tag_name)"
+VERSION="${TAG#v}"
+[[ -n "$VERSION" ]] || die "release without a tag at $API"
 
-# 5. Restart under launchd (KeepAlive brings it back; graceful drain first).
-echo "restarting ${LABEL}"
-launchctl kickstart -k "gui/$(id -u)/${LABEL}" || true
+URL="" SHA=""
+i=0
+while name="$(plutil -extract "assets.$i.name" raw -o - "$REL" 2>/dev/null)"; do
+  if [[ "$name" == "$ASSET" ]]; then
+    URL="$(json_get "$REL" "assets.$i.browser_download_url")"
+    SHA="$(json_get "$REL" "assets.$i.digest")"; SHA="${SHA#sha256:}"
+    break
+  fi
+  i=$((i + 1))
+done
+[[ -n "$URL" ]] || die "release $TAG has no $ASSET"
+[[ -n "$SHA" ]] || die "release $TAG gives no sha256 for $ASSET; refusing to install it unverified"
 
-echo "update applied; poll http://127.0.0.1:${PORT}/ready then reconnect."
+if [[ -n "$CURRENT" ]]; then
+  [[ "${CURRENT%%.*}" == "${VERSION%%.*}" ]] \
+    || die "$CURRENT → $VERSION changes the major version (App API contract); update the app and engine together"
+  if [[ "$CURRENT" == "$VERSION" && -z "${SVOD_UPDATE_FORCE:-}" ]]; then
+    log "already at $VERSION"; exit 0
+  fi
+fi
+log "updating ${CURRENT:-unknown} → $VERSION from $ASSET"
+
+# ---- 4. download and verify ----------------------------------------------------------------
+FILE="$TMP/$ASSET"
+curl -fL --retry 3 --silent --show-error -o "$FILE" "$URL" || die "download failed: $URL"
+actual="$(shasum -a 256 "$FILE" | awk '{print $1}')"
+[[ "$actual" == "$SHA" ]] || die "sha256 mismatch for $ASSET (expected $SHA, got $actual)"
+log "sha256 OK"
+
+NEW=""
+if [[ "$LAYOUT" != native ]]; then
+  tar -xzf "$FILE" -C "$TMP"
+  [[ -d "$TMP/SvodEngine.app" ]] || die "no SvodEngine.app inside $ASSET"
+  NEW="$TMP/SvodEngine.app"
+  if [[ "$LAYOUT" == libdir ]]; then
+    NEW="$NEW/Contents/app"
+    compgen -G "$NEW/svod-engine-*.jar" >/dev/null || die "no svod-engine jar inside $ASSET"
+  fi
+else
+  chmod +x "$FILE"
+  NEW="$FILE"
+fi
+
+# ---- 5. swap, keeping the previous install at <path>.old ----------------------------------
+# The running engine keeps its already-open files, so replacing them under it is safe until the
+# restart below.
+BACKUP="${TARGET%/}.old"
+rm -rf "$BACKUP"
+case "$LAYOUT" in
+  appimage)
+    STAGED="$(dirname "$TARGET")/.SvodEngine.app.staged.$$"
+    rm -rf "$STAGED"
+    ditto "$NEW" "$STAGED"
+    mv "$TARGET" "$BACKUP"
+    mv "$STAGED" "$TARGET"
+    ;;
+  libdir)
+    cp -Rp "$TARGET" "$BACKUP"
+    rsync -a --delete --include='*.jar' --exclude='*' "$NEW/" "$TARGET/"
+    ;;
+  native)
+    cp -p "$TARGET" "$BACKUP"
+    mv "$NEW" "$TARGET.new.$$"
+    mv "$TARGET.new.$$" "$TARGET"
+    ;;
+esac
+log "installed $VERSION; previous install kept at $BACKUP"
+
+restore() {
+  case "$LAYOUT" in
+    appimage) rm -rf "$TARGET"; mv "$BACKUP" "$TARGET" ;;
+    libdir)   rsync -a --delete "$BACKUP/" "$TARGET/" ;;
+    native)   cp -p "$BACKUP" "$TARGET" ;;
+  esac
+}
+
+# ---- 6. restart and check the version ------------------------------------------------------
+log "restarting $LABEL"
+launchctl kickstart -k "gui/$(id -u)/$LABEL" || die "launchctl kickstart failed for $LABEL"
+
+deadline=$((SECONDS + READY_TIMEOUT))
+now=""
+while (( SECONDS < deadline )); do
+  sleep 3
+  now="$(running_version)"
+  [[ "$now" == "$VERSION" ]] && break
+done
+if [[ "$now" != "$VERSION" ]]; then
+  log "engine did not come back at $VERSION within ${READY_TIMEOUT}s (reports '${now:-nothing}'); rolling back"
+  restore
+  launchctl kickstart -k "gui/$(id -u)/$LABEL" || true
+  die "update to $VERSION failed; previous install restored"
+fi
+log "engine is running $VERSION"
+
+# ---- 7. keep this script in step with the engine it installed -----------------------------
+# Replace by rename, never in place: bash reads a script while running it.
+SRC="$0"
+if curl -fsSL --retry 2 -o "$TMP/self-update.sh" "https://github.com/$REPO/releases/download/$TAG/self-update.sh" 2>/dev/null \
+   && head -1 "$TMP/self-update.sh" | grep -q '^#!'; then
+  SRC="$TMP/self-update.sh"
+fi
+if [[ "$SRC" != "$INSTALLED_SCRIPT" ]]; then
+  cp "$SRC" "$INSTALLED_SCRIPT.tmp.$$" && chmod 0755 "$INSTALLED_SCRIPT.tmp.$$" && mv "$INSTALLED_SCRIPT.tmp.$$" "$INSTALLED_SCRIPT"
+fi
+log "self-update script: $INSTALLED_SCRIPT"
