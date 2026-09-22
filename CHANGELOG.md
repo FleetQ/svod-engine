@@ -3,6 +3,19 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.25.2 — 2026-09-22 (App API contract 0.34.0, unchanged)
+
+### Fixed — self-update broke installDist installs started through `bin/svod-engine`
+
+On a Mac whose launchd job runs `…/install/svod-engine/bin/svod-engine` (installDist), updating
+1.24.0 → 1.25.1 swapped the jars and the engine never came back; the script rolled back after 180 s.
+Gradle's start script names every jar with its version (`CLASSPATH=$APP_HOME/lib/svod-engine-1.24.0.jar:…`),
+so after the swap it pointed at files that were gone and the JVM stopped at "Could not find or load
+main class dev.svod.engine.MainKt". The script now rewrites that line to `CLASSPATH="$APP_HOME/lib/*"`
+(which also works for the old jars, so it stays on a rollback), refuses before touching anything when
+the engine runs from a jar list it cannot fix, and after a rollback checks that the previous engine
+answers again.
+
 ## v1.25.1 — 2026-09-22 (App API contract 0.34.0, unchanged)
 
 ### Fixed — "Update engine" in the app never worked

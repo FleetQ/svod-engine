@@ -12,7 +12,9 @@
 # The install is read from the running engine (~/.config/svod/engine.json → its pid → command
 # line), so no paths are configured. Three layouts:
 #   app-image   …/SvodEngine.app                 replaced from SvodEngine-<platform>.tar.gz
-#   lib dir     java -cp …/lib/* (installDist)   jars synced from the same archive
+#   lib dir     java -cp …/lib/* or installDist  jars synced from the same archive; an installDist
+#                                                bin/svod-engine is pointed at lib/* (it names
+#                                                every jar with its version)
 #   native      …/svod-engine-<platform>         replaced from the native binary
 # Only the asset for THIS layout is downloaded, whatever URL the engine passed: engines up to
 # 1.25.0 pass the native binary, which the app-image and lib layouts cannot use. The asset's
@@ -79,7 +81,7 @@ CURRENT="$(running_version)"
 log "engine: label=$LABEL port=$PORT pid=${PID:-none} version=${CURRENT:-unknown}"
 
 # ---- 2. work out the install layout --------------------------------------------------------
-LAYOUT="" TARGET="${SVOD_INSTALL_PATH:-}"
+LAYOUT="" TARGET="${SVOD_INSTALL_PATH:-}" EXPLICIT_CP=""
 if [[ -z "$TARGET" ]]; then
   [[ -n "$PID" ]] || die "the engine is not running, so its install can't be found; set SVOD_INSTALL_PATH"
   CMD="$(ps -o command= -p "$PID")"
@@ -88,7 +90,7 @@ if [[ -z "$TARGET" ]]; then
   elif [[ "$CMD" == *" -cp "* || "$CMD" == *" -classpath "* ]]; then
     cp="${CMD#* -cp }"; [[ "$cp" == "$CMD" ]] && cp="${CMD#* -classpath }"
     first="${cp%%:*}"; first="${first%% dev.svod.engine.MainKt*}"; first="${first%% -*}"
-    if [[ "$first" == */\* ]]; then TARGET="${first%/\*}"; else TARGET="$(dirname "$first")"; fi
+    if [[ "$first" == */\* ]]; then TARGET="${first%/\*}"; else TARGET="$(dirname "$first")"; EXPLICIT_CP=1; fi
   else
     TARGET="$(lsof -a -p "$PID" -d txt -Fn 2>/dev/null | awk '/^n/ {print substr($0, 2); exit}')"
   fi
@@ -99,6 +101,20 @@ elif [[ -f "$TARGET" && -x "$TARGET" && "$(basename "$TARGET")" == svod-engine* 
 else die "can't tell how the engine is installed (resolved '$TARGET'); set SVOD_INSTALL_PATH"
 fi
 log "install: $LAYOUT at $TARGET"
+
+# installDist's bin/svod-engine lists every jar by name and version
+# (CLASSPATH=$APP_HOME/lib/svod-engine-1.24.0.jar:…). After the jars are swapped it names files
+# that are gone and the JVM stops at "Could not find or load main class dev.svod.engine.MainKt".
+START=""
+if [[ "$LAYOUT" == libdir ]]; then
+  START="$(dirname "$TARGET")/bin/svod-engine"
+  if [[ -f "$START" ]] && grep -q '^CLASSPATH=\$APP_HOME/lib/[^*]' "$START"; then :
+  elif [[ -f "$START" ]] && grep -q '^CLASSPATH="\$APP_HOME/lib/\*"' "$START"; then START=""
+  elif [[ -n "$EXPLICIT_CP" ]]; then
+    die "the engine runs with a list of jar names and no installDist start script to fix next to $TARGET; start it with -cp '$TARGET/*' first"
+  else START=""
+  fi
+fi
 
 case "$(uname -m)" in
   arm64) PLATFORM=macos-arm64 ;;
@@ -179,6 +195,13 @@ case "$LAYOUT" in
   libdir)
     cp -Rp "$TARGET" "$BACKUP"
     rsync -a --delete --include='*.jar' --exclude='*' "$NEW/" "$TARGET/"
+    if [[ -n "$START" ]]; then
+      # lib/* works for the old jars as well, so this stays in place on a rollback.
+      sed 's|^CLASSPATH=\$APP_HOME/lib/.*|CLASSPATH="$APP_HOME/lib/*"|' "$START" > "$START.new.$$"
+      chmod "$(stat -f %Lp "$START")" "$START.new.$$"
+      mv "$START.new.$$" "$START"
+      log "start script now loads lib/*: $START"
+    fi
     ;;
   native)
     cp -p "$TARGET" "$BACKUP"
@@ -211,6 +234,16 @@ if [[ "$now" != "$VERSION" ]]; then
   log "engine did not come back at $VERSION within ${READY_TIMEOUT}s (reports '${now:-nothing}'); rolling back"
   restore
   launchctl kickstart -k "gui/$(id -u)/$LABEL" || true
+  back=""
+  deadline=$((SECONDS + READY_TIMEOUT))
+  while (( SECONDS < deadline )); do
+    sleep 3
+    back="$(running_version)"
+    [[ -n "$back" ]] && break
+  done
+  if [[ -n "$back" ]]; then log "previous engine is running again (${back})"
+  else log "previous engine did not answer within ${READY_TIMEOUT}s either; check: launchctl print gui/$(id -u)/$LABEL"
+  fi
   die "update to $VERSION failed; previous install restored"
 fi
 log "engine is running $VERSION"
