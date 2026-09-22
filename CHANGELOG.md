@@ -3,6 +3,16 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.25.3 — 2026-09-22 (App API contract 0.34.0, unchanged)
+
+### Fixed — self-update now refuses a Java too old for the release, before changing anything
+
+A laptop whose launchd job runs the engine with Java 20 (`run-engine.sh` → `jdk-20/bin/java -cp …/lib/*`)
+failed every update after 1.24.0: release jars are compiled with JDK 21 (class file 65), so the new
+engine died on each start with `UnsupportedClassVersionError` and the script rolled back after 180 s.
+For a lib-dir install the script now reads the running engine's Java version and the release jar's
+class version first, and stops with "the engine runs on Java 20 … needs Java 21; nothing was changed".
+
 ## v1.25.2 — 2026-09-22 (App API contract 0.34.0, unchanged)
 
 ### Fixed — self-update broke installDist installs started through `bin/svod-engine`
