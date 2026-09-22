@@ -3,6 +3,35 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.25.1 — 2026-09-22 (App API contract 0.34.0, unchanged)
+
+### Fixed — "Update engine" in the app never worked
+
+Pressing "Update engine" in the app answered 501 on every install, and the app showed it as "this
+engine doesn't support self-update". Three things were wrong:
+
+- The engine runs a script for the update, and found it only through `SVOD_SELF_UPDATE_SCRIPT`, which
+  no install set. It now also uses `~/.config/svod/self-update.sh` when that file exists, looked up on
+  every apply, so installing the script needs no restart. The 501 now says where to put it.
+- The engine handed the script the native binary (`svod-engine-macos-arm64`, listed first in the
+  release), while `dist/self-update.sh` could only unpack the `SvodEngine-*.tar.gz` app-image. The
+  engine now picks the archive.
+- The script assumed one layout (`~/svod-engine-v1/SvodEngine.app`, label `dev.svod.engine`). It now
+  reads the running engine from `~/.config/svod/engine.json` and its command line, and handles an
+  app-image, an installDist-style `lib/` directory of jars and a native binary. It downloads the asset
+  for that layout (whatever URL an older engine passed), checks the sha256 from the release, restarts
+  the launchd job, and puts the previous install back if the engine does not come up at the new
+  version. It moves into its own process group first, since launchd kills the job's group on restart.
+
+The script's output went to `DISCARD`; it now goes to `~/.config/svod/self-update.log`.
+`self-update.sh` is attached to every release. To set up a machine that runs an older engine, once:
+
+```bash
+mkdir -p ~/.config/svod && curl -fsSL -o ~/.config/svod/self-update.sh \
+  https://github.com/FleetQ/svod-engine/releases/latest/download/self-update.sh \
+  && bash ~/.config/svod/self-update.sh
+```
+
 ## v1.25.0 — 2026-09-22 (App API contract 0.34.0)
 
 ### Added — a search says when it had to go without semantic search or the reranker

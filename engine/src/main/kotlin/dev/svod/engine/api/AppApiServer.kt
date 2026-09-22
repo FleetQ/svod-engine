@@ -372,7 +372,7 @@ class AppApiServer(
                 } catch (e: UpdateAdmin.NotApplicable) {
                     call.respond(HttpStatusCode.Conflict, ErrorDto("conflict", e.message ?: ""))
                 } catch (e: UpdateAdmin.NotSupported) {
-                    call.notImplemented("update")
+                    call.respond(HttpStatusCode.NotImplemented, ErrorDto("not_implemented", e.message ?: "update is not available"))
                 }
             }
 
