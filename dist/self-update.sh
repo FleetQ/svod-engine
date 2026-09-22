@@ -179,6 +179,27 @@ else
   NEW="$FILE"
 fi
 
+# A lib-dir install runs on whatever java its launchd job names, and release jars are compiled for
+# the Java the release was built with. Java 20 cannot load them (class file 65 = Java 21): the
+# engine then dies on every start with UnsupportedClassVersionError until the rollback. Check first.
+java_feature() {   # the running engine's Java feature version, e.g. 20
+  "$1" -XshowSettings:properties -version 2>&1 | awk -F'= ' '/java.specification.version/ {print $2; exit}'
+}
+class_feature() {  # the Java version a jar's MainKt was compiled for (class major - 44)
+  local hex
+  hex="$(unzip -p "$1" dev/svod/engine/MainKt.class 2>/dev/null | head -c 8 | xxd -p)"
+  [[ ${#hex} -eq 16 ]] && echo $(( 16#${hex:12:4} - 44 ))
+}
+if [[ "$LAYOUT" == libdir && -n "$PID" ]]; then
+  JAVA="$(ps -o comm= -p "$PID")"
+  have="$( [[ -x "$JAVA" ]] && java_feature "$JAVA" )"
+  need="$(class_feature "$(compgen -G "$NEW/svod-engine-*.jar" | head -1)")"
+  if [[ -n "$have" && -n "$need" && "${have%%.*}" -lt "$need" ]]; then
+    die "the engine runs on Java $have ($JAVA) but $VERSION needs Java $need; install Java $need and point the launchd job at it, then run this again. Nothing was changed."
+  fi
+  log "java: running $have, release needs ${need:-unknown}"
+fi
+
 # ---- 5. swap, keeping the previous install at <path>.old ----------------------------------
 # The running engine keeps its already-open files, so replacing them under it is safe until the
 # restart below.

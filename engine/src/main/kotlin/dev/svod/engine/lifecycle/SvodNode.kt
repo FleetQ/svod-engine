@@ -190,7 +190,7 @@ class SvodNode private constructor(
                         dev.svod.engine.security.Secrets.resolve(t.keyPassword).toCharArray())
                 }
                 val updateService = UpdateService(
-                    currentAppVersion = "1.25.2",
+                    currentAppVersion = "1.25.3",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 val api = AppApiServer(
