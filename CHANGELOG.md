@@ -3,6 +3,25 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.25.0 — 2026-09-22 (App API contract 0.34.0)
+
+### Added — a search says when it had to go without semantic search or the reranker
+
+When the query embed failed (a cold or stopped Ollama, a remote endpoint down), `IndexService` ran the
+search on keywords only and wrote one line to stderr. When the reranker failed, the hits kept the fused
+order and the failure went to the log. In both cases `/api/v1/search`, MCP `search` and MCP
+`context_pack` returned a result that looked exactly like a complete one, so neither a person nor an
+agent could tell that "no hits" meant "no keyword hits". The same happened while semantic search is
+suppressed during an embedding-model rebuild.
+
+Each result now carries `degraded`: `[]` when complete, `semantic` and/or `rerank` otherwise. With
+`semantic` the result has no semantic part: any hits come from keyword search (a SEMANTIC search whose
+query embed failed has none; during a model rebuild it falls back to keyword hits, as before). An embedder
+configured as `none` is the vault's choice and is not reported. `across=true` reports the union over the
+searched vaults. The MCP tool descriptions say what a non-empty list means. Idea borrowed from EverOS,
+whose benchmark runner refuses to report a score from a run with a degraded step
+(`docs/design-evermind-borrow.md`).
+
 ## v1.24.0 — 2026-09-17 (App API contract 0.33.0, unchanged)
 
 ### Added — the engine tells the app where it is

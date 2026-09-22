@@ -191,6 +191,7 @@ class SvodTools(
         val result = index.search(query)
         ToolResult.ok {
             put("mode", result.mode.name)
+            putJsonArray("degraded") { result.degraded.forEach { add(it) } }
             putJsonArray("hits") {
                 result.hits.forEach { h ->
                     addJsonObject {
@@ -368,6 +369,7 @@ class SvodTools(
             val blocks = ArrayList<PackBlock>()
             var total = 0
             val mode: String
+            var degraded = emptyList<String>()
             if (enumerate) {
                 mode = "enumerate"
                 val paths = index.enumerate(query.filters, ENUMERATE_CAP)
@@ -383,6 +385,7 @@ class SvodTools(
             } else {
                 val result = index.search(query)
                 mode = result.mode.name
+                degraded = result.degraded
                 val seenPaths = HashSet<String>()
                 for (h in result.hits) {
                     if (!seenPaths.add(h.path)) continue // one block per note (dedup + source diversity)
@@ -404,6 +407,7 @@ class SvodTools(
             ToolResult.ok {
                 put("query", query.text); put("mode", mode)
                 put("tokenBudget", tokenBudget); put("estimatedTokens", total)
+                putJsonArray("degraded") { degraded.forEach { add(it) } }
                 putJsonArray("blocks") {
                     blocks.forEach { b ->
                         addJsonObject {

@@ -50,4 +50,16 @@ data class SearchResult(
     val hits: List<SearchHit>,
     val mode: SearchMode,
     val tookMillis: Long,
-)
+    /**
+     * Retrieval legs this result had to go without: [SEMANTIC] (asked for, embedder configured, but the
+     * query embed failed or semantic is suppressed during a model rebuild — any hits are then
+     * keyword-only; a SEMANTIC search whose embed failed has none) and/or [RERANK] (active reranker
+     * failed). Empty for a complete result.
+     */
+    val degraded: List<String> = emptyList(),
+) {
+    companion object {
+        const val SEMANTIC = "semantic"
+        const val RERANK = "rerank"
+    }
+}

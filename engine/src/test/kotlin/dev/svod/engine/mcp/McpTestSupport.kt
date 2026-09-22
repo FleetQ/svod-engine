@@ -18,11 +18,12 @@ class McpFixture(
     agents: List<AgentRegistry.AgentSpec> = listOf(WRITE_AGENT, READ_AGENT),
     /** The vault id the tools stamp onto their events; null = tools not bound to a vault. */
     vaultId: String? = null,
+    embedder: dev.svod.engine.index.Embedder = NoneEmbedder,
 ) : AutoCloseable {
     val root: Path = Files.createTempDirectory("svod-mcp-test-")
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val engine: SvodEngine = SvodEngine.open(root, scope)
-    val index: IndexService = IndexService(root, root.resolve(".svod").resolve("index"), NoneEmbedder).start()
+    val index: IndexService = IndexService(root, root.resolve(".svod").resolve("index"), embedder).start()
     val audit: AuditLog = AuditLog(root.resolve(".svod").resolve("audit").resolve("audit.log"))
     val registry: AgentRegistry = AgentRegistry(agents)
     val eventBus: dev.svod.engine.events.EventBus = dev.svod.engine.events.EventBus()

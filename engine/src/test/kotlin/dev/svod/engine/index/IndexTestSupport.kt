@@ -135,3 +135,12 @@ class BagOfWordsEmbedder(override val dim: Int = 64) : Embedder {
         val TOKEN = Regex("[^\\p{L}\\p{N}]+")
     }
 }
+
+/** Indexes normally (passages embed fine) but every query embed fails — a cold/down endpoint. */
+class QueryFailingEmbedder : Embedder {
+    private val inner = FakeEmbedder("qfail")
+    override val model = "qfail"
+    override val dim = 64
+    override fun embedPassages(texts: List<String>): List<FloatArray> = inner.embedPassages(texts)
+    override fun embedQuery(text: String): FloatArray = throw RuntimeException("endpoint down")
+}

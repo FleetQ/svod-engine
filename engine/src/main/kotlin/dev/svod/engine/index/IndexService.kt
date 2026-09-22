@@ -518,7 +518,13 @@ class IndexService(
         val wantKeyword = blankQuery || q.mode != SearchMode.SEMANTIC || !active
         val wantSemantic = !blankQuery && q.mode != SearchMode.KEYWORD && active
         val keyword = if (wantKeyword) keywordLeg(q.text, filter, cand) else emptyList()
-        val semantic = if (wantSemantic) semanticLeg(q.text, filter, cand) else emptyList()
+        val semanticOrNull = if (wantSemantic) semanticLeg(q.text, filter, cand) else emptyList()
+        val semantic = semanticOrNull ?: emptyList()
+        // The caller asked for semantic, the vault has an embedder, and the result has no semantic leg:
+        // the query embed failed, or semantic is suppressed while the model is rebuilt. An embedder
+        // configured as `none` is the vault's choice, not a failure, so it is not reported.
+        val semanticDegraded = !blankQuery && q.mode != SearchMode.KEYWORD && embedder.isActive &&
+            (suppressSemantic || semanticOrNull == null)
         val kwIds = keyword.map { it.first }
         val semIds = semantic.map { it.first }
         val kwSet = kwIds.toHashSet()
@@ -534,7 +540,8 @@ class IndexService(
                 .entries.map { it.key to it.value }
         }
 
-        val ranked = maybeRerank(q.text, ordered)
+        val reranked = maybeRerank(q.text, ordered)
+        val ranked = reranked ?: ordered
         val hits = ranked.asSequence()
             .mapNotNull { (id, score) ->
                 index.loadChunk(id)?.let { c ->
@@ -553,7 +560,11 @@ class IndexService(
             .take(q.limit)
             .toList()
 
-        return SearchResult(hits, q.mode, (System.nanoTime() - start) / 1_000_000)
+        val degraded = buildList {
+            if (semanticDegraded) add(SearchResult.SEMANTIC)
+            if (reranked == null) add(SearchResult.RERANK)
+        }
+        return SearchResult(hits, q.mode, (System.nanoTime() - start) / 1_000_000, degraded)
     }
 
     private fun keywordLeg(text: String, filter: Query?, k: Int): List<Pair<String, Float>> {
@@ -566,25 +577,29 @@ class IndexService(
         return index.keywordSearch(b.build(), k)
     }
 
-    private fun semanticLeg(text: String, filter: Query?, k: Int): List<Pair<String, Float>> {
+    /**
+     * The semantic leg, or null when the query embed failed. A remote query-embed can fail (endpoint
+     * cold/down) — the search then degrades to keyword rather than erroring, and reports it in
+     * [SearchResult.degraded] instead of only in a log line.
+     */
+    private fun semanticLeg(text: String, filter: Query?, k: Int): List<Pair<String, Float>>? {
         if (text.isBlank()) return emptyList()
-        // A remote query-embed can fail (endpoint cold/down) — degrade to keyword rather than error
-        // the whole search. The background pass surfaces the failure via embeddingStatus().
         return try {
             index.semanticSearch(embedder.embedQuery(text), k, filter)
         } catch (e: Exception) {
             System.err.println("semantic query-embed failed, falling back to keyword: ${e.message}")
-            emptyList()
+            null
         }
     }
 
     /**
      * Second-stage rerank of the top [rerankTopK] fused candidates with a cross-encoder, when a
      * reranker is active. Re-scored items lead (best-first by rerank score); candidates beyond the
-     * cap keep their fused order behind them. ANY failure (cold/down endpoint, vanished chunk)
-     * degrades to the fused order — reranking never errors a search.
+     * cap keep their fused order behind them. Reranking never errors a search: a vanished chunk keeps
+     * the fused order, and a reranker failure returns null so the caller keeps the fused order AND
+     * reports it in [SearchResult.degraded].
      */
-    private fun maybeRerank(query: String, ordered: List<Pair<String, Double>>): List<Pair<String, Double>> {
+    private fun maybeRerank(query: String, ordered: List<Pair<String, Double>>): List<Pair<String, Double>>? {
         val rr = reranker
         if (!rr.isActive || query.isBlank() || ordered.size <= 1) return ordered
         val k = rerankTopK.coerceAtMost(ordered.size)
@@ -598,7 +613,7 @@ class IndexService(
             rescored + tail
         } catch (e: Exception) {
             log.warn("rerank failed, falling back to fused order: {}", e.message)
-            ordered
+            null
         }
     }
 
