@@ -158,6 +158,10 @@ jobs:
         run: |
           rm -rf sums && mkdir sums
           gh release download "${{ github.ref_name }}" -D sums --clobber
+          # A re-run of this job re-downloads the SHA256SUMS the previous run published. Leaving it
+          # in the directory makes `> SHA256SUMS` truncate it while the glob-expanded sha256sum is
+          # still about to read it, publishing a junk self-referential line.
+          rm -f sums/SHA256SUMS
           ( cd sums && sha256sum * > SHA256SUMS )
           cat sums/SHA256SUMS
           .github/scripts/publish-release-assets.sh "${{ github.ref_name }}" sums/SHA256SUMS

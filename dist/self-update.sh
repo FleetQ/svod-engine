@@ -133,10 +133,13 @@ API_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 # GETs an api.github.com URL into $2, headers into $3, prints the HTTP status (or "000" if curl
 # itself failed, e.g. DNS/connect error) — never trips `set -e`, so 403/404 can be handled below.
 api_get() {
-  local url="$1" out="$2" hdrs="$3" auth=()
+  local url="$1" out="$2" hdrs="$3" auth=() code
   [[ -n "$API_TOKEN" ]] && auth=(-H "Authorization: Bearer $API_TOKEN")
-  curl -sS --retry 3 -H "Accept: application/vnd.github+json" -H "User-Agent: svod-self-update" \
-    "${auth[@]+"${auth[@]}"}" -D "$hdrs" -o "$out" -w '%{http_code}' "$url" 2>/dev/null || echo "000"
+  # curl still writes %{http_code} ("000") when the transfer itself fails, so `|| echo 000` would
+  # append a SECOND 000 and report "HTTP 000000"; overwrite the captured value instead.
+  code="$(curl -sS --retry 3 -H "Accept: application/vnd.github+json" -H "User-Agent: svod-self-update" \
+    "${auth[@]+"${auth[@]}"}" -D "$hdrs" -o "$out" -w '%{http_code}' "$url" 2>/dev/null)" || code="000"
+  echo "${code:-000}"
 }
 
 # GitHub's anonymous limit is 60 requests/hour per IP; X-RateLimit-Reset is a unix timestamp.
@@ -181,7 +184,8 @@ URL="https://github.com/$REPO/releases/download/$TAG/$ASSET"
 SHA=""
 SUMS="$TMP/SHA256SUMS"
 if curl -fsSL --retry 3 -o "$SUMS" "https://github.com/$REPO/releases/download/$TAG/SHA256SUMS" 2>/dev/null; then
-  SHA="$(awk -v f="$ASSET" '$2 == f {print $1; exit}' "$SUMS")"
+  # `sha256sum -b` marks the name with a leading '*'; tolerate it like the engine's parser does.
+  SHA="$(awk -v f="$ASSET" '{ n = $2; sub(/^\*/, "", n); if (n == f) { print $1; exit } }' "$SUMS")"
 fi
 if [[ -z "$SHA" ]]; then
   log "no SHA256SUMS for $TAG (older release?); falling back to api.github.com for the checksum"

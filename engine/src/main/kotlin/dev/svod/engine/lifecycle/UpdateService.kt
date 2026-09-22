@@ -104,18 +104,25 @@ class UpdateService(
         }
 
         private fun fetchLatestRelease(): FetchResult {
-            val client = HttpClient.newBuilder()
+            // Two clients on purpose: the tag comes from a redirect we have to READ, so that call
+            // must not follow it; a release asset is served as a 302 to release-assets.github-
+            // usercontent.com, so fetching SHA256SUMS must follow it or it never sees a 200.
+            val noRedirect = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .followRedirects(HttpClient.Redirect.NEVER)
+                .build()
+            val following = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .followRedirects(HttpClient.Redirect.NORMAL)
                 .build()
             val hostLabel = currentHostLabel()
             val assetName = "SvodEngine-$hostLabel.tar.gz"
 
-            val tag = resolveLatestTag(client)
-                ?: return fetchFromApi(client, "https://api.github.com/repos/$REPO/releases/latest", hostLabel)
+            val tag = resolveLatestTag(noRedirect)
+                ?: return fetchFromApi(following, "https://api.github.com/repos/$REPO/releases/latest", hostLabel)
 
-            val sha256 = fetchSha256FromSums(client, tag, assetName)
-                ?: return fetchFromApi(client, "https://api.github.com/repos/$REPO/releases/tags/$tag", hostLabel)
+            val sha256 = fetchSha256FromSums(following, tag, assetName)
+                ?: return fetchFromApi(following, "https://api.github.com/repos/$REPO/releases/tags/$tag", hostLabel)
 
             return FetchResult(
                 ReleaseInfo(
