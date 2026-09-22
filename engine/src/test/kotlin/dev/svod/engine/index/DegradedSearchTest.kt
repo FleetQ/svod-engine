@@ -46,11 +46,14 @@ class DegradedSearchTest {
     }
 
     @Test
-    fun `D2 semantic mode with a failing query embed reports semantic without throwing`() {
+    fun `D2 semantic mode with a failing query embed reports semantic and has no hits`() {
         IndexFixture.create().use { fx ->
             fx.seedShared()
             fx.open(QueryFailingEmbedder()).use { idx ->
-                assertEquals(listOf(SearchResult.SEMANTIC), idx.search(SearchQuery("apple", mode = SearchMode.SEMANTIC)).degraded)
+                val r = idx.search(SearchQuery("apple", mode = SearchMode.SEMANTIC))
+                assertEquals(listOf(SearchResult.SEMANTIC), r.degraded)
+                // Semantic mode does not fall back to keyword; the contract text says so.
+                assertEquals(emptyList(), r.hits)
             }
         }
     }

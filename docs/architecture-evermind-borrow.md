@@ -76,5 +76,6 @@ for each project:
   default so existing call sites compile.
 - `MultiEngineClient` passes it through untouched.
 - `SearchModel.degraded: [String]`, set from each result, cleared with the results.
-- `CommandPaletteView`: one caption line under the field when non-empty: "Semantic search unavailable — keyword
-  results only" / "Reranker unavailable — results are not reranked".
+- `CommandPaletteView`: one caption line under the filters when non-empty, worded by the current mode:
+  semantic + Hybrid → "keyword results only"; semantic + Semantic mode → "nothing to show in Semantic mode —
+  switch to Hybrid or Keyword"; rerank → "results are not reranked".

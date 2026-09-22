@@ -13,7 +13,7 @@ the weekly narrative job ships **staged, not loaded**, and covers **all projects
    capture hook records every Claude Code session, including the ones our own scripts start. A job that reads
    sessions and is itself recorded as a session feeds on its own output.
 3. **Search degrades silently.** When the query embed fails, `IndexService.semanticLeg` returns an empty list and
-   the search runs on keywords only; when the reranker fails, `maybeRerank` returns the fused order. Both only
+   a HYBRID search runs on keywords only and a SEMANTIC search returns nothing; when the reranker fails, `maybeRerank` returns the fused order. Both only
    log. The `/search` response and MCP `search` / `context_pack` look exactly like a healthy result. The same
    happens while semantic search is suppressed during an embedding-model rebuild.
 
@@ -54,8 +54,13 @@ Guards:
 - `<private>…</private>` spans (and everything after an unclosed `<private>`) are removed from session text before
   the model sees it — same rule as the engine's `MarkdownChunker.stripPrivateSpans`. The note is searchable, the
   sessions are not, so this is the one place private text could leak into search.
-- `claude -p` runs with `--tools ""`: text in, text out, no file or network access. That avoids both failures the
-  distiller hit (a headless agent cannot read outside its cwd; the context-mode hook intercepts curl).
+- `<private>` handling also skips a session note marked `private: true` as a whole.
+- `claude -p` runs with `--tools ""`, `--setting-sources ""`, its own `--system-prompt` and an empty temporary cwd:
+  text in, text out, and nothing else in the model's context. That avoids both failures the distiller hit (a
+  headless agent cannot read outside its cwd; the context-mode hook intercepts curl). Run from the repo, the first
+  real run pulled CLAUDE.md, auto-memory and git status into the model and the note cited a commit hash found in
+  no session (adversarial verifier, 2026-09-22). `--bare` would isolate more but accepts only an API key, not the
+  OAuth login `claude` uses here.
 - Bounded input: newest sessions first up to a byte budget per project, then presented oldest-first. Sessions that
   did not fit in a first run are not folded later — the note describes the current state, which is what EverOS's
   merge prompt also ends on.

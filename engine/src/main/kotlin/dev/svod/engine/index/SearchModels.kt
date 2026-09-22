@@ -52,8 +52,9 @@ data class SearchResult(
     val tookMillis: Long,
     /**
      * Retrieval legs this result had to go without: [SEMANTIC] (asked for, embedder configured, but the
-     * query embed failed or semantic is suppressed during a model rebuild) and/or [RERANK] (active
-     * reranker failed). Empty for a complete result.
+     * query embed failed or semantic is suppressed during a model rebuild — HYBRID hits are then
+     * keyword-only, SEMANTIC mode has no hits) and/or [RERANK] (active reranker failed). Empty for a
+     * complete result.
      */
     val degraded: List<String> = emptyList(),
 ) {

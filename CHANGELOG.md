@@ -14,7 +14,8 @@ order and the failure went to the log. In both cases `/api/v1/search`, MCP `sear
 agent could tell that "no hits" meant "no keyword hits". The same happened while semantic search is
 suppressed during an embedding-model rebuild.
 
-Each result now carries `degraded`: `[]` when complete, `semantic` and/or `rerank` otherwise. An embedder
+Each result now carries `degraded`: `[]` when complete, `semantic` and/or `rerank` otherwise. With
+`semantic`, a HYBRID search holds keyword hits only and a SEMANTIC search holds no hits. An embedder
 configured as `none` is the vault's choice and is not reported. `across=true` reports the union over the
 searched vaults. The MCP tool descriptions say what a non-empty list means. Idea borrowed from EverOS,
 whose benchmark runner refuses to report a score from a run with a degraded step
