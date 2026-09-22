@@ -22,11 +22,11 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /** Wires engine + index + event bus + App API (+ MCP tools sharing the bus) on a temp vault. */
-class ApiFixture : AutoCloseable {
+class ApiFixture(embedder: dev.svod.engine.index.Embedder = NoneEmbedder) : AutoCloseable {
     val root: Path = Files.createTempDirectory("svod-api-test-")
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val engine: SvodEngine = SvodEngine.open(root, scope)
-    val index: IndexService = IndexService(root, root.resolve(".svod").resolve("index"), NoneEmbedder).start()
+    val index: IndexService = IndexService(root, root.resolve(".svod").resolve("index"), embedder).start()
     val eventBus = EventBus()
     val audit = AuditLog(root.resolve(".svod").resolve("audit").resolve("audit.log"))
     val registry = AgentRegistry(listOf(AgentRegistry.AgentSpec("w", "scribe", AgentRole.WRITE, name = "Scribe")))
@@ -87,7 +87,7 @@ class ApiFixture : AutoCloseable {
     }
 
     companion object {
-        fun create(): ApiFixture = ApiFixture()
+        fun create(embedder: dev.svod.engine.index.Embedder = NoneEmbedder): ApiFixture = ApiFixture(embedder)
         fun enc(s: String): String = java.net.URLEncoder.encode(s, Charsets.UTF_8)
     }
 }

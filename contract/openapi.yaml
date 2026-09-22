@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.33.0
+  version: 0.34.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -1670,6 +1670,14 @@ components:
         hits:
           type: array
           items: { $ref: "#/components/schemas/SearchHit" }
+        degraded:
+          type: array
+          description: >
+            Retrieval steps this result went without (0.34.0). `semantic`: semantic was requested, the vault
+            has an embedder, and the query embed failed or semantic is suppressed during a model rebuild —
+            the hits are keyword-only. `rerank`: the active reranker failed — the hits keep the fused order.
+            Empty for a complete result. With `across=true` it is the union over the searched vaults.
+          items: { type: string, enum: [semantic, rerank] }
 
     SearchHit:
       type: object

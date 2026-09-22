@@ -67,7 +67,12 @@ data class SearchHitDto(
 )
 
 @Serializable
-data class SearchResultDto(val mode: String, val hits: List<SearchHitDto>)
+data class SearchResultDto(
+    val mode: String,
+    val hits: List<SearchHitDto>,
+    /** Retrieval legs the result went without: `semantic`, `rerank` (contract 0.34.0). Empty when complete. */
+    val degraded: List<String> = emptyList(),
+)
 
 @Serializable
 data class GraphNodeDto(val id: String, val path: String)

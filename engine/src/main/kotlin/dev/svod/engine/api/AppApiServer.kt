@@ -11,6 +11,7 @@ import dev.svod.engine.index.IndexService
 import dev.svod.engine.index.SearchFilters
 import dev.svod.engine.index.SearchMode
 import dev.svod.engine.index.SearchQuery
+import dev.svod.engine.index.SearchResult
 import dev.svod.engine.memory.MemoryReview
 import dev.svod.engine.memory.MemoryStore
 import dev.svod.engine.memory.Proposal
@@ -490,19 +491,22 @@ class AppApiServer(
                 if (across) {
                     // Federated: query every vault, tag each hit with its vault, merge by score.
                     val hits = ArrayList<SearchHitDto>()
+                    val degraded = HashSet<String>()
                     val p = principal()
                     for (v in vaults.all()) {
                         if (!p.canRead(v.id)) continue
                         val r = v.index.search(SearchQuery(q, filters, mode, limit))
+                        degraded.addAll(r.degraded)
                         r.hits.forEach { hits.add(SearchHitDto(it.path, it.heading, it.snippet, it.score, it.matchedKeyword, it.matchedSemantic, it.tags, v.id, dev.svod.engine.index.estimateTokens(it.snippet))) }
                     }
                     hits.sortByDescending { it.score }
-                    call.respond(SearchResultDto(mode.name, hits.take(limit)))
+                    val order = listOf(SearchResult.SEMANTIC, SearchResult.RERANK)
+                    call.respond(SearchResultDto(mode.name, hits.take(limit), order.filter { it in degraded }))
                 } else {
                     val result = vc.index.search(SearchQuery(q, filters, mode, limit))
                     call.respond(SearchResultDto(result.mode.name, result.hits.map {
                         SearchHitDto(it.path, it.heading, it.snippet, it.score, it.matchedKeyword, it.matchedSemantic, it.tags, vc.id, dev.svod.engine.index.estimateTokens(it.snippet))
-                    }))
+                    }, result.degraded))
                 }
             }
 
