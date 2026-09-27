@@ -4,14 +4,24 @@ import dev.svod.engine.core.Author
 import dev.svod.engine.core.GitCli
 import dev.svod.engine.core.SvodEngine
 import dev.svod.engine.events.EventBus
+import dev.svod.engine.events.EventTypes
+import dev.svod.engine.events.SvodEvent
+import dev.svod.engine.index.IndexService
+import dev.svod.engine.index.NoneEmbedder
+import dev.svod.engine.watch.FileWatcher
 import dev.svod.engine.security.SecretScanner
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.eclipse.jgit.api.Git
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -175,6 +185,49 @@ class SyncEngineTest {
             // B is still at H0; a commit on B is NOT a descendant of canonical (now A's H1) → non-ff.
             c.engineB.write("b.md", "B", null, T)
             assertEquals(SyncGit.PushResult.REJECTED, SyncGit(c.dirB).use { it.pushSync(c.remote, "master", V) })
+        }
+    }
+
+    /**
+     * Sync writes the working tree (fast-forward = reset --hard, merge = file writes). The live
+     * FileWatcher sees those FS events; if its ingest turned them into a COMMIT_CREATED, the
+     * SyncScheduler's on-change trigger would re-fire after every sync that pulled anything —
+     * a self-sustaining sync loop. The writes run on the write-actor and are committed there, so
+     * the watcher's path-scoped ingest must find nothing to commit.
+     */
+    @Test
+    fun `sync writes into the working tree do not come back as external commits`() = runBlocking {
+        Cluster().use { c ->
+            c.bootstrap()
+            val bus = EventBus()
+            val index = IndexService(c.dirB, c.dirB.resolve(".svod").resolve("index"), NoneEmbedder).start()
+            val watcher = FileWatcher(c.dirB, c.engineB, index, bus, vaultId = V).start()
+            val commits = CopyOnWriteArrayList<SvodEvent>()
+            val collector = c.scope.launch(start = CoroutineStart.UNDISPATCHED) { bus.events.collect { if (it.type == EventTypes.COMMIT_CREATED) commits.add(it) } }
+            try {
+                // Fast-forward: A adds notes, B pulls them straight into its working tree.
+                for (i in 1..20) c.engineA.write("notes/ff-$i.md", "# FF $i\nfrom A", null, T)
+                c.syncA.sync(c.remote)
+                assertEquals(SyncEngine.Status.inSync, c.syncB.sync(c.remote).status)
+                // Diverged merge: B's working tree gets A's files written by applyMerge.
+                for (i in 1..20) c.engineA.write("notes/mg-$i.md", "# MG $i\nfrom A", null, T)
+                c.syncA.sync(c.remote)
+                c.engineB.write("notes/local.md", "# local on B", null, T)
+                assertEquals(SyncEngine.Status.inSync, c.syncB.sync(c.remote).status)
+                assertNotNull(c.engineB.read("notes/mg-20.md"))
+                val headAfterSync = c.engineB.head()
+
+                delay(2_000) // FS events + the watcher's debounce + ingest have long settled
+                assertTrue(commits.isEmpty(), "sync's own working-tree writes must not re-enter as commits: ${commits.map { it.data }}")
+                assertEquals(headAfterSync, c.engineB.head(), "no extra external commit on top of the sync result")
+
+                // Positive control: the watcher IS live — a genuine outside edit does produce a commit.
+                Files.writeString(c.dirB.resolve("notes/outside.md"), "# edited outside the engine")
+                withTimeout(10_000) { while (commits.isEmpty()) delay(25) }
+                assertEquals("external", commits.single().data["author"]?.toString()?.trim('"'))
+            } finally {
+                collector.cancel(); watcher.close(); index.close()
+            }
         }
     }
 }
