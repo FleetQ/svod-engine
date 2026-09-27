@@ -3,6 +3,25 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.25.5 — 2026-09-27 (App API contract 0.34.0, unchanged)
+
+### Fixed — a new write no longer cancels an on-change sync that is already running
+
+The on-change sync trigger ran the sync cycle inside the same job as its 5-second quiet-period
+timer, and every new commit cancelled that job. On a large vault one cycle takes longer than the
+gap between writes (agents writing over MCP, edits in the working tree), so each commit killed the
+running sync and started it again. The log showed `auto-sync (on-change) of '<vault>' failed` with
+`JobCancellationException` every ~15 s. A manual "Sync now" queued behind this until the macOS app's
+request timed out and it reported "The Svod engine is not reachable", although the engine was up.
+
+A commit now restarts only the pending delay. A commit that lands while a cycle runs marks the vault
+dirty, and one follow-up cycle is scheduled after the current one finishes (several commits during
+one cycle still produce one follow-up).
+
+Checked at the same time: the sync's own writes into the working tree (fast-forward and merge) do not
+come back through the file watcher as new commits, so they cannot re-trigger on-change sync. There
+is now a test for this.
+
 ## v1.25.4 — 2026-09-22 (App API contract 0.34.0, unchanged)
 
 ### Fixed — update without a GitHub token: anonymous api.github.com is capped at 60/hour per IP
