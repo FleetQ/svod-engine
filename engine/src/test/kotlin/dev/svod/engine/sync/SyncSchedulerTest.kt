@@ -4,9 +4,11 @@ import dev.svod.engine.events.EventBus
 import dev.svod.engine.events.EventTypes
 import dev.svod.engine.lifecycle.SvodConfig
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -42,10 +44,13 @@ class SyncSchedulerTest {
         val started = AtomicInteger()
         val completed = AtomicInteger()
         val cancelled = AtomicInteger()
+        // The on-change cycle (call #2) is held open on a gate until every mid-sync commit has
+        // landed, so the test does not depend on runner speed; the other cycles are short.
+        val gate = CompletableDeferred<Unit>()
         val slowSync: suspend (String) -> Unit = {
             mutex.withLock {
-                started.incrementAndGet()
-                try { delay(600); completed.incrementAndGet() }
+                val n = started.incrementAndGet()
+                try { if (n == 2) gate.await() else delay(100); completed.incrementAndGet() }
                 catch (e: CancellationException) { cancelled.incrementAndGet(); throw e }
             }
         }
@@ -59,9 +64,12 @@ class SyncSchedulerTest {
             commit()
             withTimeout(5_000) { while (started.get() < 2) delay(5) } // on-change cycle is now running
             repeat(10) { commit(); delay(40) }                       // writes keep landing mid-sync
-
-            // A manual POST /sync/now must get its turn within about one cycle, not wait indefinitely.
-            withTimeout(5_000) { slowSync("v") }
+            // A manual POST /sync/now arrives while the cycle is still running...
+            val syncNow = scope.async { slowSync("v") }
+            delay(100)
+            gate.complete(Unit)                                      // ...then the slow cycle finishes.
+            // sync/now must get its turn right after the running cycle, not wait indefinitely.
+            withTimeout(5_000) { syncNow.await() }
 
             withTimeout(10_000) { while (completed.get() < started.get()) delay(10) }
             delay(400) // anything that would still be scheduled has had time to start
