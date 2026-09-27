@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.34.0
+  version: 0.35.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -850,6 +850,26 @@ paths:
               schema: { $ref: "#/components/schemas/SyncConfig" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/sync/status:
+    get:
+      tags: [ops]
+      summary: Live two-way sync state of this vault (cycle in progress + last result). Since 0.35.0.
+      operationId: syncStatus
+      description: >
+        running/trigger/startedAt/phase describe the cycle in progress (at most one per vault);
+        syncStatus/head/conflicts/lastSyncedAt describe the last finished one (syncStatus is
+        `syncing` while running). pending=true means another cycle is already due. A vault without
+        two-way sync answers synced=false and idle fields.
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: Current sync state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SyncRunStatus" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/sync/now:
     post:
       tags: [ops]
@@ -860,14 +880,36 @@ paths:
         refs/svod/sync/<vault>, fast-forward or 3-way merge, then push (retrying on a non-fast-forward).
         ok=false when the vault is not synced (a no-op). A surfaced conflict is still ok=true with
         conflicts>0 (resolve via /conflicts/resolve). A transport failure is 409, never 500.
+        At most one cycle runs per vault: if one is already running (startup, poll, on-change or
+        another request), this request joins it instead of queueing a second cycle.
+        Default (no opt-in): the request is held until the cycle ends and answers 200 SyncAck — the
+        pre-0.35.0 behaviour. Async (0.35.0, opt in with `wait=false` or `Prefer: respond-async`):
+        answers 202 SyncRunStatus at once; follow the cycle via the sync.progress / sync.finished
+        events or GET /sync/status. When the 202 body already says running=false, the cycle had
+        finished before the answer and the body carries its result.
       parameters:
         - $ref: "#/components/parameters/VaultQuery"
+        - name: wait
+          in: query
+          required: false
+          description: "`false` = async mode (202 at once). Anything else or absent = wait for the cycle (default). Since 0.35.0."
+          schema: { type: boolean, default: true }
+        - name: Prefer
+          in: header
+          required: false
+          description: "`respond-async` (RFC 7240) = async mode, same as wait=false. Since 0.35.0."
+          schema: { type: string }
       responses:
         "200":
-          description: Reconcile ran (ok=false when sync is not enabled; ok=true with conflicts>0 when overlaps were surfaced).
+          description: Reconcile ran (ok=false when sync is not enabled; ok=true with conflicts>0 when overlaps were surfaced). In async mode, only for a vault that is not synced (ok=false).
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SyncAck" }
+        "202":
+          description: Async mode — a cycle was started or joined; the body is the live status (running=true while it runs).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SyncRunStatus" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: Sync failed (remote unreachable / auth / push rejected past retry).
@@ -1106,9 +1148,15 @@ paths:
       description: >
         Upgrade to a WebSocket. The server pushes JSON-encoded Event objects. Event types:
         file.changed, index.updated, index.progress, commit.created, conflict, engine.status,
-        agent.activity, source.synced. index.progress carries { vault, done, total, state } during
-        background embedding (throttled emit). source.synced fires when a source's auto-sync watcher
-        runs, carrying { vault, sourceId, created, updated, conflicts, deleted } (counts).
+        agent.activity, source.synced, sync.started, sync.progress, sync.finished. index.progress
+        carries { vault, done, total, state } during background embedding (throttled emit).
+        source.synced fires when a source's auto-sync watcher runs, carrying { vault, sourceId,
+        created, updated, conflicts, deleted } (counts). Two-way sync (0.35.0), one set per cycle:
+        sync.started { vault, trigger } (trigger = startup | poll | on-change | manual);
+        sync.progress { vault, phase } (phase = commit | fetch | merge | push);
+        sync.finished { vault, trigger, status, head, conflicts, lastSyncedAt?, durationMs, pending }
+        (status = inSync | conflicts | offline | error; pending=true ⇒ a trailing cycle follows).
+        A cycle cancelled by engine shutdown sends no sync.finished.
       responses:
         "101": { description: Switching Protocols (WebSocket) }
 
@@ -2427,6 +2475,23 @@ components:
         head: { type: string, nullable: true }
         conflicts: { type: integer, nullable: true, description: Merge conflicts surfaced (see GET /conflicts). }
 
+    SyncRunStatus:
+      type: object
+      description: Live two-way sync state of one vault (GET /sync/status, async POST /sync/now). Since 0.35.0.
+      required: [vault, synced, running, pending, conflicts]
+      properties:
+        vault: { type: string }
+        synced: { type: boolean, description: "Two-way sync is enabled for this vault." }
+        running: { type: boolean, description: "A cycle is in progress." }
+        trigger: { type: string, nullable: true, enum: [startup, poll, on-change, manual], description: "What started the running cycle." }
+        startedAt: { type: string, format: date-time, nullable: true }
+        phase: { type: string, nullable: true, enum: [commit, fetch, merge, push], description: "Step of the running cycle." }
+        pending: { type: boolean, description: "Another cycle is already due (writes landed mid-cycle, or the on-change delay is armed)." }
+        syncStatus: { type: string, nullable: true, enum: [inSync, syncing, conflicts, offline, error], description: "`syncing` while running, else the last finished cycle's status; null before the first." }
+        head: { type: string, nullable: true, description: "Commit the last finished cycle reconciled (and pushed)." }
+        conflicts: { type: integer }
+        lastSyncedAt: { type: string, format: date-time, nullable: true }
+
     UpdateCheck:
       type: object
       required: [currentVersion, updateAvailable, compatible]
@@ -2455,7 +2520,7 @@ components:
       properties:
         type:
           type: string
-          enum: [file.changed, index.updated, index.progress, commit.created, conflict, engine.status, agent.activity, source.synced]
+          enum: [file.changed, index.updated, index.progress, commit.created, conflict, engine.status, agent.activity, source.synced, sync.started, sync.progress, sync.finished]
         ts: { type: integer, format: int64 }
         data: { type: object, additionalProperties: true }
 

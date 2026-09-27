@@ -18,10 +18,14 @@ import java.time.Instant
  * (no authority/replica) — each fetches the canonical head, reconciles, and pushes it back,
  * retrying on a non-fast-forward (another machine pushed first).
  *
- * **The cycle** (serialized per vault — sync calls under [mutex], and each ref-moving write goes
- * through the engine's single write-actor with an `expectedHead` guard, so a local editor save /
- * agent write / import that lands mid-sync aborts the apply and the cycle re-plans instead of
- * discarding it):
+ * **The cycle** reconciles a SNAPSHOT: the local HEAD as it stands when a round starts planning. Network
+ * fetch/push run outside the write-actor, so ordinary writes never wait on the network; only the
+ * short ref-moving step is serialized. That step goes through the engine's single write-actor as a
+ * compare-and-swap against the pinned head (`expectedHead`, a JGit `RefUpdate` with the expected
+ * old id), so a local editor save / agent write / import that lands mid-sync aborts the apply and
+ * the round re-plans instead of discarding it. A push sends the pinned commit, not whatever the
+ * branch points at by then; commits that land after the snapshot are left for the next cycle
+ * (the scheduler's trailing cycle). Cycles are serialized per vault by [mutex]:
  *  1. commit any pending local changes (the engine already auto-commits writes),
  *  2. fetch `refs/svod/sync/<vaultId>`,
  *  3. up-to-date → done; remote ahead → fast-forward; local ahead → push;
@@ -62,6 +66,16 @@ class SyncEngine(
     var lastResult: Result? = null
         private set
 
+    /** Step of the cycle in progress (`commit`, `fetch`, `merge`, `push`), null when idle. */
+    @Volatile
+    var phase: String? = null
+        private set
+
+    private fun phase(p: String) {
+        phase = p
+        eventBus.publish(EventTypes.SYNC_PROGRESS) { put("vault", vaultId); put("phase", p) }
+    }
+
     private fun record(status: Status, head: String?, syncedAt: String? = lastResult?.lastSyncedAt): Result =
         Result(status, head, conflicts.all().size, syncedAt).also { lastResult = it }
 
@@ -82,11 +96,14 @@ class SyncEngine(
     }
 
     /** Run one reconcile cycle against [remote] (a URL or a Secrets ref). Never throws. */
-    suspend fun sync(remote: String): Result = mutex.withLock { runCycle(remote) }
+    suspend fun sync(remote: String): Result = mutex.withLock {
+        try { runCycle(remote) } finally { phase = null }
+    }
 
     private suspend fun runCycle(remote: String): Result {
         val resolved = try { Secrets.resolve(remote) } catch (_: Exception) { remote }
         // 1. Fold any out-of-band working-tree edits into history first (engine writes already commit).
+        phase("commit")
         runCatching { engine.ingestExternalChanges(author) }
 
         // A merge is being held open for human resolution: don't touch anything until it drains.
@@ -100,35 +117,42 @@ class SyncEngine(
         val maxAttempts = 5
         while (true) {
             // 2. Fetch the canonical head (missing ref = nobody has pushed yet, not an error).
+            phase("fetch")
             try { git.fetchSync(resolved, vaultId) } catch (_: Exception) { return record(Status.offline, engine.head()) }
             val remoteHead = git.syncRef(vaultId)
+            // The snapshot this round reconciles, pinned once the fetch is in: everything below plans
+            // against it, moves the ref only if HEAD still equals it, and pushes exactly it.
             val local = engine.head() ?: return record(Status.error, null)
 
-            val needsPush: Boolean = when {
-                remoteHead == null -> true                              // first push: create the canonical ref
+            val toPush: String = when {
+                remoteHead == null -> local                             // first push: create the canonical ref
                 local == remoteHead -> { mirror(resolved, local); return record(Status.inSync, local, Instant.now().toString()) }
                 git.isAncestor(local, remoteHead) -> {                  // remote ahead → fast-forward
+                    phase("merge")
                     if (!engine.fastForwardTo(remoteHead, expectedHead = local)) continue // local moved → re-plan
                     mirror(resolved, remoteHead)
                     return record(Status.inSync, remoteHead, Instant.now().toString())
                 }
-                git.isAncestor(remoteHead, local) -> true               // local ahead → push
-                else -> when (val m = merge(local, remoteHead)) {       // diverged → 3-way merge
-                    MergeStep.Aborted -> continue                       // local moved during apply → re-plan
-                    MergeStep.Conflicts -> {
-                        eventBus.publish(EventTypes.CONFLICT) { put("source", "sync"); put("vault", vaultId); put("count", conflicts.all().size) }
-                        return record(Status.conflicts, engine.head())
+                git.isAncestor(remoteHead, local) -> local              // local ahead → push the snapshot
+                else -> {
+                    phase("merge")
+                    when (val m = merge(local, remoteHead)) {           // diverged → 3-way merge
+                        MergeStep.Aborted -> continue                   // local moved during apply → re-plan
+                        MergeStep.Conflicts -> {
+                            eventBus.publish(EventTypes.CONFLICT) { put("source", "sync"); put("vault", vaultId); put("count", conflicts.all().size) }
+                            return record(Status.conflicts, engine.head())
+                        }
+                        is MergeStep.Merged -> m.commit                 // clean merge commit created → push it
                     }
-                    MergeStep.Merged -> true                            // clean merge commit created → push it
                 }
             }
 
-            if (needsPush) when (git.pushSync(resolved, branch, vaultId)) {
+            phase("push")
+            when (git.pushSync(resolved, toPush, vaultId)) {
                 SyncGit.PushResult.OK -> {
-                    val head = engine.head()
-                    mirror(resolved, head)
-                    eventBus.publish(EventTypes.INDEX_UPDATED) { put("vault", vaultId); put("syncHead", head ?: "") }
-                    return record(Status.inSync, head, Instant.now().toString())
+                    mirror(resolved, toPush)
+                    eventBus.publish(EventTypes.INDEX_UPDATED) { put("vault", vaultId); put("syncHead", toPush) }
+                    return record(Status.inSync, toPush, Instant.now().toString())
                 }
                 SyncGit.PushResult.REJECTED -> {                        // a peer pushed first → re-fetch/merge
                     if (++attempt >= maxAttempts) return record(Status.error, engine.head())
@@ -139,7 +163,7 @@ class SyncEngine(
         }
     }
 
-    private sealed interface MergeStep { object Merged : MergeStep; object Conflicts : MergeStep; object Aborted : MergeStep }
+    private sealed interface MergeStep { data class Merged(val commit: String) : MergeStep; object Conflicts : MergeStep; object Aborted : MergeStep }
 
     /**
      * Diverged 3-way merge of [theirs] into [ours]. Clean → a merge commit (parents ours+theirs);
@@ -156,7 +180,7 @@ class SyncEngine(
         }
         val msg = "sync: merge ${theirs.take(8)} into ${ours.take(8)} on $hostId"
         val applied = engine.applyMerge(plan.writes, plan.deletes, theirs, msg, author, expectedHead = ours)
-        return if (applied != null) MergeStep.Merged else MergeStep.Aborted
+        return if (applied != null) MergeStep.Merged(applied) else MergeStep.Aborted
     }
 
     /**

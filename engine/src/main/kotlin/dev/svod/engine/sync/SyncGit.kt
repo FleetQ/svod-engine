@@ -21,7 +21,7 @@ import java.nio.file.Path
  * Peer branches are fetched into the `refs/svodremote/` namespace so they never collide with
  * local refs.
  */
-class SyncGit(root: Path) : AutoCloseable {
+open class SyncGit(root: Path) : AutoCloseable {
 
     private val repo: Repository = FileRepositoryBuilder()
         .setGitDir(root.resolve(".git").toFile())
@@ -44,7 +44,7 @@ class SyncGit(root: Path) : AutoCloseable {
      * A missing remote ref (no machine has pushed yet) is not an error — the tracking ref stays
      * absent and [syncRef] returns null.
      */
-    fun fetchSync(remote: String, vaultId: String) {
+    open fun fetchSync(remote: String, vaultId: String) {
         // A wildcard refspec matches zero refs without error when no machine has pushed the
         // canonical ref yet (first machine bootstrapping); a real transport failure still throws.
         git.fetch()
@@ -60,13 +60,15 @@ class SyncGit(root: Path) : AutoCloseable {
     enum class PushResult { OK, REJECTED, ERROR }
 
     /**
-     * Push the local [branch] to the canonical sync ref `refs/svod/sync/<vaultId>` on [remote],
-     * **non-force**: a non-fast-forward (another machine pushed in between) is [PushResult.REJECTED]
-     * so the caller re-fetches/re-merges and retries. A transport failure is [PushResult.ERROR].
+     * Push [source] — the commit a sync cycle pinned (or a local branch name) — to the canonical sync
+     * ref `refs/svod/sync/<vaultId>` on [remote], **non-force**: a non-fast-forward (another machine
+     * pushed in between) is [PushResult.REJECTED] so the caller re-fetches/re-merges and retries. A
+     * transport failure is [PushResult.ERROR]. Pushing the pinned commit, not the branch, keeps a
+     * commit that landed after the cycle's snapshot out of this push; the next cycle sends it.
      */
-    fun pushSync(remote: String, branch: String, vaultId: String): PushResult = try {
+    open fun pushSync(remote: String, source: String, vaultId: String): PushResult = try {
         val results = git.push().setRemote(remote)
-            .setRefSpecs(RefSpec("refs/heads/$branch:refs/svod/sync/$vaultId"))
+            .setRefSpecs(RefSpec("$source:refs/svod/sync/$vaultId"))
             .call()
         var ok = true
         for (result in results) for (update in result.remoteUpdates) {

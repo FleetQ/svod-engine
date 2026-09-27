@@ -4,8 +4,17 @@ import com.atlassian.oai.validator.OpenApiInteractionValidator
 import com.atlassian.oai.validator.model.Request
 import com.atlassian.oai.validator.model.SimpleResponse
 import dev.svod.engine.core.Author
+import dev.svod.engine.lifecycle.SvodConfig
+import dev.svod.engine.lifecycle.SvodNode
 import io.swagger.v3.parser.OpenAPIV3Parser
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.eclipse.jgit.api.Git
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -150,6 +159,15 @@ class AppApiContractTest {
             assertEquals(200, syncNow.statusCode())
             validate("$ap/sync/now", Request.Method.POST, 200, syncNow.body())
             assertTrue(syncNow.body().contains("\"ok\":false"), syncNow.body())
+            // async opt-in on a vault without two-way sync: still the SyncAck no-op, not a 202.
+            val syncNowAsync = fx.post("$ap/sync/now?wait=false", "")
+            assertEquals(200, syncNowAsync.statusCode())
+            validate("$ap/sync/now", Request.Method.POST, 200, syncNowAsync.body())
+            // sync/status (0.35.0): an unsynced vault answers synced=false, idle.
+            val status = fx.get("$ap/sync/status")
+            assertEquals(200, status.statusCode())
+            validate("$ap/sync/status", Request.Method.GET, 200, status.body())
+            assertTrue(status.body().contains("\"synced\":false") && status.body().contains("\"running\":false"), status.body())
 
             // backup/now: no backup remote configured ⇒ 409 Error (not a 200, not a 500).
             val backup = fx.post("$ap/backup/now", "")
@@ -293,6 +311,60 @@ class AppApiContractTest {
         }
     }
 
+    /**
+     * 0.35.0: POST /sync/now answers 202 + SyncRunStatus at once when the client opts in
+     * (`?wait=false` or `Prefer: respond-async`), GET /sync/status follows the cycle, and without the
+     * opt-in the old synchronous SyncAck answer is unchanged (older macOS apps).
+     */
+    @Test
+    fun `sync now async mode and sync status conform to the contract on a synced vault`() = runBlocking {
+        val bare = Files.createTempDirectory("svod-contract-bare-").also { Git.init().setBare(true).setDirectory(it.toFile()).call().close() }
+        val dir = Files.createTempDirectory("svod-contract-synced-")
+        val node = SvodNode.start(SvodConfig(
+            vaults = listOf(SvodConfig.VaultSettings("v", dir.toString(),
+                backup = SvodConfig.BackupSettings(bare.toString(), enabled = true, syncEnabled = true))),
+            appApiPort = 0, mcpPort = 0,
+            embedder = SvodConfig.EmbedderSettings(provider = "none"),
+            reranker = SvodConfig.RerankerSettings(provider = "none"),
+        ))
+        val http = HttpClient.newHttpClient()
+        fun send(method: String, path: String, prefer: String? = null): HttpResponse<String> {
+            val b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:${node.appApiPort}$path"))
+                .method(method, if (method == "POST") HttpRequest.BodyPublishers.ofString("") else HttpRequest.BodyPublishers.noBody())
+            prefer?.let { b.header("Prefer", it) }
+            return http.send(b.build(), HttpResponse.BodyHandlers.ofString())
+        }
+        suspend fun awaitIdle(): String {
+            var body = ""
+            withTimeout(30_000) { while (true) { body = send("GET", "/api/v1/sync/status").body(); if (body.contains("\"running\":false")) break; delay(50) } }
+            return body
+        }
+        try {
+            val ap = "/api/v1"
+            val accepted = send("POST", "$ap/sync/now?wait=false")
+            assertEquals(202, accepted.statusCode(), accepted.body())
+            validate("$ap/sync/now", Request.Method.POST, 202, accepted.body())
+            assertTrue(accepted.body().contains("\"synced\":true"), accepted.body())
+
+            val idle = awaitIdle()
+            validate("$ap/sync/status", Request.Method.GET, 200, idle)
+            assertTrue(idle.contains("\"syncStatus\":\"inSync\""), idle)
+
+            val preferred = send("POST", "$ap/sync/now", prefer = "respond-async")
+            assertEquals(202, preferred.statusCode(), preferred.body())
+            validate("$ap/sync/now", Request.Method.POST, 202, preferred.body())
+            awaitIdle()
+
+            // No opt-in: the old synchronous answer, unchanged.
+            val waited = send("POST", "$ap/sync/now")
+            assertEquals(200, waited.statusCode(), waited.body())
+            validate("$ap/sync/now", Request.Method.POST, 200, waited.body())
+            assertTrue(waited.body().contains("\"ok\":true"), waited.body())
+        } finally {
+            node.shutdown()
+        }
+    }
+
     @Test
     fun `every path declared in the contract is implemented`() {
         val openApi = OpenAPIV3Parser().read(specPath.toString())
@@ -308,7 +380,7 @@ class AppApiContractTest {
             "/api/v1/update/check", "/api/v1/update/apply",
             "/api/v1/metrics", "/api/v1/conflicts", "/api/v1/conflicts/resolve",
             "/api/v1/import", "/api/v1/events",
-            "/api/v1/sync/config", "/api/v1/sync/now", "/api/v1/backup/now",
+            "/api/v1/sync/config", "/api/v1/sync/now", "/api/v1/sync/status", "/api/v1/backup/now",
             "/api/v1/settings/backup", "/api/v1/maintenance/reindex",
             "/api/v1/sources", "/api/v1/sources/{id}", "/api/v1/sources/{id}/sync", "/api/v1/sources/{id}/resolve", "/api/v1/sources/sync",
             "/api/v1/embedder", "/api/v1/embedder/test", "/api/v1/embedder/models",

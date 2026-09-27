@@ -37,7 +37,7 @@ class EmbedderController(
     override fun apply(vaultId: String, spec: EmbedderControl.EmbedderSpec): EmbedderControl.EmbedderDescriptor {
         val merged = merge(configStore.config.embedder, spec)
         val updated = configStore.config.copy(embedder = merged)
-        val errors = updated.validate()
+        val errors = updated.startupErrors()
         if (errors.isNotEmpty()) throw EmbedderControl.InvalidSpec(errors.joinToString("; "))
 
         val ec = updated.toEmbedderConfig()

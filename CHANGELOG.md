@@ -3,6 +3,54 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.26.0 — 2026-09-27 (App API contract 0.35.0)
+
+### Changed — two-way sync reconciles a snapshot; at most one cycle per vault
+
+A sync cycle now reconciles the local HEAD as it was when the cycle started planning. It pushes
+exactly that commit, not whatever the branch points at by the time a slow push runs. Commits that
+land during a cycle go to the next one. Both ref moves (fast-forward, merge commit) are
+compare-and-swaps (JGit `RefUpdate` with the expected old id). If the branch moved, the step is
+refused and the round re-plans, so a local commit is never lost.
+
+Every trigger (startup, poll, on-change, manual) goes through one per-vault gate. At most one cycle
+runs per vault. A manual "Sync now" or a poll joins a running cycle instead of queueing another.
+Commits during a cycle mark the vault dirty, and exactly one trailing cycle follows. Only engine
+shutdown cancels a cycle. The on-change debounce keeps its 5 s quiet period and gains a 60 s
+max-wait (`maxWaitMillis`, next to `quietMillis`), so constant writes can no longer postpone sync
+forever. Network fetch/push never held the write-actor, and a test now proves that a write during a
+slow fetch completes at once.
+
+### Added — non-blocking "Sync now" (contract 0.35.0, backward compatible)
+
+- `POST /api/v1/sync/now?wait=false` (or header `Prefer: respond-async`) answers `202` with a
+  `SyncRunStatus` at once. Without the opt-in, the request waits and answers `200 SyncAck` as before.
+- `GET /api/v1/sync/status` returns `SyncRunStatus`: `vault, synced, running, trigger, startedAt,
+  phase, pending, syncStatus, head, conflicts, lastSyncedAt`.
+- New WebSocket events: `sync.started {vault, trigger}`, `sync.progress {vault, phase}`,
+  `sync.finished {vault, trigger, status, head, conflicts, lastSyncedAt?, durationMs, pending}`.
+
+### Fixed — a commit cancelled a running on-change backup or source write-back
+
+`BackupScheduler` (on-change backup) and `SourceWatchManager` (write-back to external sources) had
+the same defect that 1.25.5 fixed in the sync scheduler. Each new commit cancelled work that was
+already running. Both now use the same per-key gate: a commit restarts only the pending delay, and
+a commit during a run earns one trailing run.
+
+### Fixed — removing a vault left grants that stopped the next start
+
+`DELETE /api/v1/vaults/{id}` removed the vault from `vaults[]` but left it in the agents' `vaults`
+and the users' `grants`. The next start then refused the config ("agent 'claude-desktop' is granted
+unknown vault 'socialscore'"), and launchd kept restarting a dead engine after a self-update. The
+delete now prunes the vault from every agent and user grant in the same config write and reloads
+the live registries. It refuses (409) while an agent can reach only that vault: an empty grant list
+means "the default vault", so pruning it would widen that agent's access.
+
+A grant to a missing vault that is already in a config is now a WARN on a local (loopback) engine,
+not a refusal to start. It opens nothing that exists. A shared engine (off loopback) still refuses
+to start, because there the grants are the access control. `PUT /api/v1/embedder` follows the same
+rule, so a leftover grant no longer blocks embedder changes.
+
 ## v1.25.5 — 2026-09-27 (App API contract 0.34.0, unchanged)
 
 ### Fixed — a new write no longer cancels an on-change sync that is already running

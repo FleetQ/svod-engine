@@ -10,10 +10,12 @@ import dev.svod.engine.index.IndexService
 import dev.svod.engine.index.NoneEmbedder
 import dev.svod.engine.watch.FileWatcher
 import dev.svod.engine.security.SecretScanner
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -24,6 +26,7 @@ import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -75,7 +78,98 @@ private class Cluster(
     }
 }
 
+/** A [SyncGit] whose network calls can be held open, to stand in for a slow fetch/push on a large vault. */
+private class GatedSyncGit(root: Path) : SyncGit(root) {
+    @Volatile var holdFetch: CompletableDeferred<Unit>? = null
+    @Volatile var holdPush: CompletableDeferred<Unit>? = null
+    val inFetch = CompletableDeferred<Unit>()
+    val inPush = CompletableDeferred<Unit>()
+
+    override fun fetchSync(remote: String, vaultId: String) {
+        holdFetch?.let { inFetch.complete(Unit); runBlocking { it.await() } }
+        super.fetchSync(remote, vaultId)
+    }
+
+    override fun pushSync(remote: String, source: String, vaultId: String): PushResult {
+        holdPush?.let { inPush.complete(Unit); runBlocking { it.await() } }
+        return super.pushSync(remote, source, vaultId)
+    }
+}
+
 class SyncEngineTest {
+
+    private fun remoteSyncRef(c: Cluster): String? =
+        Git.open(c.bare.toFile()).use { it.repository.resolve("refs/svod/sync/$V")?.name }
+
+    /**
+     * Lock scope: the network fetch must not hold anything an ordinary write needs. While B's cycle
+     * is stuck in a slow fetch, a write on B completes at once; the cycle then picks the write up in
+     * its snapshot (it is pinned after the fetch) and merges it with A's incoming change.
+     */
+    @Test
+    fun `a write during a slow fetch completes promptly and is not lost`() = runBlocking {
+        Cluster().use { c ->
+            c.bootstrap()
+            val git = GatedSyncGit(c.dirB)
+            val syncB = SyncEngine(c.engineB, git, c.conflictsB, EventBus(), V, "machineB")
+            c.engineA.write("notes/from-a.md", "# from A", null, T)
+            c.syncA.sync(c.remote)                                  // remote is now ahead of B
+
+            val gate = CompletableDeferred<Unit>()
+            git.holdFetch = gate
+            val cycle = c.scope.async { syncB.sync(c.remote) }
+            withTimeout(10_000) { git.inFetch.await() }             // B's cycle is inside the fetch
+
+            val t0 = System.nanoTime()
+            withTimeout(5_000) { c.engineB.write("notes/during-fetch.md", "# written mid-fetch", null, T) }
+            val writeMs = (System.nanoTime() - t0) / 1_000_000
+            assertFalse(cycle.isCompleted, "the sync is still blocked in its fetch")
+            assertTrue(writeMs < 2_000, "a write must not wait for the network (took $writeMs ms)")
+
+            gate.complete(Unit)
+            val r = withTimeout(20_000) { cycle.await() }
+            assertEquals(SyncEngine.Status.inSync, r.status)
+            assertNotNull(c.engineB.read("notes/during-fetch.md"), "the mid-fetch write survives")
+            assertNotNull(c.engineB.read("notes/from-a.md"), "the incoming change is merged in")
+            assertEquals(c.engineB.head(), remoteSyncRef(c), "the merge (incl. the mid-fetch write) was pushed")
+        }
+    }
+
+    /**
+     * Snapshot semantics: a cycle pushes the commit it pinned, not whatever the branch points at by
+     * the time the (slow) push runs. A commit that lands during the push stays local, intact, and
+     * is carried by the next cycle — nothing is lost and nothing is pushed half-planned.
+     */
+    @Test
+    fun `a commit during a slow push survives and is synced by the next cycle`(): Unit = runBlocking {
+        Cluster().use { c ->
+            c.bootstrap()
+            val git = GatedSyncGit(c.dirB)
+            val syncB = SyncEngine(c.engineB, git, c.conflictsB, EventBus(), V, "machineB")
+            c.engineB.write("notes/b1.md", "# b1", null, T)
+            val snapshot = c.engineB.head()
+
+            val gate = CompletableDeferred<Unit>()
+            git.holdPush = gate
+            val cycle = c.scope.async { syncB.sync(c.remote) }
+            withTimeout(10_000) { git.inPush.await() }
+            withTimeout(5_000) { c.engineB.write("notes/b2.md", "# b2 — written mid-push", null, T) }
+            gate.complete(Unit)
+
+            val r = withTimeout(20_000) { cycle.await() }
+            assertEquals(SyncEngine.Status.inSync, r.status)
+            assertEquals(snapshot, r.head, "the cycle reports the snapshot it reconciled")
+            assertEquals(snapshot, remoteSyncRef(c), "exactly the pinned commit was pushed")
+            val local = c.engineB.head()
+            assertTrue(local != snapshot && c.engineB.read("notes/b2.md") != null, "the mid-push commit is intact locally")
+
+            git.holdPush = null
+            assertEquals(SyncEngine.Status.inSync, syncB.sync(c.remote).status) // the trailing cycle
+            assertEquals(local, remoteSyncRef(c), "the next cycle pushes the commit that arrived mid-push")
+            c.syncA.sync(c.remote)
+            assertNotNull(c.engineA.read("notes/b2.md"), "and it reaches the other machine")
+        }
+    }
 
     @Test
     fun `non-overlapping edits on two machines converge with no conflict`() = runBlocking {
