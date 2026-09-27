@@ -405,6 +405,31 @@ data class BackupAckDto(val ok: Boolean, val head: String? = null, val noChange:
 @Serializable
 data class SyncAckDto(val ok: Boolean, val head: String? = null, val conflicts: Int? = null)
 
+/**
+ * GET /api/v1/sync/status, and the 202 body of POST /api/v1/sync/now in async mode (contract 0.35.0).
+ * [running]/[trigger]/[startedAt]/[phase] describe the cycle in progress; [syncStatus]/[head]/
+ * [conflicts]/[lastSyncedAt] the last finished one (while running, [syncStatus] is `syncing`).
+ */
+@Serializable
+data class SyncRunStatusDto(
+    val vault: String,
+    /** Two-way sync is enabled for this vault. False ⇒ everything below is idle/empty. */
+    val synced: Boolean = false,
+    val running: Boolean = false,
+    /** What started the running cycle: startup | poll | on-change | manual. */
+    val trigger: String? = null,
+    val startedAt: String? = null,
+    /** Step of the running cycle: commit | fetch | merge | push. */
+    val phase: String? = null,
+    /** Another cycle is already due (writes landed mid-cycle, or the on-change delay is armed). */
+    val pending: Boolean = false,
+    /** inSync | syncing | conflicts | offline | error; null until the first cycle finishes. */
+    val syncStatus: String? = null,
+    val head: String? = null,
+    val conflicts: Int = 0,
+    val lastSyncedAt: String? = null,
+)
+
 // ---- Agent management (GET/POST/PUT/DELETE /api/v1/agents) ----
 
 @Serializable

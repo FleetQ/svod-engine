@@ -77,8 +77,12 @@ class AppApiServer(
     private val syncConfig: (VaultView) -> SyncConfigDto = { SyncConfigDto(role = "solo") },
     /** Per-vault sync status for the GET /vaults `sync` field; null ⇒ no sync/backup dot. */
     private val vaultStatus: (VaultView) -> SyncStatusDto? = { null },
-    /** Run one real reconcile cycle for a synced vault; null result ⇒ not a synced vault (no peers). */
+    /** Run one real reconcile cycle for a synced vault (or join the running one); null ⇒ not a synced vault. */
     private val syncNow: suspend (VaultView) -> dev.svod.engine.sync.SyncEngine.Result? = { null },
+    /** Start a cycle without waiting (or join the running one); false ⇒ not a synced vault. */
+    private val syncStart: (VaultView) -> Boolean = { false },
+    /** Live sync state for GET /sync/status and the async POST /sync/now answer. */
+    private val syncRunStatus: (VaultView) -> SyncRunStatusDto = { SyncRunStatusDto(vault = it.id) },
     /** Live: is a filesystem watcher currently running for this (vault, source)? Default false. */
     private val sourceWatching: (VaultView, String) -> Boolean = { _, _ -> false },
     /** Called after a source register/PATCH/remove so the watcher set is reconciled (no restart). */
@@ -705,8 +709,22 @@ class AppApiServer(
                 call.respond(if (principal().admin) cfg else cfg.copy(backupRemote = null, syncPeers = emptyList(), hostId = null))
             }
 
+            get("/api/v1/sync/status") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                call.respond(syncRunStatus(vc))
+            }
+
             post("/api/v1/sync/now") {
                 val vc = vault() ?: return@post call.notFound("vault")
+                // Async opt-in (0.35.0): `?wait=false` or `Prefer: respond-async` answers 202 at once with
+                // the live status; progress/finish then arrive as sync.* events. The default below still
+                // holds the request for the whole cycle and answers the old SyncAck shape.
+                val async = call.request.queryParameters["wait"].equals("false", ignoreCase = true) ||
+                    call.request.headers["Prefer"]?.contains("respond-async", ignoreCase = true) == true
+                if (async) {
+                    if (!syncStart(vc)) return@post call.respond(SyncAckDto(ok = false, head = vc.engine.head(), conflicts = 0))
+                    return@post call.respond(HttpStatusCode.Accepted, syncRunStatus(vc))
+                }
                 // Not a synced vault ⇒ nothing to reconcile: a successful no-op (ok=false), not an error.
                 val r = syncNow(vc)
                     ?: return@post call.respond(SyncAckDto(ok = false, head = vc.engine.head(), conflicts = 0))

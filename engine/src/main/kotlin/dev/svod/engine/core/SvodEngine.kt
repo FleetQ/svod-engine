@@ -216,7 +216,7 @@ class SvodEngine private constructor(
     suspend fun fastForwardTo(commit: String, expectedHead: String? = null): Boolean {
         val moved = actor.submit {
             if (expectedHead != null && git.headId() != expectedHead) false
-            else { git.resetHardTo(commit); true }
+            else git.fastForwardTo(commit, expectedHead)
         }
         if (moved) commitListener?.invoke(commit)
         return moved
@@ -246,7 +246,7 @@ class SvodEngine private constructor(
                 AtomicFile.write(VaultPath.of(path).resolveAgainst(root), content.toByteArray(UTF_8), crash)
             }
             for (path in deletes) Files.deleteIfExists(VaultPath.of(path).resolveAgainst(root))
-            git.commitMerge(message, author, theirs)
+            git.commitMerge(message, author, theirs, expectedHead)
         }
         if (commit != null) commitListener?.invoke(commit)
         return commit

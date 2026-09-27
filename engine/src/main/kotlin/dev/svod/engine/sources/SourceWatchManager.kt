@@ -1,5 +1,6 @@
 package dev.svod.engine.sources
 
+import dev.svod.engine.core.Coalescer
 import dev.svod.engine.core.SvodEngine
 import dev.svod.engine.events.EventBus
 import dev.svod.engine.events.EventTypes
@@ -29,6 +30,8 @@ class SourceWatchManager(
     vaults: List<Vault>,
     private val debounceMs: Long = 250,
     private val superviseMs: Long = 30_000,
+    /** One write-back pass over a vault's writeBack sources. */
+    private val writeBackSync: suspend (Vault) -> Unit = { syncWriteBackSources(it) },
 ) {
     /** A vault the manager can watch sources for: its id, engine (for sync), and root (for the store). */
     data class Vault(val id: String, val engine: SvodEngine, val root: java.nio.file.Path)
@@ -41,7 +44,9 @@ class SourceWatchManager(
     private val lock = Any()
     private var supervisor: Job? = null
     private var commitListener: Job? = null
-    private val writeBackJobs = HashMap<String, Job>()      // vaultId → pending debounced sync
+    // vaultId → debounced write-back; a commit during a running write-back earns one trailing run
+    // instead of cancelling it.
+    private val writeBack = Coalescer(scope, debounceMs * 3) { vaultId, _ -> writeBackNow(vaultId) }
 
     private fun key(vaultId: String, sourceId: String) = "$vaultId\u0000$sourceId"
 
@@ -72,23 +77,11 @@ class SourceWatchManager(
     /** Debounced per-vault write-back sync (coalesces bursts of commits). */
     private fun scheduleWriteBack(vaultId: String?) {
         val targets = if (vaultId != null) listOfNotNull(byId[vaultId]) else byId.values.toList()
-        for (v in targets) {
-            synchronized(lock) {
-                writeBackJobs[v.id]?.cancel()
-                writeBackJobs[v.id] = scope.launch {
-                    delay(debounceMs * 3)
-                    val store = ExternalSourceStore(v.root)
-                    val sources = store.list().filter { it.writeBack }
-                    if (sources.isEmpty()) return@launch
-                    val sync = SourceSync(v.engine, store)
-                    for (s in sources) {
-                        runCatching { sync.sync(s) }
-                            .onSuccess { r -> if (r.pushed.isNotEmpty()) log.info("write-back '{}': pushed {}", s.id, r.pushed) }
-                            .onFailure { log.warn("write-back sync of '{}' failed", s.id, it) }
-                    }
-                }
-            }
-        }
+        for (v in targets) writeBack.changed(v.id)
+    }
+
+    private suspend fun writeBackNow(vaultId: String) {
+        byId[vaultId]?.let { writeBackSync(it) }
     }
 
     fun isWatching(vaultId: String, sourceId: String): Boolean =
@@ -105,8 +98,8 @@ class SourceWatchManager(
     /** Stop watching a deleted vault and tear down every watcher it still owns. */
     fun removeVault(vaultId: String) {
         byId.remove(vaultId)
+        writeBack.cancel(vaultId)
         synchronized(lock) {
-            writeBackJobs.remove(vaultId)?.cancel()
             val it = watchers.entries.iterator()
             while (it.hasNext()) {
                 val (k, w) = it.next()
@@ -152,9 +145,22 @@ class SourceWatchManager(
         supervisor?.cancel(); supervisor = null
         commitListener?.cancel(); commitListener = null
         synchronized(lock) {
-            writeBackJobs.values.forEach { it.cancel() }; writeBackJobs.clear()
+            writeBack.stop()
             watchers.values.forEach { runCatching { it.close() } }
             watchers.clear()
         }
+    }
+}
+
+private suspend fun syncWriteBackSources(v: SourceWatchManager.Vault) {
+    val log = LoggerFactory.getLogger(SourceWatchManager::class.java)
+    val store = ExternalSourceStore(v.root)
+    val sources = store.list().filter { it.writeBack }
+    if (sources.isEmpty()) return
+    val sync = SourceSync(v.engine, store)
+    for (s in sources) {
+        runCatching { sync.sync(s) }
+            .onSuccess { r -> if (r.pushed.isNotEmpty()) log.info("write-back '{}': pushed {}", s.id, r.pushed) }
+            .onFailure { log.warn("write-back sync of '{}' failed", s.id, it) }
     }
 }

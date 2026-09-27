@@ -18,6 +18,9 @@ object EventTypes {
     const val ENGINE_STATUS = "engine.status"
     const val AGENT_ACTIVITY = "agent.activity"
     const val SOURCE_SYNCED = "source.synced"
+    const val SYNC_STARTED = "sync.started"
+    const val SYNC_PROGRESS = "sync.progress"
+    const val SYNC_FINISHED = "sync.finished"
 }
 
 /** One event: a type, a timestamp, and a free-form data object (matches the contract). */

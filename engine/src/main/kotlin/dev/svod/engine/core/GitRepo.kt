@@ -9,6 +9,7 @@ import org.eclipse.jgit.lib.Constants
 import org.eclipse.jgit.lib.FileMode
 import org.eclipse.jgit.lib.ObjectId
 import org.eclipse.jgit.lib.PersonIdent
+import org.eclipse.jgit.lib.RefUpdate
 import org.eclipse.jgit.lib.Repository
 import org.eclipse.jgit.revwalk.RevWalk
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
@@ -154,25 +155,52 @@ class GitRepo private constructor(
 
     fun resolveRev(rev: String): String? = repo.resolve(rev)?.name
 
-    /** Fast-forward the current branch to [commit] (hard) — moves the ref + working tree. */
-    fun resetHardTo(commit: String) {
+    /**
+     * Fast-forward the current branch to [commit] as a compare-and-swap: the ref moves only if it
+     * still points at [expectedOld] (a JGit [RefUpdate] with the expected old id), then the index and
+     * working tree follow. False — nothing touched — when the ref moved meanwhile (e.g. a `git commit`
+     * run by hand in the vault; engine writes are already excluded by the write-actor).
+     */
+    fun fastForwardTo(commit: String, expectedOld: String?): Boolean {
+        val ru = repo.updateRef(Constants.HEAD)
+        ru.setNewObjectId(ObjectId.fromString(commit))
+        expectedOld?.let { ru.setExpectedOldObjectId(ObjectId.fromString(it)) }
+        ru.setRefLogMessage("sync: fast-forward", false)
+        when (ru.update()) {
+            RefUpdate.Result.FAST_FORWARD, RefUpdate.Result.NEW, RefUpdate.Result.NO_CHANGE -> {}
+            else -> return false
+        }
         git.reset().setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD).setRef(commit).call()
+        return true
     }
 
     /**
-     * Commit the current working tree as a MERGE commit with parents [HEAD, theirs].
-     * Caller has already written the merged file contents into the working tree.
+     * Commit the current working tree as a MERGE commit with parents [expectedHead, theirs].
+     * Caller has already written the merged file contents into the working tree. The branch moves
+     * by compare-and-swap against [expectedHead] (current HEAD when null); null when it moved.
      */
-    fun commitMerge(message: String, author: Author, theirs: String): String {
+    fun commitMerge(message: String, author: Author, theirs: String, expectedHead: String?): String? {
         git.add().addFilepattern(".").call()
         git.add().setUpdate(true).addFilepattern(".").call()
-        repo.writeMergeHeads(listOf(ObjectId.fromString(theirs)))
-        repo.writeMergeCommitMsg(message)
-        return git.commit()
-            .setAuthor(PersonIdent(author.name, author.email))
-            .setCommitter(committerIdent(author))
-            .setMessage(message)
-            .call().name
+        val ours = ObjectId.fromString(expectedHead ?: headId() ?: return null)
+        val commitId = repo.newObjectInserter().use { inserter ->
+            val cb = CommitBuilder().apply {
+                setTreeId(repo.readDirCache().writeTree(inserter))
+                setParentIds(ours, ObjectId.fromString(theirs))
+                setAuthor(PersonIdent(author.name, author.email))
+                setCommitter(committerIdent(author))
+                setMessage(message)
+            }
+            inserter.insert(cb).also { inserter.flush() }
+        }
+        val ru = repo.updateRef(Constants.HEAD)
+        ru.setNewObjectId(commitId)
+        ru.setExpectedOldObjectId(ours)
+        ru.setRefLogMessage("commit (merge): $message", false)
+        return when (ru.update()) {
+            RefUpdate.Result.FAST_FORWARD, RefUpdate.Result.NEW -> commitId.name
+            else -> null
+        }
     }
 
     /**

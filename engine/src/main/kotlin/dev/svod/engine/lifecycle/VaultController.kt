@@ -17,7 +17,9 @@ import java.nio.file.Paths
  * its exclusive lock and builds the keyword index — hot-adds it to the running [VaultManager] (so
  * GET /vaults and `?vault=` see it at once), then registers it in the persistent config (via the
  * shared [ConfigStore]) so it survives a restart. New vaults start solo: no sync, no backup.
- * Removal is the inverse: release the vault's lock + handles, unregister it, drop it from the config.
+ * Removal is the inverse: release the vault's lock + handles, unregister it, drop it from the config
+ * together with every agent and user grant that names it (in the same config write), and hand the
+ * pruned config to [onGrantsChanged] so the live agent/user registries match it.
  */
 class VaultController(
     private val vaults: VaultManager,
@@ -25,6 +27,7 @@ class VaultController(
     private val scope: CoroutineScope,
     private val eventBus: EventBus,
     private val hostId: String,
+    private val onGrantsChanged: (SvodConfig) -> Unit = {},
 ) : VaultCreator, VaultRemover {
 
     override suspend fun create(req: CreateVaultRequest): VaultView {
@@ -89,6 +92,14 @@ class VaultController(
         if (id == config.defaultVaultId()) {
             throw VaultRemover.Conflict("cannot delete the default vault: $id (reassign the default first)")
         }
+        // An agent's empty grant list means "the default vault", so pruning an agent's ONLY grant
+        // would silently give it the default vault. Refuse instead, before any teardown.
+        val onlyHere = config.agents.filter { it.vaults.isNotEmpty() && it.vaults.all { v -> v == id } }.map { it.agentId }
+        if (onlyHere.isNotEmpty()) {
+            throw VaultRemover.Conflict(
+                "cannot delete vault $id: agent(s) $onlyHere can reach only this vault (grant them another vault or delete them first)",
+            )
+        }
 
         // The on-disk directory to return (and optionally delete): the persisted path, falling back
         // to the live engine root.
@@ -99,14 +110,19 @@ class VaultController(
         vaults.unregister(id)?.close()
 
         // Persist the removal so it survives a restart. resolvedVaults() materializes a legacy single
-        // vaultPath into the explicit list first, so a sibling vault isn't dropped.
-        configStore.update { cur ->
+        // vaultPath into the explicit list first, so a sibling vault isn't dropped. The grants go in
+        // the same write: a grant to a vault that no longer exists made the next start refuse the
+        // config ("agent 'claude-desktop' is granted unknown vault 'socialscore'", 2026-09-23).
+        val pruned = configStore.update { cur ->
             cur.copy(
                 vaults = cur.resolvedVaults().filterNot { it.id == id },
                 vaultPath = null,
                 defaultVault = cur.defaultVaultId(),
+                agents = cur.agents.map { a -> if (id in a.vaults) a.copy(vaults = a.vaults - id) else a },
+                users = cur.users.map { u -> if (u.grants.any { it.vault == id }) u.copy(grants = u.grants.filterNot { it.vault == id }) else u },
             )
         }
+        onGrantsChanged(pruned)
 
         var filesDeleted = false
         if (deleteFiles) {

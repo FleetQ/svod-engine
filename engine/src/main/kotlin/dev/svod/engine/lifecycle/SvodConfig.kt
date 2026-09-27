@@ -328,6 +328,33 @@ data class SvodConfig(
         return if (authority) "authority" else "follower"
     }
 
+    /**
+     * Agent and user grants naming a vault that is not configured (same wording as [validate]) —
+     * left behind when a vault was removed by hand or by an engine older than 1.26.0.
+     */
+    fun staleGrants(): List<String> {
+        val ids = resolvedVaults().map { it.id }.toSet()
+        return agents.flatMap { a -> a.vaults.filter { it !in ids }.map { v -> "agent '${a.agentId}' is granted unknown vault '$v'" } } +
+            users.flatMap { u -> u.grants.filter { it.vault !in ids }.map { g -> "user '${u.userId}' is granted unknown vault '${g.vault}'" } }
+    }
+
+    /**
+     * The [validate] errors that refuse a start. On a loopback (local, single-user) engine a
+     * [staleGrants] entry is only a WARN: it opens nothing that exists, and refusing to start over it
+     * left launchd respawning a dead engine after a self-update (2026-09-23). A shared engine
+     * (off loopback, personal keys) keeps every error fatal — its grants are its access control.
+     */
+    fun startupErrors(): List<String> {
+        val errors = validate()
+        if (host !in LOOPBACK) return errors
+        val stale = staleGrants().toSet()
+        if (stale.isNotEmpty()) {
+            org.slf4j.LoggerFactory.getLogger(SvodConfig::class.java)
+                .warn("config has grants to vaults that no longer exist (ignored; remove them from the config):\n - {}", stale.joinToString("\n - "))
+        }
+        return errors - stale
+    }
+
     /** All configuration problems, empty when valid. */
     fun validate(): List<String> {
         val errors = mutableListOf<String>()
@@ -558,7 +585,7 @@ data class SvodConfig(
 
         fun loadOrThrowValidated(path: Path): SvodConfig {
             val config = load(path)
-            val errors = config.validate()
+            val errors = config.startupErrors()
             require(errors.isEmpty()) { "invalid config $path:\n - " + errors.joinToString("\n - ") }
             return config
         }

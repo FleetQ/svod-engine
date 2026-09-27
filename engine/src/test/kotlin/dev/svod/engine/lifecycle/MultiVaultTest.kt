@@ -363,6 +363,77 @@ class MultiVaultTest {
         }
     }
 
+    /**
+     * Regression (laptop, 2026-09-23): removing a vault left `"socialscore"` in the agents' `vaults`
+     * grants, and the next start (a self-update) refused the config: "agent 'claude-desktop' is
+     * granted unknown vault 'socialscore'". The delete now prunes every agent and user grant in the
+     * same config write, so the persisted config stays valid and a restart works.
+     */
+    @Test
+    fun `delete vault prunes it from every agent and user grant and the config stays valid`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val work = Files.createTempDirectory("svod-work-")
+        val cfgFile = Files.createTempFile("svod-config-", ".json")
+        val cfg = twoVaultConfig(personal, work).copy(
+            agents = listOf(
+                SvodConfig.AgentSettings("t1", "claude-desktop", "WRITE", vaults = listOf("personal", "work")),
+                SvodConfig.AgentSettings("t2", "claude-code", "WRITE", vaults = listOf("work", "personal")),
+            ),
+            users = listOf(SvodConfig.UserSettings("ana", "Ana", keyRef = "file:/nonexistent/ana.key",
+                grants = listOf(SvodConfig.VaultGrant("personal", "EDITOR"), SvodConfig.VaultGrant("work", "READER")))),
+        )
+        Files.writeString(cfgFile, SvodConfig.toJson(cfg))
+
+        val node = SvodNode.start(cfg, configPath = cfgFile)
+        try {
+            assertEquals(200, delete(node.appApiPort, "/api/v1/vaults/work").statusCode())
+            val agents = get(node.appApiPort, "/api/v1/agents").body()
+            assertFalse(agents.contains("\"work\""), "the live agent list no longer grants the removed vault: $agents")
+        } finally { node.shutdown() }
+
+        val saved = SvodConfig.load(cfgFile)
+        assertEquals(listOf(listOf("personal"), listOf("personal")), saved.agents.map { it.vaults })
+        assertEquals(listOf(SvodConfig.VaultGrant("personal", "EDITOR")), saved.users.single().grants)
+        assertEquals(emptyList(), saved.validate(), "the persisted config is valid even under strict validation")
+        SvodNode.start(saved, configPath = cfgFile).shutdown() // and the next start succeeds
+    }
+
+    @Test
+    fun `delete vault is refused while an agent can reach only that vault`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val work = Files.createTempDirectory("svod-work-")
+        // An empty grant list means "the default vault": pruning this agent's only grant would widen it.
+        val cfg = twoVaultConfig(personal, work).copy(agents = listOf(SvodConfig.AgentSettings("t1", "work-bot", "WRITE", vaults = listOf("work"))))
+        val node = SvodNode.start(cfg)
+        try {
+            val r = delete(node.appApiPort, "/api/v1/vaults/work")
+            assertEquals(409, r.statusCode(), r.body())
+            assertTrue(r.body().contains("work-bot"), r.body())
+            assertTrue(get(node.appApiPort, "/api/v1/vaults").body().contains("\"id\":\"work\""), "nothing was torn down")
+        } finally { node.shutdown() }
+    }
+
+    @Test
+    fun `a stale grant to a missing vault is a warning on a local engine and fatal on a shared one`() {
+        val personal = Files.createTempDirectory("svod-personal-")
+        val stale = SvodConfig(
+            vaults = listOf(SvodConfig.VaultSettings("personal", personal.toString())),
+            appApiPort = 0, mcpPort = 0,
+            embedder = SvodConfig.EmbedderSettings(provider = "none"),
+            reranker = SvodConfig.RerankerSettings(provider = "none"),
+            agents = listOf(SvodConfig.AgentSettings("t1", "claude-desktop", "WRITE", vaults = listOf("personal", "socialscore"))),
+        )
+        assertEquals(listOf("agent 'claude-desktop' is granted unknown vault 'socialscore'"), stale.staleGrants())
+        // Strict validation still names it, but a local (loopback) engine starts with a WARN.
+        assertTrue(stale.validate().any { it.contains("unknown vault 'socialscore'") })
+        assertEquals(emptyList(), stale.startupErrors())
+        SvodNode.start(stale).shutdown()
+
+        // Off loopback the grants ARE the access control: the same leftover still refuses to start.
+        val shared = stale.copy(host = "0.0.0.0")
+        assertTrue(shared.startupErrors().any { it.contains("unknown vault 'socialscore'") }, shared.startupErrors().toString())
+    }
+
     @Test
     fun `delete vault with deleteFiles=true also removes the directory from disk`() {
         val personal = Files.createTempDirectory("svod-personal-")

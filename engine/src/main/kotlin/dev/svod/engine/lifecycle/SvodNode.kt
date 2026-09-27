@@ -47,7 +47,7 @@ class SvodNode private constructor(
 
     /** Trigger one reconcile across every vault (no-op where sync isn't configured). */
     suspend fun sync() {
-        for (vc in vaults.contexts()) runSync(vaults, backup, vc.id)
+        for (vc in vaults.contexts()) syncScheduler.syncNow(vc.id).await()
     }
 
     @Volatile
@@ -92,7 +92,7 @@ class SvodNode private constructor(
         }
 
         fun start(config: SvodConfig, scope: CoroutineScope? = null, configPath: java.nio.file.Path? = null): SvodNode {
-            val errors = config.validate()
+            val errors = config.startupErrors()
             require(errors.isEmpty()) { "invalid config:\n - " + errors.joinToString("\n - ") }
 
             val workScope = scope ?: CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -168,7 +168,6 @@ class SvodNode private constructor(
                 // creation) persist edits onto each other's state instead of clobbering.
                 val configStore = ConfigStore(config, configPath)
                 val embedderControl = EmbedderController(vaults, configStore)
-                val vaultCreator = VaultController(vaults, configStore, workScope, eventBus, hostId)
                 val agentController = AgentController(configStore, registry, config.host)
                 // People (ADR-0019): personal keys → principals with per-vault roles. Key files live
                 // next to the config (a config-less embed falls back to ~/.svod/secrets).
@@ -178,6 +177,10 @@ class SvodNode private constructor(
                 val userActivity = dev.svod.engine.api.UserActivity(configDir.resolve("user-activity.json"))
                 val apiAudit = dev.svod.engine.api.ApiAuditLog(configDir.resolve("audit-api.log"))
                 val userRegistry = dev.svod.engine.api.UserRegistry(config.toUserSpecs())
+                val vaultCreator = VaultController(vaults, configStore, workScope, eventBus, hostId) { cfg ->
+                    registry.reload(cfg.toAgentSpecs())
+                    userRegistry.reload(cfg.toUserSpecs())
+                }
                 val userController = UserController(configStore, userRegistry, secretsDir)
                 val secretStore = SecretStore(secretsDir)
                 val appApiTls = config.appApiTls?.let { t ->
@@ -190,9 +193,15 @@ class SvodNode private constructor(
                         dev.svod.engine.security.Secrets.resolve(t.keyPassword).toCharArray())
                 }
                 val updateService = UpdateService(
-                    currentAppVersion = "1.25.5",
+                    currentAppVersion = "1.26.0",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
+                // Two-way sync driver: startup + interval poll + on-change debounce, per synced vault.
+                // Built before the API (POST /sync/now runs through it) and started after it.
+                val syncScheduler = dev.svod.engine.sync.SyncScheduler(
+                    workScope, backup, { id -> runSync(vaults, backup, id) }, eventBus,
+                )
+
                 val api = AppApiServer(
                     vaults = vaults,
                     eventBus = eventBus,
@@ -254,7 +263,26 @@ class SvodNode private constructor(
                             )
                         }
                     },
-                    syncNow = { vc -> runSync(vaults, backup, vc.id) },
+                    syncNow = { vc -> syncScheduler.syncNow(vc.id).await() },
+                    syncStart = { vc -> backup.isSynced(vc.id).also { if (it) syncScheduler.syncNow(vc.id) } },
+                    syncRunStatus = { vc ->
+                        val run = syncScheduler.running(vc.id)
+                        val last = (vc as? VaultContext)?.syncEngine
+                        val live = syncScheduler.isRunning(vc.id)
+                        dev.svod.engine.api.SyncRunStatusDto(
+                            vault = vc.id,
+                            synced = backup.isSynced(vc.id),
+                            running = live,
+                            trigger = run?.trigger,
+                            startedAt = run?.startedAt,
+                            phase = if (live) last?.phase else null,
+                            pending = syncScheduler.pending(vc.id),
+                            syncStatus = if (live) "syncing" else last?.lastResult?.status?.name,
+                            head = last?.lastResult?.head,
+                            conflicts = last?.lastResult?.conflicts ?: 0,
+                            lastSyncedAt = backup.lastSyncedAt(vc.id),
+                        )
+                    },
                     sourceWatching = { vc, sourceId -> sourceWatch.isWatching(vc.id, sourceId) },
                     reconcileSourceWatchers = { vc -> sourceWatch.reconcile(vc.id) },
                 ).start(config.appApiPort)
@@ -288,10 +316,6 @@ class SvodNode private constructor(
                 val backupScheduler = dev.svod.engine.sync.BackupScheduler(workScope, backup, eventBus)
                 backupScheduler.start()
 
-                // Two-way sync driver: startup + interval poll + on-change debounce, per synced vault.
-                val syncScheduler = dev.svod.engine.sync.SyncScheduler(
-                    workScope, backup, { id -> runSync(vaults, backup, id) }, eventBus,
-                )
                 syncScheduler.start()
 
                 // Periodic FULL graph rebuild. Incremental attachment keeps new notes reachable but

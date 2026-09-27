@@ -1,5 +1,6 @@
 package dev.svod.engine.sync
 
+import dev.svod.engine.core.Coalescer
 import dev.svod.engine.events.EventBus
 import dev.svod.engine.events.EventTypes
 import kotlinx.coroutines.CoroutineScope
@@ -22,7 +23,8 @@ import org.slf4j.LoggerFactory
  * each gated on `enabled`:
  *  - `backupOnStartup` — one backup per vault shortly after start;
  *  - `backupIntervalMinutes` (>0) — back up when the last success is at least that old;
- *  - `backupOnChange` — back up [quietMillis] after the most recent vault write commit settles.
+ *  - `backupOnChange` — back up [quietMillis] after the most recent vault write commit settles. A
+ *    commit during a running on-change backup never cancels it; it earns one trailing backup.
  * `backupNow` itself skips a run when one is already in flight or there is nothing new to push.
  */
 class BackupScheduler(
@@ -32,11 +34,12 @@ class BackupScheduler(
     private val eventBus: EventBus? = null,
     private val tickMillis: Long = 60_000L,
     private val quietMillis: Long = 90_000L,
+    private val backupNow: suspend (vaultId: String) -> Unit = { backup.backupNow(it) },
 ) {
     private val log = LoggerFactory.getLogger(BackupScheduler::class.java)
     private var intervalJob: Job? = null
     private var changeJob: Job? = null
-    private val debounce = mutableMapOf<String, Job>()
+    private val onChange = Coalescer(scope, quietMillis) { vault, _ -> run(vault, "on-change") }
 
     fun start() {
         intervalJob = scope.launch {
@@ -63,11 +66,7 @@ class BackupScheduler(
                     val vault = (ev.data["vault"]?.jsonPrimitive?.content) ?: return@collect
                     val c = backup.configOf(vault) ?: return@collect
                     if (!active(c) || !c.backupOnChange) return@collect
-                    debounce.remove(vault)?.cancel()
-                    debounce[vault] = scope.launch {
-                        delay(quietMillis)
-                        run(vault, "on-change")
-                    }
+                    onChange.changed(vault)
                 }
             }
         }
@@ -82,14 +81,13 @@ class BackupScheduler(
         c.enabled && c.remote.isNotBlank() && !c.isSynced()
 
     private suspend fun run(vaultId: String, reason: String) {
-        runCatching { backup.backupNow(vaultId) }
+        runCatching { backupNow(vaultId) }
             .onFailure { log.warn("auto-backup ($reason) of '$vaultId' failed", it) }
     }
 
     fun stop() {
         intervalJob?.cancel(); intervalJob = null
         changeJob?.cancel(); changeJob = null
-        debounce.values.forEach { it.cancel() }
-        debounce.clear()
+        onChange.stop()
     }
 }
