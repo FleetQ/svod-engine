@@ -648,27 +648,59 @@ class AppApiServer(
             get("/api/v1/conflicts") {
                 val vc = vault() ?: return@get call.notFound("vault")
                 val entries = vc.conflicts?.all()?.map {
-                    ConflictEntryDto(it.path, it.reasons, it.base, it.ours, it.theirs, it.ts)
+                    ConflictEntryDto(it.path, it.reasons, it.base, it.ours, it.theirs, it.ts, it.quarantined)
                 } ?: emptyList()
                 call.respond(ConflictsDto(entries))
             }
             post("/api/v1/conflicts/resolve") {
                 val vc = vault() ?: return@post call.notFound("vault")
                 val req = call.receive<ResolveConflictRequestDto>()
-                // The resolution is committed through the single writer like any other write; on
-                // success we clear the surfaced conflict. Default guard is the current on-disk
-                // revision, so a change landing after the client resolved still yields 409 rather
-                // than a silent overwrite (invariant 4); a client may pin its own expectedRevision.
-                val expected = req.expectedRevision ?: vc.engine.read(req.path)?.revision
-                when (val o = vc.engine.write(req.path, req.content, expected, principal().author)) {
-                    is WriteOutcome.Success -> {
-                        vc.conflicts?.resolve(req.path)
-                        publishCommit(vc, o, "resolve", principal().author)
-                        call.respond(WriteResultDto(o.path, o.revision, o.commit))
+                val store = vc.conflicts ?: return@post call.notFound(req.path)
+                when (req.resolution) {
+                    "content" -> {
+                        val content = req.content ?: return@post call.badRequest("content is required for resolution=content")
+                        // The resolution is committed through the single writer like any other write; on
+                        // success we clear the surfaced conflict. Default guard is the current on-disk
+                        // revision, so a change landing after the client resolved still yields 409 rather
+                        // than a silent overwrite (invariant 4); a client may pin its own expectedRevision.
+                        val expected = req.expectedRevision ?: vc.engine.read(req.path)?.revision
+                        when (val o = vc.engine.write(req.path, content, expected, principal().author)) {
+                            is WriteOutcome.Success -> {
+                                store.resolve(req.path)
+                                publishCommit(vc, o, "resolve", principal().author)
+                                call.respond(ResolveConflictResultDto(o.path, o.revision, o.commit, req.resolution, store.all().size))
+                            }
+                            is WriteOutcome.Conflict -> { publishConflict(vc, o.path); call.respond(HttpStatusCode.Conflict, o.toConflictDto()) }
+                            is WriteOutcome.NotFound -> call.notFound(o.path)
+                            is WriteOutcome.Blocked -> call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("blocked", "secret(s) detected: ${o.findings.joinToString(", ")}"))
+                        }
                     }
-                    is WriteOutcome.Conflict -> { publishConflict(vc, o.path); call.respond(HttpStatusCode.Conflict, o.toConflictDto()) }
-                    is WriteOutcome.NotFound -> call.notFound(o.path)
-                    is WriteOutcome.Blocked -> call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("blocked", "secret(s) detected: ${o.findings.joinToString(", ")}"))
+                    "keepMine", "acceptIncoming" -> {
+                        val c = store.get(req.path) ?: return@post call.notFound(req.path)
+                        val incoming = req.resolution == "acceptIncoming"
+                        if (incoming && !c.quarantined && !c.path.endsWith(".md")) {
+                            return@post call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("unsupported",
+                                "acceptIncoming is for text notes; resolve a binary file by writing it"))
+                        }
+                        val findings = if (incoming) c.theirs?.let { vc.engine.scanSecrets(it) }.orEmpty() else emptyList()
+                        if (findings.isNotEmpty() && !req.acknowledgeSecrets) {
+                            return@post call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("secrets_detected",
+                                "the incoming version contains secret(s): ${findings.joinToString(", ")} — set acknowledgeSecrets=true to accept it anyway"))
+                        }
+                        if (findings.isNotEmpty()) {
+                            // A deliberate override of the scanner: recorded in the vault's audit trail now,
+                            // and in the merge commit message when the next cycle writes the file.
+                            dev.svod.engine.mcp.AuditLog(vc.engine.root.resolve(".svod").resolve("audit").resolve("audit.log"))
+                                .record(principal().author.name, "conflicts.resolve", "secret-override", path = c.path,
+                                    detail = "accepted quarantined incoming version; findings: ${findings.joinToString(", ")}")
+                        }
+                        store.resolve(c.path, if (incoming) ConflictStore.Choice.incoming else ConflictStore.Choice.ours)
+                        // Nothing was written locally, so no commit fires the on-change sync: start the
+                        // cycle that applies the answer (a no-op when the vault is not synced).
+                        syncStart(vc)
+                        call.respond(ResolveConflictResultDto(c.path, resolution = req.resolution, remainingConflicts = store.all().size))
+                    }
+                    else -> call.badRequest("resolution must be content, keepMine or acceptIncoming")
                 }
             }
             post("/api/v1/import") {

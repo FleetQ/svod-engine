@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.35.0
+  version: 0.36.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -427,9 +427,16 @@ paths:
     post:
       tags: [meta]
       summary: >
-        Resolve a surfaced sync conflict. Writes the chosen/merged content through the single
-        writer (a normal attributed commit) and clears the conflict. The data for a 3-way merge
-        (base/ours/theirs) is on each entry of GET /api/v1/conflicts.
+        Resolve a surfaced sync conflict. `resolution=content` (default) writes the chosen/merged
+        content through the single writer (a normal attributed, secret-scanned commit) and clears
+        the conflict. `keepMine` keeps the local side as it is (or its absence); `acceptIncoming`
+        takes the incoming version — for a quarantined one only with `acknowledgeSecrets=true`
+        (otherwise 422 `secrets_detected`), and the override is written to the vault audit trail
+        and to the merge commit message. Every answer is stored against the incoming version it
+        was given for; the next sync cycle (started at once for keepMine/acceptIncoming) creates
+        the merge commit with the incoming head as a parent, so the same version is not raised
+        again. The data for a 3-way merge (base/ours/theirs) is on each entry of
+        GET /api/v1/conflicts. Choices other than `content` since 0.36.0.
       operationId: resolveConflict
       requestBody:
         required: true
@@ -438,10 +445,11 @@ paths:
             schema: { $ref: "#/components/schemas/ResolveConflictRequest" }
       responses:
         "200":
-          description: Resolved (conflict cleared, merged content committed)
+          description: Resolved (conflict cleared; for `content` the merged content is committed)
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/WriteResult" }
+              schema: { $ref: "#/components/schemas/ResolveConflictResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/BadRequest" }
@@ -1636,6 +1644,19 @@ components:
           nullable: true
           description: Blob revision the client last saw; null/omitted means "create new".
 
+    ResolveConflictResult:
+      type: object
+      required: [path, resolution, remainingConflicts]
+      description: >
+        Superset of WriteResult. revision/commit are set for `resolution=content` (written now);
+        keepMine/acceptIncoming are applied by the next sync cycle's merge commit. Since 0.36.0.
+      properties:
+        path: { type: string }
+        revision: { type: string, nullable: true }
+        commit: { type: string, nullable: true }
+        resolution: { type: string, enum: [content, keepMine, acceptIncoming] }
+        remainingConflicts: { type: integer }
+
     WriteResult:
       type: object
       required: [path, revision, commit]
@@ -2005,6 +2026,9 @@ components:
               ours: { type: string, nullable: true }
               theirs: { type: string, nullable: true }
               ts: { type: integer, format: int64, description: When the conflict was recorded (epoch millis). }
+              quarantined:
+                type: boolean
+                description: The incoming version tripped the secret scanner and was never written. Since 0.36.0.
 
     Vault:
       type: object
@@ -2335,11 +2359,24 @@ components:
 
     ResolveConflictRequest:
       type: object
-      required: [path, content]
-      description: The merged/chosen content to commit, clearing the conflict for `path`.
+      required: [path]
+      description: How to settle the conflict for `path`.
       properties:
         path: { type: string }
-        content: { type: string }
+        content:
+          type: string
+          description: The merged/chosen content to commit. Required for `resolution=content`.
+        resolution:
+          type: string
+          enum: [content, keepMine, acceptIncoming]
+          default: content
+          description: Since 0.36.0. Absent = `content` (the pre-0.36.0 behaviour).
+        acknowledgeSecrets:
+          type: boolean
+          default: false
+          description: >
+            Since 0.36.0. Required (true) to `acceptIncoming` a version the secret scanner flagged —
+            a deliberate, audited override.
         expectedRevision:
           type: string
           nullable: true

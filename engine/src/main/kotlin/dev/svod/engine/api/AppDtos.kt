@@ -224,13 +224,37 @@ data class ConflictEntryDto(
     val ours: String? = null,
     val theirs: String? = null,
     val ts: Long = 0,
+    /** 0.36.0: the incoming version tripped the secret scanner and was never written. */
+    val quarantined: Boolean = false,
 )
 
 @Serializable
 data class ConflictsDto(val conflicts: List<ConflictEntryDto>)
 
+/**
+ * How to settle a sync conflict. `resolution` (0.36.0): `content` (default) writes [content] through
+ * the normal, secret-scanned write; `keepMine` keeps the local file as it is (or its absence);
+ * `acceptIncoming` takes the incoming version — when that version was quarantined for secrets, only
+ * with [acknowledgeSecrets] = true, and the override is audited.
+ */
 @Serializable
-data class ResolveConflictRequestDto(val path: String, val content: String, val expectedRevision: String? = null)
+data class ResolveConflictRequestDto(
+    val path: String,
+    val content: String? = null,
+    val expectedRevision: String? = null,
+    val resolution: String = "content",
+    val acknowledgeSecrets: Boolean = false,
+)
+
+/** Superset of [WriteResultDto]: revision/commit are set when the resolution wrote the file now (`content`). */
+@Serializable
+data class ResolveConflictResultDto(
+    val path: String,
+    val revision: String? = null,
+    val commit: String? = null,
+    val resolution: String = "content",
+    val remainingConflicts: Int = 0,
+)
 
 @Serializable
 data class ImportRequestDto(val source: String, val into: String? = null, val vault: String? = null, val followSymlinks: Boolean = false)

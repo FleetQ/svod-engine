@@ -32,6 +32,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 private val T = Author("tester", "t@svod.test")
+// Assembled at runtime so no key header is committed as a literal.
+private val PEM_BLOCK = "-----BEGIN " + "RSA PRIVATE KEY-----\nMIIabc\n-----END " + "RSA PRIVATE KEY-----"
 private const val V = "v"
 
 /**
@@ -266,6 +268,127 @@ class SyncEngineTest {
             assertNull(c.engineB.read("leak.md"), "a leaked secret must never be written into the vault")
             val q = c.conflictsB.all().first { it.path == "leak.md" }
             assertTrue(q.reasons.any { "secret" in it.lowercase() }, "quarantine reason: ${q.reasons}")
+        }
+    }
+
+    // ---- 08.10.2026: a quarantined add/add conflict that could not be resolved for 4 days ----
+
+    /** The same new note on both machines (no common ancestor) → an add/add conflict on B. */
+    private suspend fun addAddConflict(c: Cluster, path: String) {
+        c.engineA.write(path, "# s\nfrom A\n", null, T)
+        c.syncA.sync(c.remote)
+        c.engineB.write(path, "# s\nfrom B\n", null, T)
+        assertEquals(SyncEngine.Status.conflicts, c.syncB.sync(c.remote).status)
+        assertTrue(c.conflictsB.all().single { it.path == path }.base.isNullOrEmpty(), "add/add: no common ancestor")
+    }
+
+    @Test
+    fun `a resolved add-add conflict converges even when the sync engine restarts before the next cycle`(): Unit = runBlocking {
+        Cluster().use { c ->
+            c.bootstrap()
+            addAddConflict(c, "messy/s.md")
+            // Resolve the way POST /conflicts/resolve does: write the merged text, clear the conflict.
+            val rev = c.engineB.read("messy/s.md")!!.revision
+            c.engineB.write("messy/s.md", "# s\nfrom A and B\n", rev, T)
+            c.conflictsB.resolve("messy/s.md")
+
+            // The engine restarts (the held merge lived only in memory); same vault, same conflict store.
+            val restarted = SyncEngine(c.engineB, SyncGit(c.dirB), c.conflictsB, EventBus(), V, "machineB")
+            val r = restarted.sync(c.remote)
+            assertEquals(SyncEngine.Status.inSync, r.status, "conflicts came back: ${c.conflictsB.all().map { it.path to it.reasons }}")
+            assertEquals(c.engineB.head(), remoteSyncRef(c), "the resolution was pushed")
+            c.syncA.sync(c.remote)
+            assertEquals(c.engineA.head(), c.engineB.head())
+            assertEquals("# s\nfrom A and B\n", c.engineA.read("messy/s.md")!!.text)
+            assertEquals(SyncEngine.Status.inSync, restarted.sync(c.remote).status, "and stays clean")
+        }
+    }
+
+    @Test
+    fun `an open conflict does not stop the cycle from fetching, and a peer that converges clears it`(): Unit = runBlocking {
+        Cluster().use { c ->
+            c.bootstrap()
+            addAddConflict(c, "messy/s.md")
+            c.engineA.write("notes/later.md", "# later", null, T)
+            c.syncA.sync(c.remote)                                   // the remote moves on
+
+            assertEquals(SyncEngine.Status.conflicts, c.syncB.sync(c.remote).status)
+            assertEquals(remoteSyncRef(c), SyncGit(c.dirB).use { it.syncRef(V) }, "B fetched the new remote head")
+
+            // The other machine writes the same content B has → nothing left to decide.
+            val revA = c.engineA.read("messy/s.md")!!.revision
+            c.engineA.write("messy/s.md", c.engineB.read("messy/s.md")!!.text, revA, T)
+            c.syncA.sync(c.remote)
+            assertEquals(SyncEngine.Status.inSync, c.syncB.sync(c.remote).status)
+            assertTrue(c.conflictsB.isEmpty(), "stale conflict cleared: ${c.conflictsB.all().map { it.path }}")
+            assertNotNull(c.engineB.read("notes/later.md"))
+        }
+    }
+
+    /** A peer (scanner off) adds a file holding a key; B (scanner on) quarantines it in a diverged merge. */
+    private suspend fun quarantined(c: Cluster): ConflictStore.SyncConflict {
+        c.engineA.write("leak.md", "---\ntitle: leak\n---\n" + PEM_BLOCK + "\n", null, T)
+        c.syncA.sync(c.remote)
+        c.engineB.write("notes/ok.md", "# ok\n", null, T)
+        assertEquals(SyncEngine.Status.conflicts, c.syncB.sync(c.remote).status)
+        return c.conflictsB.all().single { it.path == "leak.md" }.also { assertTrue(it.quarantined) }
+    }
+
+    @Test
+    fun `a quarantined incoming file can be accepted on purpose`(): Unit = runBlocking {
+        Cluster(scanA = SecretScanner.OFF, scanB = SecretScanner(enabled = true)).use { c ->
+            c.bootstrap()
+            val q = quarantined(c)
+            // A normal write of that text is still refused — the override is a separate, explicit choice.
+            assertTrue(c.engineB.write("leak.md", q.theirs!!, null, T) is dev.svod.engine.core.WriteOutcome.Blocked)
+
+            c.conflictsB.resolve("leak.md", ConflictStore.Choice.incoming)
+            assertEquals(SyncEngine.Status.inSync, c.syncB.sync(c.remote).status)
+            assertEquals(q.theirs, c.engineB.read("leak.md")!!.text, "the incoming version landed as is")
+            val msg = Git.open(c.dirB.toFile()).use { it.log().setMaxCount(1).call().first().fullMessage }
+            assertTrue("secret scan overridden by the user for leak.md" in msg, "override recorded in history: $msg")
+            assertEquals(c.engineB.head(), remoteSyncRef(c))
+            c.syncA.sync(c.remote)
+            assertEquals(c.engineA.head(), c.engineB.head())
+            assertEquals(SyncEngine.Status.inSync, c.syncB.sync(c.remote).status, "nothing comes back")
+        }
+    }
+
+    @Test
+    fun `a quarantined incoming file can be rejected, keeping the local side`(): Unit = runBlocking {
+        Cluster(scanA = SecretScanner.OFF, scanB = SecretScanner(enabled = true)).use { c ->
+            c.bootstrap()
+            quarantined(c)
+            c.conflictsB.resolve("leak.md", ConflictStore.Choice.ours)
+            assertEquals(SyncEngine.Status.inSync, c.syncB.sync(c.remote).status)
+            assertNull(c.engineB.read("leak.md"), "never written on B")
+            assertNotNull(c.engineB.read("notes/ok.md"))
+            // The merge B pushed absorbs the incoming version: the converged vault is B's side.
+            c.syncA.sync(c.remote)
+            assertEquals(c.engineA.head(), c.engineB.head())
+            assertNull(c.engineA.read("leak.md"), "the peer converges to the kept side (the file stays in history)")
+            assertEquals(SyncEngine.Status.inSync, c.syncB.sync(c.remote).status)
+        }
+    }
+
+    @Test
+    fun `a resolution is durable across a restart of the whole engine`(): Unit = runBlocking {
+        Cluster().use { c ->
+            c.bootstrap()
+            val file = c.dirB.resolve(".svod").resolve("sync-resolutions.json")
+            val store = ConflictStore(file)
+            val syncB = SyncEngine(c.engineB, SyncGit(c.dirB), store, EventBus(), V, "machineB")
+            c.engineA.write("messy/s.md", "# s\nfrom A\n", null, T)
+            c.syncA.sync(c.remote)
+            c.engineB.write("messy/s.md", "# s\nfrom B\n", null, T)
+            assertEquals(SyncEngine.Status.conflicts, syncB.sync(c.remote).status)
+            store.resolve("messy/s.md")                               // keep B's text
+
+            val reopened = ConflictStore(file)                         // new process: open conflicts are gone, the answer is not
+            val restarted = SyncEngine(c.engineB, SyncGit(c.dirB), reopened, EventBus(), V, "machineB")
+            assertEquals(SyncEngine.Status.inSync, restarted.sync(c.remote).status)
+            assertEquals("# s\nfrom B\n", c.engineB.read("messy/s.md")!!.text)
+            assertFalse("messy/s.md" in Files.readString(file), "consumed by the merge commit")
         }
     }
 

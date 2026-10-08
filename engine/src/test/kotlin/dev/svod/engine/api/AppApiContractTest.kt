@@ -95,6 +95,48 @@ class AppApiContractTest {
         }
     }
 
+    /**
+     * 0.36.0: a conflict can be settled without writing content. `acceptIncoming` on a quarantined
+     * file needs an explicit acknowledgeSecrets and lands in the audit trail; `keepMine` just clears.
+     */
+    @Test
+    fun `quarantined conflicts can be accepted with acknowledgement or kept, and the override is audited`(): Unit = runBlocking {
+        ApiFixture(scanSecrets = true).use { fx ->
+            val ap = "/api/v1"
+            val key = "-----BEGIN " + "PRIVATE KEY-----\nMIIabc\n-----END " + "PRIVATE KEY-----"
+            fx.conflicts.record("leak.md", base = null, ours = null, theirs = key, reasons = listOf("incoming file quarantined"),
+                theirsBlob = "0".repeat(40), quarantined = true)
+            fx.conflicts.record("other.md", base = null, ours = "mine", theirs = "theirs", reasons = listOf("body"), theirsBlob = "1".repeat(40))
+
+            val listed = fx.get("$ap/conflicts")
+            validate("$ap/conflicts", Request.Method.GET, 200, listed.body())
+            assertTrue("\"quarantined\":true" in listed.body(), listed.body())
+
+            val refused = fx.post("$ap/conflicts/resolve", """{"path":"leak.md","resolution":"acceptIncoming"}""")
+            assertEquals(422, refused.statusCode(), refused.body())
+            assertTrue("secrets_detected" in refused.body() && "private-key" in refused.body(), refused.body())
+            assertEquals(2, fx.conflicts.all().size, "nothing cleared without the acknowledgement")
+
+            val accepted = fx.post("$ap/conflicts/resolve", """{"path":"leak.md","resolution":"acceptIncoming","acknowledgeSecrets":true}""")
+            assertEquals(200, accepted.statusCode(), accepted.body())
+            validate("$ap/conflicts/resolve", Request.Method.POST, 200, accepted.body())
+            assertTrue("\"remainingConflicts\":1" in accepted.body(), accepted.body())
+            assertEquals(dev.svod.engine.sync.ConflictStore.Choice.incoming, fx.conflicts.resolution("leak.md", "0".repeat(40)))
+            val audit = fx.audit.entries().single { it.outcome == "secret-override" }
+            assertEquals("leak.md", audit.path)
+            assertTrue(audit.detail!!.contains("private-key"), audit.detail)
+
+            val kept = fx.post("$ap/conflicts/resolve", """{"path":"other.md","resolution":"keepMine"}""")
+            assertEquals(200, kept.statusCode(), kept.body())
+            validate("$ap/conflicts/resolve", Request.Method.POST, 200, kept.body())
+            assertTrue(fx.conflicts.isEmpty())
+            assertEquals(dev.svod.engine.sync.ConflictStore.Choice.ours, fx.conflicts.resolution("other.md", "1".repeat(40)))
+
+            assertEquals(404, fx.post("$ap/conflicts/resolve", """{"path":"gone.md","resolution":"keepMine"}""").statusCode())
+            assertEquals(400, fx.post("$ap/conflicts/resolve", """{"path":"x.md","resolution":"whatever"}""").statusCode())
+        }
+    }
+
     @Test
     fun `conflicts expose 3-way merge data and resolve commits then clears`() = runBlocking {
         ApiFixture.create().use { fx ->

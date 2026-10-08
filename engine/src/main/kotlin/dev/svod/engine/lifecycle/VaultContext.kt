@@ -108,7 +108,7 @@ class VaultContext private constructor(
                 phase(vs.id, "index start") { index.start() }
                 engine.onCommit { index.onCommit(it) }
 
-                val conflicts = ConflictStore()
+                val conflicts = ConflictStore(vault.resolve(".svod").resolve("sync-resolutions.json"))
                 // The sync engine is always assembled (cheap — just handles); whether a vault actually
                 // reconciles is decided at runtime by its sync config (driven by the SyncScheduler /
                 // POST /sync/now), so toggling sync needs no restart and no vault re-open.

@@ -3,6 +3,43 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.27.0 — 2026-10-08 (App API contract 0.36.0)
+
+Fixes a two-way sync that sat in `conflicts` for four days (08.10.2026): a session note from the
+other machine quoted the private-key header line in a code review, was quarantined, and could not be
+resolved.
+
+### Fixed — a quarantined conflict can now be resolved
+
+`POST /conflicts/resolve` took only content, and that content went through the secret-scanned
+write, so the incoming version could never be accepted. New `resolution` field (0.36.0, default
+`content` = old behaviour): `keepMine` keeps the local side; `acceptIncoming` takes the incoming
+version. For a quarantined version `acceptIncoming` needs `acknowledgeSecrets: true` (otherwise 422
+`secrets_detected`). The override is written to the vault audit log (`secret-override`) and to the
+merge commit message. GET /conflicts marks such entries `quarantined: true`.
+
+### Fixed — a resolved conflict no longer comes back
+
+The answer to a conflict lived only in memory, in the merge held open by the sync engine. A restart,
+or a write that raced the finalizing merge, dropped it, and the next merge raised the same add/add
+conflict again ("body has conflicting line edits"). Answers are now stored in
+`.svod/sync-resolutions.json`, keyed by path and the incoming blob they answer. The next merge
+applies them and commits with the incoming head as a parent. A new incoming version of the same file
+is raised again as a new conflict.
+
+### Fixed — an open conflict no longer stops the sync from fetching
+
+While a conflict was open, the cycle returned before fetching, so the local copy of the remote ref
+stayed old and a peer that moved on (or wrote the same content) was never seen. Every cycle now
+fetches and re-plans. Conflicts that no longer exist are cleared, and the `conflict` event is
+published only when the set of conflicted paths changes.
+
+### Fixed — the `private-key` rule wants a key, not its header
+
+The header line alone (quoted in prose) is no longer a finding. A key is the BEGIN line followed by
+base64 that runs into the END line, by two or more full-width base64 lines (a paste cut before its
+END), or by inline key material on the same line (inline PEM, or JSON with escaped `\n`).
+
 ## v1.26.0 — 2026-09-27 (App API contract 0.35.0)
 
 ### Changed — two-way sync reconciles a snapshot; at most one cycle per vault
