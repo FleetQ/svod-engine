@@ -35,9 +35,13 @@ import java.time.Instant
  * **Conflicts are never silently resolved.** A clean merge (incl. structural YAML frontmatter and
  * line-level body merges, via [FrontmatterMerge]) commits automatically. A real overlap (or
  * modify/delete) is recorded in [ConflictStore] with base/ours/theirs and the local tree is left
- * untouched; the user resolves via POST /conflicts/resolve, and the resolving write (an
- * on-change sync trigger) finalizes the merge commit. Nothing is ever lost — full history on
- * every machine, and an incoming file that trips the secret scanner is quarantined, never written.
+ * untouched; the user resolves via POST /conflicts/resolve. The answer is stored durably against
+ * the incoming blob it was given for, and the next cycle's merge applies it and creates the merge
+ * commit with the incoming head as a parent, so that version counts as absorbed. An open conflict
+ * does not stop the cycle: every cycle fetches and re-plans, so a peer that moves on or converges
+ * updates (or clears) the conflict. Nothing is ever lost — full history on every machine, and an
+ * incoming file that trips the secret scanner is quarantined, never written unless the user
+ * accepts it explicitly.
  */
 class SyncEngine(
     private val engine: SvodEngine,
@@ -50,12 +54,6 @@ class SyncEngine(
     private val branch = engine.branch()
     private val mutex = Mutex()
     private val author = Author("svod-sync", "sync@svod.localhost")
-
-    /** A merge held open because real conflicts were surfaced; finalized once they all resolve. */
-    private data class Pending(val base: String?, val theirs: String, val paths: Set<String>)
-
-    @Volatile
-    private var pending: Pending? = null
 
     /** Sync status surfaced to the API/UI. */
     enum class Status { inSync, syncing, conflicts, offline, error }
@@ -76,8 +74,10 @@ class SyncEngine(
         eventBus.publish(EventTypes.SYNC_PROGRESS) { put("vault", vaultId); put("phase", p) }
     }
 
-    private fun record(status: Status, head: String?, syncedAt: String? = lastResult?.lastSyncedAt): Result =
-        Result(status, head, conflicts.all().size, syncedAt).also { lastResult = it }
+    private fun record(status: Status, head: String?, syncedAt: String? = lastResult?.lastSyncedAt): Result {
+        if (status == Status.inSync) conflicts.retainOnly(emptySet()) // reconciled → nothing is open any more
+        return Result(status, head, conflicts.all().size, syncedAt).also { lastResult = it }
+    }
 
     /** Head last mirrored to the browsable `main` branch; skip re-pushing an unchanged head. */
     @Volatile
@@ -106,13 +106,6 @@ class SyncEngine(
         phase("commit")
         runCatching { engine.ingestExternalChanges(author) }
 
-        // A merge is being held open for human resolution: don't touch anything until it drains.
-        pending?.let { p ->
-            if (!conflicts.isEmpty()) return record(Status.conflicts, engine.head())
-            // All conflicts resolved → finalize the merge commit, then fall through to push.
-            if (!finalize(p)) { pending = null } // local moved under us → re-plan from scratch
-        }
-
         var attempt = 0
         val maxAttempts = 5
         while (true) {
@@ -138,10 +131,7 @@ class SyncEngine(
                     phase("merge")
                     when (val m = merge(local, remoteHead)) {           // diverged → 3-way merge
                         MergeStep.Aborted -> continue                   // local moved during apply → re-plan
-                        MergeStep.Conflicts -> {
-                            eventBus.publish(EventTypes.CONFLICT) { put("source", "sync"); put("vault", vaultId); put("count", conflicts.all().size) }
-                            return record(Status.conflicts, engine.head())
-                        }
+                        MergeStep.Conflicts -> return record(Status.conflicts, engine.head())
                         is MergeStep.Merged -> m.commit                 // clean merge commit created → push it
                     }
                 }
@@ -166,92 +156,106 @@ class SyncEngine(
     private sealed interface MergeStep { data class Merged(val commit: String) : MergeStep; object Conflicts : MergeStep; object Aborted : MergeStep }
 
     /**
-     * Diverged 3-way merge of [theirs] into [ours]. Clean → a merge commit (parents ours+theirs);
-     * any real conflict → record base/ours/theirs, leave the local tree untouched, and hold the
-     * merge [pending] for human resolution.
+     * Diverged 3-way merge of [theirs] into [ours]. Clean → a merge commit (parents ours+theirs),
+     * applying the user's recorded answers; any open conflict → record base/ours/theirs and leave
+     * the local tree untouched until the user answers it.
      */
     private suspend fun merge(ours: String, theirs: String): MergeStep {
         val base = git.mergeBase(ours, theirs)
-        val plan = plan(base, ours, theirs, forceOurs = emptySet())
+        val plan = plan(base, ours, theirs)
         if (plan.conflicts.isNotEmpty()) {
-            plan.conflicts.forEach { conflicts.record(it.path, it.base, it.ours, it.theirs, it.reasons) }
-            pending = Pending(base, theirs, plan.conflicts.map { it.path }.toSet())
+            val before = conflicts.all().map { it.path }.toSet()
+            conflicts.retainOnly(plan.conflicts.map { it.path }.toSet())
+            plan.conflicts.forEach { conflicts.record(it.path, it.base, it.ours, it.theirs, it.reasons, it.theirsBlob, it.quarantined) }
+            if (conflicts.all().map { it.path }.toSet() != before) {
+                eventBus.publish(EventTypes.CONFLICT) { put("source", "sync"); put("vault", vaultId); put("count", conflicts.all().size) }
+            }
             return MergeStep.Conflicts
         }
-        val msg = "sync: merge ${theirs.take(8)} into ${ours.take(8)} on $hostId"
-        val applied = engine.applyMerge(plan.writes, plan.deletes, theirs, msg, author, expectedHead = ours)
-        return if (applied != null) MergeStep.Merged(applied) else MergeStep.Aborted
-    }
-
-    /**
-     * Finalize a [pending] merge after its conflicts were resolved: the resolved files now live in
-     * the local tree (HEAD advanced), so re-plan against the stored base/theirs but force the
-     * resolved paths to keep ours, then create the merge commit linking [Pending.theirs].
-     */
-    private suspend fun finalize(p: Pending): Boolean {
-        val ours = engine.head() ?: return false
-        if (git.isAncestor(p.theirs, ours)) { pending = null; return true } // already folded in
-        // The previously-conflicted paths now hold the user's resolution → keep ours for those; other
-        // paths still merge normally so theirs' clean changes are not dropped.
-        val plan = plan(p.base, ours, p.theirs, forceOurs = p.paths)
-        // A non-conflicted path might newly collide (a fresh edit raced the resolution) — re-surface it.
-        if (plan.conflicts.isNotEmpty()) {
-            plan.conflicts.forEach { conflicts.record(it.path, it.base, it.ours, it.theirs, it.reasons) }
-            pending = Pending(p.base, p.theirs, plan.conflicts.map { it.path }.toSet())
-            return true
+        val msg = buildString {
+            append("sync: merge ${theirs.take(8)} into ${ours.take(8)} on $hostId")
+            if (plan.resolved.isNotEmpty()) {
+                append("\n")
+                for ((path, choice) in plan.resolved) append("\nresolved $path: ${if (choice == ConflictStore.Choice.incoming) "accepted incoming" else "kept local"}")
+            }
+            if (plan.overrides.isNotEmpty()) {
+                append("\n")
+                for ((path, findings) in plan.overrides) append("\nsecret scan overridden by the user for $path: ${findings.joinToString(", ")}")
+            }
         }
-        val msg = "sync: finalize merge ${p.theirs.take(8)} into ${ours.take(8)} on $hostId"
-        val applied = engine.applyMerge(plan.writes, plan.deletes, p.theirs, msg, author, expectedHead = ours)
-        pending = null
-        return applied != null
+        val applied = engine.applyMerge(plan.writes, plan.deletes, theirs, msg, author, expectedHead = ours)
+            ?: return MergeStep.Aborted
+        conflicts.retainOnly(emptySet())
+        conflicts.consumed(plan.resolved.keys)
+        return MergeStep.Merged(applied)
     }
 
-    private data class Conflict(val path: String, val base: String?, val ours: String?, val theirs: String?, val reasons: List<String>)
-    private data class Plan(val writes: Map<String, String>, val deletes: List<String>, val conflicts: List<Conflict>)
+    private data class Conflict(
+        val path: String, val base: String?, val ours: String?, val theirs: String?, val reasons: List<String>,
+        val theirsBlob: String?, val quarantined: Boolean = false,
+    )
+    private data class Plan(
+        val writes: Map<String, String>,
+        val deletes: List<String>,
+        val conflicts: List<Conflict>,
+        /** Paths settled by a recorded answer, folded in by this merge. */
+        val resolved: Map<String, ConflictStore.Choice>,
+        /** Quarantined paths the user accepted anyway → the scan findings they overrode. */
+        val overrides: Map<String, List<String>>,
+    )
 
     /**
-     * File-by-file 3-way between [base], [ours], [theirs]. Paths in [forceOurs] keep ours verbatim
-     * (used at finalize so a user's resolution wins). Incoming content that trips the secret scanner
-     * is quarantined as a conflict, never written.
+     * File-by-file 3-way between [base], [ours], [theirs]. A path the user already answered for this
+     * exact incoming blob takes that answer: `ours` keeps the local file (or its absence), `incoming`
+     * takes theirs without the secret scan (the user saw the findings and chose to). Incoming content
+     * that trips the secret scanner otherwise is quarantined as a conflict, never written.
      */
-    private fun plan(base: String?, ours: String, theirs: String, forceOurs: Set<String>): Plan {
+    private fun plan(base: String?, ours: String, theirs: String): Plan {
         val baseFiles = base?.let { git.filesAt(it) } ?: emptyMap()
         val ourFiles = git.filesAt(ours)
         val theirFiles = git.filesAt(theirs)
 
         val writes = LinkedHashMap<String, String>()
         val deletes = ArrayList<String>()
-        val conflicts = ArrayList<Conflict>()
+        val open = ArrayList<Conflict>()
+        val resolved = LinkedHashMap<String, ConflictStore.Choice>()
+        val overrides = LinkedHashMap<String, List<String>>()
+
+        fun readBase(path: String) = baseFiles[path]?.let { git.read(base!!, path) }
+        fun takeTheirs(path: String, tb: String?) { if (tb == null) deletes.add(path) else writes[path] = git.read(theirs, path)!! }
+        /** Stage incoming [content] unless it trips the secret scanner — then quarantine it, or note the user's override. */
+        fun takeIncoming(path: String, content: String, tb: String, accepted: Boolean) {
+            val findings = engine.scanSecrets(content)
+            when {
+                findings.isEmpty() -> writes[path] = content
+                accepted -> { writes[path] = content; overrides[path] = findings }
+                else -> open.add(Conflict(path, readBase(path), ourFiles[path]?.let { git.read(ours, path) }, content,
+                    listOf("incoming file quarantined — secret(s) detected: ${findings.joinToString(", ")}"), tb, quarantined = true))
+            }
+        }
 
         for (path in (ourFiles.keys + theirFiles.keys + baseFiles.keys)) {
             val ob = ourFiles[path]; val tb = theirFiles[path]; val bb = baseFiles[path]
+            if (ob == tb || tb == bb) continue                          // identical on both sides / theirs unchanged → keep ours
+            val answer = conflicts.resolution(path, tb)
+            if (answer != null) resolved[path] = answer
             when {
-                path in forceOurs && ob != null -> {}                  // resolution / local wins → keep ours
-                ob == tb -> {}                                          // identical on both sides
-                tb == bb -> {}                                          // theirs unchanged → keep ours
-                ob == bb -> {                                           // ours unchanged → take theirs
-                    if (tb == null) deletes.add(path)
-                    else takeIncoming(path, git.read(theirs, path)!!, bb?.let { git.read(base!!, path) }, conflicts, writes)
-                }
+                answer == ConflictStore.Choice.ours -> {}               // the user's resolution / "keep mine" wins
+                ob == bb ->                                             // ours unchanged → take theirs
+                    if (tb == null) deletes.add(path) else takeIncoming(path, git.read(theirs, path)!!, tb, accepted = answer != null)
+                answer == ConflictStore.Choice.incoming -> takeTheirs(path, tb)
                 ob == null || tb == null ->                            // modify/delete (or rename/edit) → real conflict
-                    conflicts.add(Conflict(path, bb?.let { git.read(base!!, path) }, ob?.let { git.read(ours, path) }, tb?.let { git.read(theirs, path) },
-                        listOf("file removed on one machine and modified on another")))
-                path.endsWith(".md") -> when (val out = FrontmatterMerge.merge(bb?.let { git.read(base!!, path) }, git.read(ours, path)!!, git.read(theirs, path)!!)) {
-                    is FrontmatterMerge.Outcome.Merged -> takeIncoming(path, out.content, bb?.let { git.read(base!!, path) }, conflicts, writes)
-                    is FrontmatterMerge.Outcome.Conflict -> conflicts.add(Conflict(path, out.base, out.ours, out.theirs, out.reasons))
+                    open.add(Conflict(path, readBase(path), ob?.let { git.read(ours, path) }, tb?.let { git.read(theirs, path) },
+                        listOf("file removed on one machine and modified on another"), tb))
+                path.endsWith(".md") -> when (val out = FrontmatterMerge.merge(readBase(path), git.read(ours, path)!!, git.read(theirs, path)!!)) {
+                    is FrontmatterMerge.Outcome.Merged -> takeIncoming(path, out.content, tb, accepted = false)
+                    is FrontmatterMerge.Outcome.Conflict -> open.add(Conflict(path, out.base, out.ours, out.theirs, out.reasons, tb))
                 }
-                else -> conflicts.add(Conflict(path, bb?.let { git.read(base!!, path) }, git.read(ours, path), git.read(theirs, path),
-                    listOf("binary/non-markdown file changed on both machines")))
+                else -> open.add(Conflict(path, readBase(path), git.read(ours, path), git.read(theirs, path),
+                    listOf("binary/non-markdown file changed on both machines"), tb))
             }
         }
-        return Plan(writes, deletes, conflicts)
-    }
-
-    /** Stage [content] for [path] unless it trips the secret scanner — then quarantine it as a conflict. */
-    private fun takeIncoming(path: String, content: String, base: String?, conflicts: MutableList<Conflict>, writes: MutableMap<String, String>) {
-        val findings = engine.scanSecrets(content)
-        if (findings.isNotEmpty()) conflicts.add(Conflict(path, base, null, content, listOf("incoming file quarantined — secret(s) detected: ${findings.joinToString(", ")}")))
-        else writes[path] = content
+        return Plan(writes, deletes, open, resolved, overrides)
     }
 
     private fun backoffMillis(attempt: Int): Long = (50L shl (attempt - 1)).coerceAtMost(800L)
