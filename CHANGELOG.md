@@ -3,6 +3,22 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.27.1 — 2026-10-09 (App API contract 0.36.0, unchanged)
+
+### Fixed — a sync no longer hangs forever on a remote that stops answering
+
+A poll sync of the `personal` vault sat in phase `fetch` for about 19 hours (laptop, engine 1.27.0).
+The thread was blocked in a TLS socket read inside jgit's HTTP fetch. No jgit network call had a
+timeout, and jgit's default is to wait forever. Cancelling the coroutine does not interrupt a
+blocking socket read, so the cycle never ended, and every later sync, including a manual
+`sync/now`, stayed `pending` behind it. Only a restart of the engine got it moving again.
+
+Every fetch and push of the sync (canonical ref, browsable `main` mirror, backup push) and the fetch
+in `svod-engine clone` now time out after 120 seconds without data. For HTTP(S) jgit applies this to
+both the connect and each read. A timed-out fetch or push ends the cycle as `offline`, the next cycle
+runs normally, and the engine log now says why (`sync of '<vault>': fetch failed, remote marked
+offline: SocketTimeoutException: Read timed out`) instead of nothing.
+
 ## v1.27.0 — 2026-10-08 (App API contract 0.36.0)
 
 Fixes a two-way sync that sat in `conflicts` for four days (08.10.2026): a session note from the

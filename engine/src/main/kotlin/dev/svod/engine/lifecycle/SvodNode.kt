@@ -193,7 +193,7 @@ class SvodNode private constructor(
                         dev.svod.engine.security.Secrets.resolve(t.keyPassword).toCharArray())
                 }
                 val updateService = UpdateService(
-                    currentAppVersion = "1.27.0",
+                    currentAppVersion = "1.27.1",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 // Two-way sync driver: startup + interval poll + on-change debounce, per synced vault.

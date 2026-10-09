@@ -21,7 +21,10 @@ import java.nio.file.Path
  */
 object SyncBootstrap {
 
-    fun clone(remote: String, dest: Path, vaultId: String, branch: String = "master") {
+    fun clone(
+        remote: String, dest: Path, vaultId: String, branch: String = "master",
+        timeoutSeconds: Int = SyncGit.TRANSPORT_TIMEOUT_SECONDS,
+    ) {
         require(!Files.exists(dest) || isEmptyDir(dest)) { "destination must be empty or not exist: $dest" }
         Files.createDirectories(dest)
 
@@ -37,7 +40,7 @@ object SyncBootstrap {
         }
         Git(repo).use { git ->
             // Fetch the canonical ref straight onto the local branch, then materialize the working tree.
-            val fetched = git.fetch().setRemote(remote)
+            val fetched = git.fetch().setRemote(remote).setTimeout(timeoutSeconds)
                 .setRefSpecs(RefSpec("refs/svod/sync/$vaultId:refs/heads/$branch"))
                 .call()
             require(fetched.advertisedRefs.any { it.name == "refs/svod/sync/$vaultId" }) {

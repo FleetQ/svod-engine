@@ -9,6 +9,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.put
+import org.slf4j.LoggerFactory
 import java.time.Instant
 
 /**
@@ -52,6 +53,7 @@ class SyncEngine(
     private val hostId: String,
 ) {
     private val branch = engine.branch()
+    private val log = LoggerFactory.getLogger(SyncEngine::class.java)
     private val mutex = Mutex()
     private val author = Author("svod-sync", "sync@svod.localhost")
 
@@ -111,7 +113,12 @@ class SyncEngine(
         while (true) {
             // 2. Fetch the canonical head (missing ref = nobody has pushed yet, not an error).
             phase("fetch")
-            try { git.fetchSync(resolved, vaultId) } catch (_: Exception) { return record(Status.offline, engine.head()) }
+            try {
+                git.fetchSync(resolved, vaultId)
+            } catch (e: Exception) {
+                log.warn("sync of '$vaultId': fetch failed, remote marked offline: ${SyncGit.describeFailure(e)}")
+                return record(Status.offline, engine.head())
+            }
             val remoteHead = git.syncRef(vaultId)
             // The snapshot this round reconciles, pinned once the fetch is in: everything below plans
             // against it, moves the ref only if HEAD still equals it, and pushes exactly it.
