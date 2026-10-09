@@ -9,6 +9,7 @@ import org.eclipse.jgit.storage.file.FileRepositoryBuilder
 import org.eclipse.jgit.transport.RefSpec
 import org.eclipse.jgit.transport.RemoteRefUpdate
 import org.eclipse.jgit.treewalk.TreeWalk
+import org.slf4j.LoggerFactory
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Path
 
@@ -20,8 +21,28 @@ import java.nio.file.Path
  *
  * Peer branches are fetched into the `refs/svodremote/` namespace so they never collide with
  * local refs.
+ *
+ * Every network call carries [timeoutSeconds]: jgit's default is 0 (wait forever), and a remote
+ * that accepts the connection but never answers parks the thread in a blocking socket read that
+ * coroutine cancellation cannot interrupt — the cycle, and every sync queued behind it, never ends.
  */
-open class SyncGit(root: Path) : AutoCloseable {
+open class SyncGit(root: Path, private val timeoutSeconds: Int = TRANSPORT_TIMEOUT_SECONDS) : AutoCloseable {
+
+    companion object {
+        /** Connect and per-read timeout for fetch/push (jgit applies it to both for HTTP). */
+        const val TRANSPORT_TIMEOUT_SECONDS = 120
+        private val log = LoggerFactory.getLogger(SyncGit::class.java)
+        private val URL_USERINFO = Regex("""://[^/@\s]*@""")
+
+        /**
+         * One log line for a failed fetch/push: the root cause (e.g. `SocketTimeoutException: Read
+         * timed out`), with any `user:token@` cut out of a URL that jgit put in the message.
+         */
+        internal fun describeFailure(e: Throwable): String {
+            val cause = generateSequence(e) { it.cause }.last()
+            return "${cause.javaClass.simpleName}: ${cause.message?.replace(URL_USERINFO, "://")}"
+        }
+    }
 
     private val repo: Repository = FileRepositoryBuilder()
         .setGitDir(root.resolve(".git").toFile())
@@ -34,6 +55,7 @@ open class SyncGit(root: Path) : AutoCloseable {
     fun fetch(remote: String) {
         git.fetch()
             .setRemote(remote)
+            .setTimeout(timeoutSeconds)
             .setRefSpecs(RefSpec("+refs/heads/*:refs/svodremote/*"))
             .call()
     }
@@ -49,6 +71,7 @@ open class SyncGit(root: Path) : AutoCloseable {
         // canonical ref yet (first machine bootstrapping); a real transport failure still throws.
         git.fetch()
             .setRemote(remote)
+            .setTimeout(timeoutSeconds)
             .setRefSpecs(RefSpec("+refs/svod/sync/*:refs/svodremote/sync/*"))
             .call()
     }
@@ -67,7 +90,7 @@ open class SyncGit(root: Path) : AutoCloseable {
      * commit that landed after the cycle's snapshot out of this push; the next cycle sends it.
      */
     open fun pushSync(remote: String, source: String, vaultId: String): PushResult = try {
-        val results = git.push().setRemote(remote)
+        val results = git.push().setRemote(remote).setTimeout(timeoutSeconds)
             .setRefSpecs(RefSpec("$source:refs/svod/sync/$vaultId"))
             .call()
         var ok = true
@@ -78,7 +101,8 @@ open class SyncGit(root: Path) : AutoCloseable {
             }
         }
         if (ok) PushResult.OK else PushResult.REJECTED
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        log.warn("push of sync ref for '$vaultId' failed: ${describeFailure(e)}")
         PushResult.ERROR
     }
 
@@ -97,7 +121,7 @@ open class SyncGit(root: Path) : AutoCloseable {
 
     /** Push [refspec] to [remote]; true if every update was OK/UP_TO_DATE (not rejected). */
     fun push(remote: String, refspec: String): Boolean {
-        val results = git.push().setRemote(remote).setRefSpecs(RefSpec(refspec)).call()
+        val results = git.push().setRemote(remote).setTimeout(timeoutSeconds).setRefSpecs(RefSpec(refspec)).call()
         for (result in results) {
             for (update in result.remoteUpdates) {
                 when (update.status) {

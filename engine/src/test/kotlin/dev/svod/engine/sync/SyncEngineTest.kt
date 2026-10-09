@@ -8,6 +8,7 @@ import dev.svod.engine.events.EventTypes
 import dev.svod.engine.events.SvodEvent
 import dev.svod.engine.index.IndexService
 import dev.svod.engine.index.NoneEmbedder
+import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.watch.FileWatcher
 import dev.svod.engine.security.SecretScanner
 import kotlinx.coroutines.CompletableDeferred
@@ -21,6 +22,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.eclipse.jgit.api.Git
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.CopyOnWriteArrayList
@@ -29,6 +33,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 private val T = Author("tester", "t@svod.test")
@@ -95,6 +100,27 @@ private class GatedSyncGit(root: Path) : SyncGit(root) {
     override fun pushSync(remote: String, source: String, vaultId: String): PushResult {
         holdPush?.let { inPush.complete(Unit); runBlocking { it.await() } }
         return super.pushSync(remote, source, vaultId)
+    }
+}
+
+/**
+ * An HTTP "remote" that accepts every connection and never sends a byte — the shape of the
+ * 2026-10 hang (a TLS/HTTP read parked forever in jgit). Connections are held open until [close].
+ */
+private class SilentRemote : AutoCloseable {
+    private val server = ServerSocket(0, 50, InetAddress.getLoopbackAddress())
+    private val held = CopyOnWriteArrayList<Socket>()
+    val url = "http://127.0.0.1:${server.localPort}/vault.git"
+
+    init {
+        Thread {
+            while (!server.isClosed) runCatching { held.add(server.accept()) }
+        }.apply { isDaemon = true }.start()
+    }
+
+    override fun close() {
+        server.close()
+        held.forEach { runCatching { it.close() } }
     }
 }
 
@@ -446,5 +472,72 @@ class SyncEngineTest {
                 collector.cancel(); watcher.close(); index.close()
             }
         }
+    }
+
+    /**
+     * Regression (engine 1.27.0, 2026-10-08): no jgit transport call had a timeout (jgit's default is
+     * wait forever), so a remote that accepted the connection and never answered held a poll cycle
+     * in `fetch` for ~19 hours, and every later sync — the manual one too — queued behind it. With a
+     * timeout the fetch fails, the cycle ends `offline`, and the next cycle runs normally.
+     */
+    @Test
+    fun `a remote that never answers times out the fetch and frees the cycle`(): Unit = runBlocking {
+        Cluster().use { c ->
+            SilentRemote().use { silent ->
+                val syncA = SyncEngine(c.engineA, SyncGit(c.dirA, timeoutSeconds = 1), c.conflictsA, EventBus(), V, "machineA")
+
+                val r = withTimeout(30_000) { syncA.sync(silent.url) }
+                assertEquals(SyncEngine.Status.offline, r.status)
+                assertNull(syncA.phase, "the cycle is over, not parked in fetch")
+
+                // The mutex is free: the next cycle (a reachable remote) runs and pushes.
+                assertEquals(SyncEngine.Status.inSync, withTimeout(30_000) { syncA.sync(c.remote) }.status)
+                assertEquals(c.engineA.head(), remoteSyncRef(c))
+
+                // Through the scheduler: the timed-out cycle finishes, nothing stays running.
+                val backup = BackupService(listOf(BackupService.Binding(
+                    V, c.dirA, SvodConfig.BackupSettings("unused-remote", enabled = true, syncEnabled = true), store = null,
+                )))
+                val scheduler = SyncScheduler(c.scope, backup, { syncA.sync(silent.url) })
+                assertEquals(SyncEngine.Status.offline, withTimeout(30_000) { scheduler.syncNow(V).await() }?.status)
+                assertFalse(scheduler.isRunning(V), "no cycle is left running after the timeout")
+                assertNull(scheduler.running(V))
+                assertEquals(SyncEngine.Status.offline, withTimeout(30_000) { scheduler.syncNow(V).await() }?.status, "a second sync starts and ends too")
+                scheduler.stop()
+            }
+        }
+    }
+
+    @Test
+    fun `pushSync to a remote that never answers times out as ERROR`(): Unit = runBlocking {
+        Cluster().use { c ->
+            SilentRemote().use { silent ->
+                val t0 = System.nanoTime()
+                val result = SyncGit(c.dirA, timeoutSeconds = 1).use { it.pushSync(silent.url, "master", V) }
+                assertEquals(SyncGit.PushResult.ERROR, result)
+                assertTrue((System.nanoTime() - t0) / 1_000_000 < 20_000, "push gave up on the timeout")
+            }
+        }
+    }
+
+    @Test
+    fun `clone from a remote that never answers fails instead of hanging`() {
+        SilentRemote().use { silent ->
+            val dest = Files.createTempDirectory("svod-clone-").also { Files.delete(it) }
+            val t0 = System.nanoTime()
+            assertFailsWith<Exception> { SyncBootstrap.clone(silent.url, dest, V, timeoutSeconds = 1) }
+            assertTrue((System.nanoTime() - t0) / 1_000_000 < 20_000, "clone gave up on the timeout")
+        }
+    }
+
+    @Test
+    fun `a transport failure is logged by its root cause without credentials from the URL`() {
+        val e = org.eclipse.jgit.api.errors.TransportException(
+            "https://x-access-token:ghp_secret@github.com/o/v.git: not authorized",
+            org.eclipse.jgit.errors.TransportException("https://ghp_secret@github.com/o/v.git: not authorized"),
+        )
+        val line = SyncGit.describeFailure(e)
+        assertEquals("TransportException: https://github.com/o/v.git: not authorized", line)
+        assertEquals("SocketTimeoutException: Read timed out", SyncGit.describeFailure(RuntimeException(java.net.SocketTimeoutException("Read timed out"))))
     }
 }
