@@ -55,6 +55,11 @@ class SvodTools(
      * skip the event or guess the vault. Null only in tests that build tools without a vault.
      */
     private val vaultId: String? = null,
+    /**
+     * `memory.requireReview`. True keeps a remembered fact/policy `provisional` until a person approves
+     * it; false stores it `active`, except UNCERTAIN and CONTRADICTION, which still wait for review.
+     */
+    private val requireReview: Boolean = true,
 ) {
     /** Classifies an incoming memory against existing memory of the same type/subject. */
     private val classifier = FactClassifier(engine, index, adjudicator)
@@ -593,7 +598,8 @@ class SvodTools(
      * Promotion gate: turn an observation into a durable, typed memory note. Mirrors the
      * classify→dedup→verify→write flow: scope is the vault; dedup is by normalized content hash
      * (identical content+type ⇒ no second note); status defaults by type (fact/policy enter
-     * `provisional` — kept out of recall until confirmed — preference/episode/note enter `active`);
+     * `provisional` — kept out of recall until confirmed — preference/episode/note enter `active`;
+     * with `memory.requireReview=false` fact/policy enter `active` too, unless UNCERTAIN or CONTRADICTION);
      * a `supersedes` target is revoked and linked. Writes through the engine (secret-scanned,
      * committed, indexed, conflict-guarded). Keeps an agent-written KB from poisoning itself.
      *
@@ -621,7 +627,8 @@ class SvodTools(
             instant
         }
         val t = type?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "fact"
-        val st = status?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: defaultStatusFor(t)
+        val callerStatus = status?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        val st = callerStatus ?: defaultStatusFor(t, null)
         val dir = (into ?: "memory").trim('/').ifEmpty { "memory" }
         val hash = dev.svod.engine.index.sha256Hex("$t\n${content.trim()}").take(12)
         val path = "$dir/$t/$hash.md"
@@ -679,8 +686,9 @@ class SvodTools(
             }
 
             val related = plan.related
+            val noteStatus = callerStatus ?: defaultStatusFor(t, plan.classification)
             val note = buildMemoryNote(
-                t, st, subject, confidence, source, content.trim(),
+                t, noteStatus, subject, confidence, source, content.trim(),
                 contradicts = related?.path?.takeIf { plan.classification == Classification.CONTRADICTION },
                 supersedes = related?.path?.takeIf { plan.classification == Classification.UPDATE },
                 needsReview = plan.classification == Classification.UNCERTAIN,
@@ -702,7 +710,7 @@ class SvodTools(
                     eventBus.publish(EventTypes.AGENT_ACTIVITY) { put("agentId", agent.agentId); put("tool", "remember"); put("path", path); put("commit", outcome.commit); putVault() }
                     eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", outcome.commit); put("path", path); put("author", agent.author.name); put("agentId", agent.agentId); putVault() }
                     return@guarded ToolResult.ok {
-                        put("status", "written"); put("path", path); put("type", t); put("memoryStatus", st)
+                        put("status", "written"); put("path", path); put("type", t); put("memoryStatus", noteStatus)
                         put("revision", outcome.revisions[path]); put("commit", outcome.commit)
                         put("classification", plan.classification.name)
                         put("confidence", plan.confidence); put("rationale", plan.rationale)
@@ -732,9 +740,13 @@ class SvodTools(
         ToolResult.internalError("remember: classification did not converge")
     }
 
-    private fun defaultStatusFor(type: String): String = when (type) {
-        "fact", "policy" -> "provisional" // durable but kept out of recall until confirmed
-        else -> "active"                  // preference / episode / note
+    /** [classification] null = not classified yet (dedup answers); only review-off fact/policy depend on it. */
+    private fun defaultStatusFor(type: String, classification: Classification?): String = when {
+        type != "fact" && type != "policy" -> "active" // preference / episode / note
+        requireReview -> "provisional"                 // durable but kept out of recall until confirmed
+        // Review is off, but the engine could not settle these alone: a person still decides.
+        classification == Classification.UNCERTAIN || classification == Classification.CONTRADICTION -> "provisional"
+        else -> "active"
     }
 
     /** Strip a leading YAML frontmatter block, returning the body. */

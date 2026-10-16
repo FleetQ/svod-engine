@@ -58,6 +58,8 @@ data class SvodConfig(
     val includeMessyInRecall: Boolean = false,
     /** Derived thematic graph over the vault (communities + summaries). Off by default. */
     val graph: GraphSettings = GraphSettings(),
+    /** How agent-written memory (`remember`) enters the vault. */
+    val memory: MemorySettings = MemorySettings(),
     /**
      * Optional TLS for the App API. Required (together with [users] and [mcpTls]) before [host] may
      * leave loopback: a shared engine on a server is reached over HTTPS with personal keys, never
@@ -136,6 +138,16 @@ data class SvodConfig(
          * rather than a sample of under ten notes.
          */
         val hierarchicalSummaries: Boolean = false,
+    )
+    /**
+     * [requireReview]=true (default) stores a `remember`ed fact/policy as `provisional`, hidden from
+     * recall until a person approves it in the Svod app. False stores it `active` at once; a memory
+     * classified UNCERTAIN or CONTRADICTION still goes to the review queue, because there the engine
+     * could not settle it alone.
+     */
+    @Serializable
+    data class MemorySettings(
+        val requireReview: Boolean = true,
     )
     /**
      * [blockStartup]=false (default) binds the App API immediately and builds the semantic index in

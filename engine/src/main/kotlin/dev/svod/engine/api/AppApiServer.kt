@@ -141,6 +141,8 @@ class AppApiServer(
         val localAdmin: Boolean = true,
         /** Serve over HTTPS (Netty) instead of plain HTTP (CIO). */
         val tls: Tls? = null,
+        /** `memory.requireReview`, for the read-only settings view. */
+        val memoryRequireReview: Boolean = true,
     )
 
     /** TLS material for serving the App API over HTTPS (same shape as the MCP server's). */
@@ -590,6 +592,7 @@ class AppApiServer(
                     host = if (admin) config.host else "",
                     embedder = if (admin) emb else emb.copy(endpoint = null),
                     reranker = vc.index.rerankerInfo().let { RerankerInfoDto(it.provider, it.model, it.active) },
+                    memory = MemorySettingsDto(requireReview = config.memoryRequireReview),
                 ))
             }
             get("/api/v1/index/status") {

@@ -66,10 +66,14 @@ class SvodMcpServer(
     private val defaultVaultId: String,
     private val registry: AgentRegistry,
     private val host: String = "127.0.0.1",
+    /** `memory.requireReview`: the tool descriptions and instructions tell agents what `remember` really does. */
+    private val requireReview: Boolean = true,
 ) {
     /** Single-vault convenience: one tool set for every vault id. */
-    constructor(tools: SvodTools, registry: AgentRegistry, host: String = "127.0.0.1")
-        : this({ _ -> tools }, "default", registry, host)
+    constructor(tools: SvodTools, registry: AgentRegistry, host: String = "127.0.0.1", requireReview: Boolean = true)
+        : this({ _ -> tools }, "default", registry, host, requireReview)
+
+    private val serverInstructions = instructions(requireReview)
 
     class Running(val embedded: EmbeddedServer<*, *>, val port: Int) {
         fun stop() = embedded.stop(500, 1000)
@@ -187,7 +191,7 @@ class SvodMcpServer(
         }
 
         val tools = buildTools(agent)
-        val responses = messages.mapNotNull { dispatchStateless(it, tools, SERVER_NAME, SERVER_VERSION, INSTRUCTIONS) }
+        val responses = messages.mapNotNull { dispatchStateless(it, tools, SERVER_NAME, SERVER_VERSION, serverInstructions) }
         when {
             responses.isEmpty() -> call.respond(HttpStatusCode.Accepted)
             parsed is JsonArray -> respondJson(call, HttpStatusCode.OK, JsonArray(responses))
@@ -254,7 +258,7 @@ class SvodMcpServer(
         val server = Server(
             Implementation(name = SERVER_NAME, version = SERVER_VERSION),
             ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = false))),
-            instructions = INSTRUCTIONS,
+            instructions = serverInstructions,
         )
         buildTools(agent).forEach { tool ->
             server.addTool(tool.name, tool.description, tool.schema()) { req -> tool.handler(req) }
@@ -309,7 +313,9 @@ class SvodMcpServer(
         tool("move", "Move/rename a note.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
             val (t, d) = routed(req); d ?: t!!.move(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
-        tool("promote", "Move a draft note from messy/ into the curated vault (a file move, nothing else). It does NOT change a memory's 'status': a provisional fact or policy stays provisional and hidden from recall until a person approves it in the Svod app. Do not use it on notes outside messy/.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
+        tool("promote", "Move a draft note from messy/ into the curated vault (a file move, nothing else). It does NOT change a memory's 'status': a provisional " +
+            (if (requireReview) "fact or policy" else "memory (with review off, only one classified UNCERTAIN or CONTRADICTION is provisional)") +
+            " stays provisional and hidden from recall until a person approves it in the Svod app. Do not use it on notes outside messy/.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
             val (t, d) = routed(req); d ?: t!!.promote(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
         tool("search", "Hybrid search (keyword/semantic/hybrid) with filters: finds notes by meaning. For exact strings (versions, hosts, identifiers, error messages) use grep; for the folder structure use tree. Provisional, revoked, superseded and expired memories are hidden by default. A non-empty `degraded` (semantic, rerank) means a retrieval step failed: `semantic` = no semantic part, any hits are keyword-only, `rerank` = hits are not reranked. A miss is then weaker evidence than usual.", mapOf("query" to "string", "mode" to "string", "limit" to "integer"), listOf("query")) { req ->
@@ -324,7 +330,7 @@ class SvodMcpServer(
                 t!!.contextPack(agent, q, req.int("tokenBudget", 2000), req.bool("enumerate", false), req.bool("graphExpand", false)).toCallToolResult()
             }
         }
-        tool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Classifies the incoming memory against existing memory of the same type+subject and returns 'classification' (NEW|DUPLICATE|UPDATE|CONTRADICTION|UNCERTAIN) with 'relatedNote' and 'confidence': DUPLICATE is a no-op, UPDATE revokes+links its predecessor, CONTRADICTION keeps BOTH sides linked by 'contradicts' (never overwrites), UNCERTAIN is stored with 'needs-review: true'. fact/policy default to 'provisional': hidden from search and context_pack until a person approves them in the Svod app (the review queue has no MCP tool). Do not pass status='active' for a fact or policy: that skips the person's review. Use 'supersedes' to declare a replacement explicitly. 'expiresAt' (ISO-8601 instant or date, must be in the future) stores 'expires_at'; recall hides the memory after it. Do not use it for scratch notes or drafts: write those under messy/.", mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string", "expiresAt" to "string"), listOf("content")) { req ->
+        tool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Classifies the incoming memory against existing memory of the same type+subject and returns 'classification' (NEW|DUPLICATE|UPDATE|CONTRADICTION|UNCERTAIN) with 'relatedNote' and 'confidence': DUPLICATE is a no-op, UPDATE revokes+links its predecessor, CONTRADICTION keeps BOTH sides linked by 'contradicts' (never overwrites), UNCERTAIN is stored with 'needs-review: true'. " + rememberReviewText(requireReview) + " Use 'supersedes' to declare a replacement explicitly. 'expiresAt' (ISO-8601 instant or date, must be in the future) stores 'expires_at'; recall hides the memory after it. Do not use it for scratch notes or drafts: write those under messy/.", mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string", "expiresAt" to "string"), listOf("content")) { req ->
             val (t, d) = routed(req)
             d ?: t!!.remember(agent, req.str("content") ?: "", req.str("type"), req.str("subject"), req.double("confidence"), req.str("source"), req.str("status"), req.str("into"), req.str("supersedes"), req.str("expiresAt")).toCallToolResult()
         }
@@ -420,15 +426,33 @@ class SvodMcpServer(
          * `promote` as the way to confirm a memory; it never touched `status`. The provisional default
          * only holds for agents that follow it: `remember` honors a caller's `status`.
          */
-        internal const val INSTRUCTIONS =
+        internal fun instructions(requireReview: Boolean): String =
             "Svod is a versioned markdown vault. Pick the tool by the job: 'search' finds notes by meaning; 'grep' finds " +
                 "exact strings (versions, hosts, identifiers, error messages); 'tree' orients you in the folder structure " +
                 "('list' returns every path); 'context_pack' with enumerate=true and a type loads the whole rule book, e.g. " +
-                "all active policies; 'read' fetches one note. 'remember' stores a durable typed memory. A fact or policy " +
-                "defaults to 'provisional', hidden from search and context_pack until a person approves it in the Svod app. " +
-                "Do not pass status='active' for a fact or policy: that skips the person's review. The review queue has no " +
-                "tool here, and 'promote' does not change a memory's status. Write changes with 'edit' or " +
+                "all active policies; 'read' fetches one note. 'remember' stores a durable typed memory. " +
+                (if (requireReview) {
+                    "A fact or policy defaults to 'provisional', hidden from search and context_pack until a person approves it " +
+                        "in the Svod app. Do not pass status='active' for a fact or policy: that skips the person's review. "
+                } else {
+                    "A fact or policy is stored 'active' and is found by search at once; only one classified UNCERTAIN or " +
+                        "CONTRADICTION is stored 'provisional', hidden from recall until a person approves it in the Svod app. "
+                }) +
+                "The review queue has no tool here, and 'promote' does not change a memory's status. Write changes with 'edit' or " +
                 "'write' and pass expectedRevision from your last read."
+
+        /** The instructions of an engine with the default `memory.requireReview=true`. */
+        internal val INSTRUCTIONS = instructions(requireReview = true)
+
+        private fun rememberReviewText(requireReview: Boolean): String =
+            if (requireReview) {
+                "fact/policy default to 'provisional': hidden from search and context_pack until a person approves them in the Svod app " +
+                    "(the review queue has no MCP tool). Do not pass status='active' for a fact or policy: that skips the person's review."
+            } else {
+                "fact/policy are stored 'active' (this engine has memory review turned off); one classified UNCERTAIN or CONTRADICTION " +
+                    "is stored 'provisional', hidden from search and context_pack until a person approves it in the Svod app (the review " +
+                    "queue has no MCP tool)."
+            }
         private val log = org.slf4j.LoggerFactory.getLogger(SvodMcpServer::class.java)
     }
 }
