@@ -141,7 +141,13 @@ data class SettingsDto(
     val embedder: EmbedderInfoDto,
     /** Active second-stage reranker (provider `none` when disabled). */
     val reranker: RerankerInfoDto,
+    /** 0.37.0: how agent-written memory enters the vault. */
+    val memory: MemorySettingsDto = MemorySettingsDto(),
 )
+
+/** `memory.requireReview` from the engine config: false ⇒ a remembered fact/policy is stored active. */
+@Serializable
+data class MemorySettingsDto(val requireReview: Boolean = true)
 
 /** The active reranker, for the read-only settings view. */
 @Serializable

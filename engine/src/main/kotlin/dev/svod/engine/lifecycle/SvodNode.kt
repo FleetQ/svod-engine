@@ -114,7 +114,7 @@ class SvodNode private constructor(
                 val toolsByVault = java.util.concurrent.ConcurrentHashMap<String, SvodTools>()
                 fun toolsFor(vc: VaultContext): SvodTools {
                     val audit = AuditLog(vc.engine.root.resolve(".svod").resolve("audit").resolve("audit.log"))
-                    return SvodTools(vc.engine, vc.index, audit, rateLimiter, eventBus, graph = vc.graph, vaultId = vc.id)
+                    return SvodTools(vc.engine, vc.index, audit, rateLimiter, eventBus, graph = vc.graph, vaultId = vc.id, requireReview = config.memory.requireReview)
                 }
                 for (vc in vaults.contexts()) toolsByVault[vc.id] = toolsFor(vc)
 
@@ -193,7 +193,7 @@ class SvodNode private constructor(
                         dev.svod.engine.security.Secrets.resolve(t.keyPassword).toCharArray())
                 }
                 val updateService = UpdateService(
-                    currentAppVersion = "1.27.1",
+                    currentAppVersion = "1.28.0",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 // Two-way sync driver: startup + interval poll + on-change debounce, per synced vault.
@@ -213,6 +213,7 @@ class SvodNode private constructor(
                         webViewerPath = config.webViewerPath,
                         localAdmin = config.localAdmin,
                         tls = appApiTls,
+                        memoryRequireReview = config.memory.requireReview,
                     ),
                     readiness = { ready.get() },
                     embedderControl = embedderControl,
@@ -287,7 +288,7 @@ class SvodNode private constructor(
                     reconcileSourceWatchers = { vc -> sourceWatch.reconcile(vc.id) },
                 ).start(config.appApiPort)
 
-                val mcpServer = dev.svod.engine.mcp.SvodMcpServer({ vid -> toolsByVault[vid] }, defaultId, registry, host = config.host)
+                val mcpServer = dev.svod.engine.mcp.SvodMcpServer({ vid -> toolsByVault[vid] }, defaultId, registry, host = config.host, requireReview = config.memory.requireReview)
                 val mcpTls = config.mcpTls?.let { t ->
                     val ks = dev.svod.engine.security.Keystores.load(
                         java.nio.file.Paths.get(t.keystorePath),

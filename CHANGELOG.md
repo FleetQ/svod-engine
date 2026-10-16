@@ -3,6 +3,29 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.28.0 — 2026-10-16 (App API contract 0.37.0)
+
+### Added — memory review can be turned off (`memory.requireReview`)
+
+`remember` stored every fact and policy as `provisional`. Search, `context_pack` and the rule book
+hide a provisional memory until a person approves it in the Svod app, and there was no way to switch
+that off.
+
+New engine config setting, read at startup:
+
+```json
+"memory": { "requireReview": false }
+```
+
+- `true` (default, also when the key is missing): nothing changes. Fact/policy enter `provisional`.
+- `false`: fact/policy enter `active` and are found by search at once. A memory classified
+  `UNCERTAIN` (`needs-review: true`) or `CONTRADICTION` still enters `provisional` and waits in the
+  review queue. DUPLICATE and UPDATE behave as before, and a `status` passed by the caller still wins.
+- The MCP server instructions and the `remember`/`promote` tool descriptions follow the setting, so an
+  agent is not told that its facts wait for a person when they do not.
+- `GET /api/v1/settings` reports the value as `memory.requireReview` (contract 0.37.0, additive), so
+  the app can show it.
+
 ## v1.27.1 — 2026-10-09 (App API contract 0.36.0, unchanged)
 
 ### Fixed — a sync no longer hangs forever on a remote that stops answering

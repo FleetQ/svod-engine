@@ -25,6 +25,7 @@ import java.nio.file.Path
 class ApiFixture(
     embedder: dev.svod.engine.index.Embedder = NoneEmbedder,
     scanSecrets: Boolean = false,
+    apiConfig: AppApiServer.Config = AppApiServer.Config(),
 ) : AutoCloseable {
     val root: Path = Files.createTempDirectory("svod-api-test-")
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -35,7 +36,7 @@ class ApiFixture(
     val registry = AgentRegistry(listOf(AgentRegistry.AgentSpec("w", "scribe", AgentRole.WRITE, name = "Scribe")))
     val tools = SvodTools(engine, index, audit, RateLimiter.default(), eventBus)
     val conflicts = dev.svod.engine.sync.ConflictStore()
-    private val api = AppApiServer(engine, index, eventBus, conflicts = conflicts)
+    private val api = AppApiServer(engine, index, eventBus, conflicts = conflicts, config = apiConfig)
     private val running = api.start(0)
 
     init {

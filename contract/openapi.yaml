@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.36.0
+  version: 0.37.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -1921,6 +1921,18 @@ components:
         host: { type: string }
         embedder: { $ref: "#/components/schemas/EmbedderInfo" }
         reranker: { $ref: "#/components/schemas/RerankerInfo" }
+        memory: { $ref: "#/components/schemas/MemorySettings" }
+
+    MemorySettings:
+      type: object
+      required: [requireReview]
+      description: >
+        How agent-written memory enters the vault (config `memory.requireReview`). Since 0.37.0.
+        requireReview true (default): `remember` stores a fact/policy as provisional, hidden from recall
+        until a person approves it. false: it is stored active; one classified UNCERTAIN or CONTRADICTION
+        is still provisional and waits in GET /memory/review.
+      properties:
+        requireReview: { type: boolean }
 
     RerankerInfo:
       type: object
