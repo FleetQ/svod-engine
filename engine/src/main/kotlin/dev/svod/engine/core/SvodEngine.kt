@@ -231,6 +231,12 @@ class SvodEngine private constructor(
      * equals it — a concurrent local write (HEAD moved between planning the merge and applying it)
      * aborts the apply (returns null) so the caller re-plans against the new HEAD. This keeps the
      * merge atomic with respect to local writes without a cross-handle lock.
+     *
+     * Paths come from git history, so `.trash/` (soft delete) is accepted ([VaultPath.ofHistory]).
+     * Every path is validated before the working tree is touched, and if a write, delete or the
+     * commit fails part way, the files already changed are put back as they were. A half-applied
+     * merge left in the tree would otherwise be committed by the next ingest as a plain "external"
+     * commit with no merge parent (#39).
      */
     suspend fun applyMerge(
         writes: Map<String, String>,
@@ -242,11 +248,25 @@ class SvodEngine private constructor(
     ): String? {
         val commit = actor.submit {
             if (expectedHead != null && git.headId() != expectedHead) return@submit null
-            for ((path, content) in writes) {
-                AtomicFile.write(VaultPath.of(path).resolveAgainst(root), content.toByteArray(UTF_8), crash)
+            val writeTargets = writes.map { (path, content) -> VaultPath.ofHistory(path).resolveAgainst(root) to content }
+            val deleteTargets = deletes.map { VaultPath.ofHistory(it).resolveAgainst(root) }
+            val before = LinkedHashMap<Path, ByteArray?>()
+            for (p in writeTargets.map { it.first } + deleteTargets) {
+                if (p !in before) before[p] = if (Files.isRegularFile(p)) Files.readAllBytes(p) else null
             }
-            for (path in deletes) Files.deleteIfExists(VaultPath.of(path).resolveAgainst(root))
-            git.commitMerge(message, author, theirs, expectedHead)
+            fun restore() {
+                for ((p, bytes) in before) runCatching {
+                    if (bytes == null) Files.deleteIfExists(p) else AtomicFile.write(p, bytes)
+                }.onFailure { log.error("could not restore {} after a failed merge", p, it) }
+            }
+            try {
+                for ((target, content) in writeTargets) AtomicFile.write(target, content.toByteArray(UTF_8), crash)
+                for (target in deleteTargets) Files.deleteIfExists(target)
+                git.commitMerge(message, author, theirs, expectedHead).also { if (it == null) restore() }
+            } catch (t: Throwable) {
+                restore()
+                throw t
+            }
         }
         if (commit != null) commitListener?.invoke(commit)
         return commit

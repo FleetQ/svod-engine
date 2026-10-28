@@ -34,4 +34,31 @@ class AppMetricsTest {
             assertTrue(body.contains("svod_embedding_state{vault=") && body.contains("state=\"idle\""), body)
         }
     }
+
+    @Test
+    fun `metrics report the sync hold age per synced vault and the live MCP sessions`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            val sync = dev.svod.engine.sync.SyncEngine(
+                fx.engine, dev.svod.engine.sync.SyncGit(fx.root), fx.conflicts, fx.eventBus, "default", "machineA",
+            )
+            val api = AppApiServer(
+                SingleVaultRouter(fx.engine, fx.index, fx.conflicts, { null }), fx.eventBus,
+                syncEngineOf = { sync }, mcpLiveSessions = { 7 },
+            ).start(0)
+            try {
+                val body = java.net.http.HttpClient.newHttpClient().send(
+                    java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:${api.port}/metrics")).GET().build(),
+                    java.net.http.HttpResponse.BodyHandlers.ofString(),
+                ).body()
+                assertTrue(body.contains("# TYPE svod_sync_held_seconds gauge"), body)
+                assertTrue(body.contains("svod_sync_held_seconds{vault=\"default\"} 0"), body)
+                assertTrue(body.contains("svod_sync_out_of_sync_seconds{vault=\"default\"} 0"), body)
+                assertTrue(body.contains("\nsvod_mcp_live_sessions 7"), body)
+            } finally { api.stop() }
+
+            // Without a sync engine or an MCP server the series are left out, not reported as 0.
+            val plain = fx.get("/metrics").body()
+            assertTrue("svod_sync_held_seconds" !in plain && "svod_mcp_live_sessions" !in plain, plain)
+        }
+    }
 }

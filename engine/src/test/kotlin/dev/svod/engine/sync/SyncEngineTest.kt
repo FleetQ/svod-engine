@@ -530,6 +530,200 @@ class SyncEngineTest {
         }
     }
 
+    // ---- #39: a merge that carries a soft delete threw on `.trash/` and left a half-applied tree ----
+
+    private fun log(dir: Path) = Git.open(dir.toFile()).use { g -> g.log().call().toList() }
+
+    @Test
+    fun `a merge carrying a soft delete is a real merge commit with the trash entry and no external commit`(): Unit = runBlocking {
+        Cluster().use { c ->
+            c.bootstrap()
+            c.seedShared("notes/gone.md", "# gone\n")
+            val rev = c.engineA.read("notes/gone.md")!!.revision
+            assertTrue(c.engineA.delete("notes/gone.md", rev, T) is dev.svod.engine.core.WriteOutcome.Success)
+            c.syncA.sync(c.remote)                                       // canonical carries the soft delete
+            c.engineB.write("notes/other.md", "# other\n", null, T)     // B diverges on another file
+
+            assertEquals(SyncEngine.Status.inSync, c.syncB.sync(c.remote).status)
+            val head = log(c.dirB).first()
+            assertEquals(2, head.parentCount, "a merge commit with both parents: ${head.fullMessage}")
+            assertTrue(head.fullMessage.startsWith("sync: merge"), head.fullMessage)
+            assertTrue(Files.isRegularFile(c.dirB.resolve(".trash/notes/gone.md")), "the .trash/ entry came over")
+            assertNull(c.engineB.read("notes/gone.md"))
+            assertNotNull(c.engineB.read("notes/other.md"))
+
+            assertEquals(SyncEngine.Status.inSync, c.syncB.sync(c.remote).status)
+            c.syncA.sync(c.remote)
+            assertEquals(c.engineA.head(), c.engineB.head())
+            assertTrue(Files.isRegularFile(c.dirA.resolve(".trash/notes/gone.md")))
+            for (d in listOf(c.dirA, c.dirB)) {
+                assertTrue(log(d).none { it.fullMessage.startsWith("external:") }, "no half-applied merge was ingested as an external commit")
+            }
+        }
+    }
+
+    /**
+     * The state the stuck 1.28.0 vault is in: an earlier failed merge wrote part of the incoming side
+     * (one file exactly as theirs, one note already merged with both sides' edits) and the next cycle
+     * committed it as `external: ingest working-tree changes`. The next merge must still be clean:
+     * hunks that are identical on both sides are not a conflict.
+     */
+    @Test
+    fun `a vault with a partially ingested earlier merge still merges cleanly`(): Unit = runBlocking {
+        Cluster().use { c ->
+            c.bootstrap()
+            c.seedShared("ledger.md", "# Ledger\n\n## A\n- a1\n\n## B\n- b1\n")
+            c.seedShared("notes/gone.md", "# gone\n")
+            c.seedShared("plain.txt", "v1\n")
+
+            // A: appends to its own ledger section, edits plain.txt, soft-deletes a note.
+            c.engineA.write("ledger.md", "# Ledger\n\n## A\n- a1\n- a2\n\n## B\n- b1\n", c.engineA.read("ledger.md")!!.revision, T)
+            c.engineA.write("plain.txt", "v2 from A\n", c.engineA.read("plain.txt")!!.revision, T)
+            c.engineA.delete("notes/gone.md", c.engineA.read("notes/gone.md")!!.revision, T)
+            c.syncA.sync(c.remote)
+
+            // B: appends to its own section → diverged.
+            c.engineB.write("ledger.md", "# Ledger\n\n## A\n- a1\n\n## B\n- b1\n- b2\n", c.engineB.read("ledger.md")!!.revision, T)
+
+            // What the failed 1.28.0 apply left behind, committed by the next ingest as "external".
+            Files.writeString(c.dirB.resolve("plain.txt"), "v2 from A\n")
+            Files.writeString(c.dirB.resolve("ledger.md"), "# Ledger\n\n## A\n- a1\n- a2\n\n## B\n- b1\n- b2\n")
+            assertNotNull(c.engineB.ingestExternalChanges())
+
+            assertEquals(SyncEngine.Status.inSync, c.syncB.sync(c.remote).status, "conflicts: ${c.conflictsB.all().map { it.path to it.reasons }}")
+            assertEquals(2, log(c.dirB).first().parentCount, "the merge is a real merge commit")
+            assertEquals("# Ledger\n\n## A\n- a1\n- a2\n\n## B\n- b1\n- b2\n", c.engineB.read("ledger.md")!!.text)
+            assertTrue(Files.isRegularFile(c.dirB.resolve(".trash/notes/gone.md")))
+            assertNull(c.engineB.read("notes/gone.md"))
+            c.syncA.sync(c.remote)
+            assertEquals(c.engineA.head(), c.engineB.head())
+            assertEquals(SyncEngine.Status.inSync, c.syncB.sync(c.remote).status)
+        }
+    }
+
+    @Test
+    fun `applyMerge validates every path before touching the tree`(): Unit = runBlocking {
+        Cluster().use { c ->
+            c.engineA.write("notes/x.md", "# old\n", null, T)
+            val head = c.engineA.head()!!
+            assertFailsWith<IllegalArgumentException> {
+                c.engineA.applyMerge(
+                    mapOf("notes/x.md" to "# new\n", "notes/y.md" to "# y\n", ".git/config" to "nope"),
+                    emptyList(), head, "sync: merge", T, expectedHead = head,
+                )
+            }
+            assertEquals("# old\n", c.engineA.read("notes/x.md")!!.text, "nothing was written")
+            assertNull(c.engineA.read("notes/y.md"))
+            assertEquals(head, c.engineA.head())
+            assertNull(c.engineA.ingestExternalChanges(), "nothing left in the tree for an external commit")
+        }
+    }
+
+    @Test
+    fun `a merge that fails part way puts back the files it already wrote`(): Unit = runBlocking {
+        Cluster().use { c ->
+            c.engineA.write("notes/x.md", "# old\n", null, T)
+            c.engineA.write("blocker.md", "# a file, not a directory\n", null, T)
+            val head = c.engineA.head()!!
+            assertFailsWith<java.io.IOException> {
+                c.engineA.applyMerge(
+                    mapOf("notes/x.md" to "# new\n", "notes/new.md" to "# n\n", "blocker.md/child.md" to "# cannot be written\n"),
+                    emptyList(), head, "sync: merge", T, expectedHead = head,
+                )
+            }
+            assertEquals("# old\n", c.engineA.read("notes/x.md")!!.text, "the overwritten file is restored")
+            assertNull(c.engineA.read("notes/new.md"), "the added file is removed again")
+            assertEquals(head, c.engineA.head())
+            assertNull(c.engineA.ingestExternalChanges(), "nothing left in the tree for an external commit")
+        }
+    }
+
+    // ---- #38: a sync held on conflicts, or failing to reach its remote, said nothing for days ----
+
+    private fun captureSyncLog(): Pair<ch.qos.logback.classic.Logger, ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>> {
+        val logger = org.slf4j.LoggerFactory.getLogger(SyncEngine::class.java) as ch.qos.logback.classic.Logger
+        val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        return logger to appender
+    }
+
+    private fun ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>.warns(text: String) =
+        list.filter { it.level == ch.qos.logback.classic.Level.WARN && text in it.formattedMessage }
+
+    @Test
+    fun `a held sync warns once an hour with count and age and reports its age for metrics`(): Unit = runBlocking {
+        Cluster().use { c ->
+            c.bootstrap()
+            var now = java.time.Instant.parse("2026-10-16T10:00:00Z")
+            val syncB = SyncEngine(c.engineB, SyncGit(c.dirB), c.conflictsB, EventBus(), V, "machineB", clock = { now })
+            c.engineA.write("messy/s.md", "# s\nfrom A\n", null, T)
+            c.syncA.sync(c.remote)
+            c.engineB.write("messy/s.md", "# s\nfrom B\n", null, T)
+
+            val (logger, appender) = captureSyncLog()
+            try {
+                assertEquals(SyncEngine.Status.conflicts, syncB.sync(c.remote).status)
+                now = now.plusSeconds(10 * 60)
+                assertEquals(SyncEngine.Status.conflicts, syncB.sync(c.remote).status)
+                assertEquals(1, appender.warns("held on 1 unresolved conflict").size, "rate-limited: ${appender.list.map { it.formattedMessage }}")
+                assertEquals(600, syncB.heldSeconds())
+                assertEquals(600, syncB.outOfSyncSeconds())
+
+                now = now.plusSeconds(51 * 60)
+                assertEquals(SyncEngine.Status.conflicts, syncB.sync(c.remote).status)
+                val warns = appender.warns("held on 1 unresolved conflict")
+                assertEquals(2, warns.size, "repeated after an hour")
+                assertTrue("'v'" in warns.last().formattedMessage && "1h 1m" in warns.last().formattedMessage && "messy/s.md" in warns.last().formattedMessage, warns.last().formattedMessage)
+                assertEquals(61 * 60, syncB.heldSeconds())
+
+                c.conflictsB.resolve("messy/s.md")
+                assertEquals(SyncEngine.Status.inSync, syncB.sync(c.remote).status)
+                assertEquals(0, syncB.heldSeconds())
+                assertEquals(0, syncB.outOfSyncSeconds())
+            } finally { logger.detachAppender(appender) }
+        }
+    }
+
+    @Test
+    fun `a fetch failure logs its cause, rate-limited, and a push error logs its cause too`(): Unit = runBlocking {
+        Cluster().use { c ->
+            var now = java.time.Instant.parse("2026-10-16T10:00:00Z")
+            val missing = Files.createTempDirectory("svod-missing-").resolve("nope.git").toString()
+            val syncA = SyncEngine(c.engineA, SyncGit(c.dirA), c.conflictsA, EventBus(), V, "machineA", clock = { now })
+            val (logger, appender) = captureSyncLog()
+            try {
+                repeat(3) {
+                    assertEquals(SyncEngine.Status.offline, syncA.sync(missing).status)
+                    now = now.plusSeconds(10 * 60)
+                }
+                assertEquals(1, appender.warns("fetch failed").size, "once, not every cycle: ${appender.list.map { it.formattedMessage }}")
+                assertTrue("Exception" in appender.warns("fetch failed").single().formattedMessage, "the cause is in the line")
+                assertEquals(30 * 60, syncA.outOfSyncSeconds())
+
+                now = now.plusSeconds(60 * 60)
+                assertEquals(SyncEngine.Status.offline, syncA.sync(missing).status)
+                assertEquals(2, appender.warns("fetch failed").size, "repeated after an hour")
+                assertTrue("4 failed cycle(s)" in appender.warns("fetch failed").last().formattedMessage, appender.warns("fetch failed").last().formattedMessage)
+
+                assertEquals(SyncEngine.Status.inSync, syncA.sync(c.remote).status)
+                assertEquals(0, syncA.outOfSyncSeconds())
+                assertTrue(appender.list.any { "back in sync" in it.formattedMessage })
+
+                // Push: a fetch that succeeds and a push that errors names the push's cause.
+                class FailingPush(root: Path) : SyncGit(root) {
+                    override fun pushSync(remote: String, source: String, vaultId: String): PushResult {
+                        lastPushFailure = "TransportException: remote hung up"
+                        return PushResult.ERROR
+                    }
+                }
+                val pushing = SyncEngine(c.engineA, FailingPush(c.dirA), c.conflictsA, EventBus(), V, "machineA", clock = { now })
+                c.engineA.write("notes/new.md", "# new\n", null, T)
+                assertEquals(SyncEngine.Status.offline, pushing.sync(c.remote).status)
+                assertTrue(appender.warns("push failed").single().formattedMessage.endsWith("TransportException: remote hung up"))
+            } finally { logger.detachAppender(appender) }
+        }
+    }
+
     @Test
     fun `a transport failure is logged by its root cause without credentials from the URL`() {
         val e = org.eclipse.jgit.api.errors.TransportException(

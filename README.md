@@ -154,6 +154,9 @@ enforced *before* the engine is touched.
 - `write` / `delete` / `move` take an optional `expectedRevision` for optimistic concurrency —
   a mismatch returns a structured `conflict` (with current content), not a protocol error.
 - `move` rewrites all backlinks atomically.
+- A session-based (2025-11-25) MCP client that goes away without closing its session is dropped
+  after `"mcp": { "sessionIdleMinutes": 30 }` (default 30) without a request; when it comes back it
+  gets 404 and re-initializes. Stateless (2026-07-28) requests keep no session.
 - `promote` moves a note from a scratch `messy/` namespace into the curated `vault/` (a
   revision-checked move) — the "draft → publish" path for agents.
 - A read-only agent's mutation is denied and audited; an over-quota agent gets `rate_limited`;
@@ -231,6 +234,8 @@ versioned single source of truth for every client — currently **0.14.0**):
 - **Multi-vault:** `vaults`; every per-vault route takes `?vault=<id>`
 - **Live + metrics:** `events` (WebSocket) · `/api/v1/metrics` (JSON) · **`/metrics`** (Prometheus
   text exposition, for scrapers — at the root, outside the versioned contract)
+  — incl. `svod_conflicts`, `svod_sync_held_seconds` / `svod_sync_out_of_sync_seconds` per synced
+  vault and `svod_mcp_live_sessions`
 
 The `conflicts` endpoint carries each conflict's `base`/`ours`/`theirs` so a client can render a
 3-way merge; `conflicts/resolve` commits the merged content through the single writer and clears
