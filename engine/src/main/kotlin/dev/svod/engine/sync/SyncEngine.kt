@@ -272,7 +272,7 @@ class SyncEngine(
         val theirsBlob: String?, val quarantined: Boolean = false,
     )
     private data class Plan(
-        val writes: Map<String, String>,
+        val writes: Map<String, ByteArray>,
         val deletes: List<String>,
         val conflicts: List<Conflict>,
         /** Paths settled by a recorded answer, folded in by this merge. */
@@ -292,20 +292,24 @@ class SyncEngine(
         val ourFiles = git.filesAt(ours)
         val theirFiles = git.filesAt(theirs)
 
-        val writes = LinkedHashMap<String, String>()
+        val writes = LinkedHashMap<String, ByteArray>()
         val deletes = ArrayList<String>()
         val open = ArrayList<Conflict>()
         val resolved = LinkedHashMap<String, ConflictStore.Choice>()
         val overrides = LinkedHashMap<String, List<String>>()
 
         fun readBase(path: String) = baseFiles[path]?.let { git.read(base!!, path) }
-        fun takeTheirs(path: String, tb: String?) { if (tb == null) deletes.add(path) else writes[path] = git.read(theirs, path)!! }
-        /** Stage incoming [content] unless it trips the secret scanner — then quarantine it, or note the user's override. */
-        fun takeIncoming(path: String, content: String, tb: String, accepted: Boolean) {
+        fun takeTheirs(path: String, tb: String?) { if (tb == null) deletes.add(path) else writes[path] = git.readBytes(theirs, path)!! }
+        /**
+         * Stage incoming [bytes] unless they trip the secret scanner — then quarantine them, or note the user's
+         * override. The scan reads a text decoding; what is written is always the exact bytes (attachments).
+         */
+        fun takeIncoming(path: String, bytes: ByteArray, tb: String, accepted: Boolean) {
+            val content = String(bytes, Charsets.UTF_8)
             val findings = engine.scanSecrets(content)
             when {
-                findings.isEmpty() -> writes[path] = content
-                accepted -> { writes[path] = content; overrides[path] = findings }
+                findings.isEmpty() -> writes[path] = bytes
+                accepted -> { writes[path] = bytes; overrides[path] = findings }
                 else -> open.add(Conflict(path, readBase(path), ourFiles[path]?.let { git.read(ours, path) }, content,
                     listOf("incoming file quarantined — secret(s) detected: ${findings.joinToString(", ")}"), tb, quarantined = true))
             }
@@ -323,13 +327,13 @@ class SyncEngine(
             when {
                 answer == ConflictStore.Choice.ours -> {}               // the user's resolution / "keep mine" wins
                 ob == bb ->                                             // ours unchanged → take theirs
-                    if (tb == null) deletes.add(path) else takeIncoming(path, git.read(theirs, path)!!, tb, accepted = answer != null)
+                    if (tb == null) deletes.add(path) else takeIncoming(path, git.readBytes(theirs, path)!!, tb, accepted = answer != null)
                 answer == ConflictStore.Choice.incoming -> takeTheirs(path, tb)
                 ob == null || tb == null ->                            // modify/delete (or rename/edit) → real conflict
                     open.add(Conflict(path, readBase(path), ob?.let { git.read(ours, path) }, tb?.let { git.read(theirs, path) },
                         listOf("file removed on one machine and modified on another"), tb))
                 path.endsWith(".md") -> when (val out = FrontmatterMerge.merge(readBase(path), git.read(ours, path)!!, git.read(theirs, path)!!)) {
-                    is FrontmatterMerge.Outcome.Merged -> takeIncoming(path, out.content, tb, accepted = false)
+                    is FrontmatterMerge.Outcome.Merged -> takeIncoming(path, out.content.toByteArray(Charsets.UTF_8), tb, accepted = false)
                     is FrontmatterMerge.Outcome.Conflict -> open.add(Conflict(path, out.base, out.ours, out.theirs, out.reasons, tb))
                 }
                 else -> open.add(Conflict(path, readBase(path), git.read(ours, path), git.read(theirs, path),
