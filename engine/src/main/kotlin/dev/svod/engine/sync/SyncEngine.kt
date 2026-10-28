@@ -2,6 +2,7 @@ package dev.svod.engine.sync
 
 import dev.svod.engine.core.Author
 import dev.svod.engine.core.SvodEngine
+import dev.svod.engine.core.VaultPath
 import dev.svod.engine.events.EventBus
 import dev.svod.engine.events.EventTypes
 import dev.svod.engine.security.Secrets
@@ -10,6 +11,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
+import java.time.Duration
 import java.time.Instant
 
 /**
@@ -51,6 +53,8 @@ class SyncEngine(
     private val eventBus: EventBus,
     private val vaultId: String,
     private val hostId: String,
+    /** Wall clock for the hold/out-of-sync ages and the log rate limit; injectable for tests. */
+    private val clock: () -> Instant = Instant::now,
 ) {
     private val branch = engine.branch()
     private val log = LoggerFactory.getLogger(SyncEngine::class.java)
@@ -78,7 +82,66 @@ class SyncEngine(
 
     private fun record(status: Status, head: String?, syncedAt: String? = lastResult?.lastSyncedAt): Result {
         if (status == Status.inSync) conflicts.retainOnly(emptySet()) // reconciled → nothing is open any more
-        return Result(status, head, conflicts.all().size, syncedAt).also { lastResult = it }
+        val now = clock()
+        val open = conflicts.all()
+        if (status == Status.inSync) {
+            outOfSyncSince = null
+            if (lastRemoteFailureLog != null) log.info("sync of '$vaultId': back in sync after $remoteFailures failed cycle(s)")
+            remoteFailures = 0; lastRemoteFailureLog = null
+        } else if (outOfSyncSince == null) {
+            outOfSyncSince = now
+        }
+        if (open.isEmpty()) {
+            heldSince = null; lastHeldWarn = null
+        } else {
+            val since = heldSince ?: now.also { heldSince = it }
+            if (status == Status.conflicts && lastHeldWarn.isDue(now)) {
+                lastHeldWarn = now
+                val paths = open.map { it.path }
+                log.warn(
+                    "sync of '$vaultId' is held on ${open.size} unresolved conflict(s) for ${age(since, now)} " +
+                        "(since $since); nothing is merged or pushed until they are resolved in the app or via " +
+                        "POST /api/v1/conflicts/resolve: ${paths.take(5).joinToString(", ")}${if (paths.size > 5) ", …" else ""}",
+                )
+            }
+        }
+        return Result(status, head, open.size, syncedAt).also { lastResult = it }
+    }
+
+    // ---- #38: a held or failing sync must be visible (log + /metrics), not silent for days ----
+
+    /** When the open-conflict hold began (first cycle that left conflicts open); null when none is open. */
+    @Volatile private var heldSince: Instant? = null
+    /** When the current run of cycles that did not end `inSync` began; null after an `inSync` cycle. */
+    @Volatile private var outOfSyncSince: Instant? = null
+    private var lastHeldWarn: Instant? = null
+    private var lastRemoteFailureLog: Instant? = null
+    private var remoteFailures = 0
+
+    /** Seconds the sync has been held on open conflicts (0 when none is open). For `/metrics`. */
+    fun heldSeconds(): Long = heldSince?.let { Duration.between(it, clock()).seconds.coerceAtLeast(0) } ?: 0
+
+    /** Seconds since the last cycle that ended `inSync`, while later cycles did not (0 when in sync). For `/metrics`. */
+    fun outOfSyncSeconds(): Long = outOfSyncSince?.let { Duration.between(it, clock()).seconds.coerceAtLeast(0) } ?: 0
+
+    private fun Instant?.isDue(now: Instant): Boolean = this == null || Duration.between(this, now) >= LOG_EVERY
+
+    /** WARN for a failed fetch/push: the first failure at once, then at most once per [LOG_EVERY] while it keeps failing. */
+    private fun remoteFailed(what: String, cause: String) {
+        remoteFailures++
+        val now = clock()
+        if (lastRemoteFailureLog.isDue(now)) {
+            lastRemoteFailureLog = now
+            val streak = outOfSyncSince?.let { " (out of sync for ${age(it, now)}, $remoteFailures failed cycle(s))" } ?: ""
+            log.warn("sync of '$vaultId': $what failed, remote marked offline$streak: $cause")
+        } else {
+            log.debug("sync of '$vaultId': $what failed again: $cause")
+        }
+    }
+
+    private fun age(since: Instant, now: Instant): String {
+        val d = Duration.between(since, now)
+        return if (d.toHours() > 0) "${d.toHours()}h ${d.toMinutesPart()}m" else "${d.toMinutes()}m"
     }
 
     /** Head last mirrored to the browsable `main` branch; skip re-pushing an unchanged head. */
@@ -116,8 +179,9 @@ class SyncEngine(
             try {
                 git.fetchSync(resolved, vaultId)
             } catch (e: Exception) {
-                log.warn("sync of '$vaultId': fetch failed, remote marked offline: ${SyncGit.describeFailure(e)}")
-                return record(Status.offline, engine.head())
+                val head = engine.head()
+                remoteFailed("fetch", SyncGit.describeFailure(e))
+                return record(Status.offline, head)
             }
             val remoteHead = git.syncRef(vaultId)
             // The snapshot this round reconciles, pinned once the fetch is in: everything below plans
@@ -152,10 +216,16 @@ class SyncEngine(
                     return record(Status.inSync, toPush, Instant.now().toString())
                 }
                 SyncGit.PushResult.REJECTED -> {                        // a peer pushed first → re-fetch/merge
-                    if (++attempt >= maxAttempts) return record(Status.error, engine.head())
+                    if (++attempt >= maxAttempts) {
+                        remoteFailed("push", "rejected as non-fast-forward $maxAttempts times in a row")
+                        return record(Status.error, engine.head())
+                    }
                     delay(backoffMillis(attempt))
                 }
-                SyncGit.PushResult.ERROR -> return record(Status.offline, engine.head())
+                SyncGit.PushResult.ERROR -> {
+                    remoteFailed("push", git.lastPushFailure ?: "unknown error")
+                    return record(Status.offline, engine.head())
+                }
             }
         }
     }
@@ -241,9 +311,13 @@ class SyncEngine(
             }
         }
 
+        val skipped = ArrayList<String>()
         for (path in (ourFiles.keys + theirFiles.keys + baseFiles.keys)) {
             val ob = ourFiles[path]; val tb = theirFiles[path]; val bb = baseFiles[path]
             if (ob == tb || tb == bb) continue                          // identical on both sides / theirs unchanged → keep ours
+            // `.trash/` is history and merges like any file; `.svod/` (git-ignored, per-machine engine
+            // state) or `.git` committed by some other tool is never taken from a peer: ours is kept.
+            if (VaultPath.ofHistoryOrNull(path) == null) { skipped += path; continue }
             val answer = conflicts.resolution(path, tb)
             if (answer != null) resolved[path] = answer
             when {
@@ -262,8 +336,16 @@ class SyncEngine(
                     listOf("binary/non-markdown file changed on both machines"), tb))
             }
         }
+        if (skipped.isNotEmpty()) {
+            log.warn("sync of '$vaultId': ${skipped.size} incoming path(s) under an engine-reserved directory not merged, local side kept: ${skipped.take(5).joinToString(", ")}")
+        }
         return Plan(writes, deletes, open, resolved, overrides)
     }
 
     private fun backoffMillis(attempt: Int): Long = (50L shl (attempt - 1)).coerceAtMost(800L)
+
+    companion object {
+        /** How often a held sync and a still-failing remote are repeated at WARN. */
+        val LOG_EVERY: Duration = Duration.ofHours(1)
+    }
 }

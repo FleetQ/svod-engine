@@ -193,7 +193,7 @@ class SvodNode private constructor(
                         dev.svod.engine.security.Secrets.resolve(t.keyPassword).toCharArray())
                 }
                 val updateService = UpdateService(
-                    currentAppVersion = "1.28.0",
+                    currentAppVersion = "1.29.0",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 // Two-way sync driver: startup + interval poll + on-change debounce, per synced vault.
@@ -202,6 +202,12 @@ class SvodNode private constructor(
                     workScope, backup, { id -> runSync(vaults, backup, id) }, eventBus,
                 )
 
+                // Built before the API so /metrics can report its live sessions; started after it.
+                val mcpServer = dev.svod.engine.mcp.SvodMcpServer(
+                    { vid -> toolsByVault[vid] }, defaultId, registry, host = config.host,
+                    requireReview = config.memory.requireReview,
+                    sessionIdleTtl = java.time.Duration.ofMinutes(config.mcp.sessionIdleMinutes.toLong()),
+                )
                 val api = AppApiServer(
                     vaults = vaults,
                     eventBus = eventBus,
@@ -286,9 +292,10 @@ class SvodNode private constructor(
                     },
                     sourceWatching = { vc, sourceId -> sourceWatch.isWatching(vc.id, sourceId) },
                     reconcileSourceWatchers = { vc -> sourceWatch.reconcile(vc.id) },
+                    syncEngineOf = { vc -> (vc as? VaultContext)?.syncEngine?.takeIf { backup.isSynced(vc.id) } },
+                    mcpLiveSessions = mcpServer::liveSessions,
                 ).start(config.appApiPort)
 
-                val mcpServer = dev.svod.engine.mcp.SvodMcpServer({ vid -> toolsByVault[vid] }, defaultId, registry, host = config.host, requireReview = config.memory.requireReview)
                 val mcpTls = config.mcpTls?.let { t ->
                     val ks = dev.svod.engine.security.Keystores.load(
                         java.nio.file.Paths.get(t.keystorePath),

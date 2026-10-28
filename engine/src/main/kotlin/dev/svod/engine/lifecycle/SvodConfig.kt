@@ -60,6 +60,8 @@ data class SvodConfig(
     val graph: GraphSettings = GraphSettings(),
     /** How agent-written memory (`remember`) enters the vault. */
     val memory: MemorySettings = MemorySettings(),
+    /** MCP session housekeeping. */
+    val mcp: McpSettings = McpSettings(),
     /**
      * Optional TLS for the App API. Required (together with [users] and [mcpTls]) before [host] may
      * leave loopback: a shared engine on a server is reached over HTTPS with personal keys, never
@@ -148,6 +150,15 @@ data class SvodConfig(
     @Serializable
     data class MemorySettings(
         val requireReview: Boolean = true,
+    )
+    /**
+     * [sessionIdleMinutes]: a 2025-11-25 (session-based) MCP session with no request for this long is
+     * closed and dropped; the client gets 404 on its next call and re-initializes. Stateless
+     * 2026-07-28 requests keep no session and are not affected.
+     */
+    @Serializable
+    data class McpSettings(
+        val sessionIdleMinutes: Int = dev.svod.engine.mcp.SvodMcpServer.DEFAULT_SESSION_IDLE_MINUTES,
     )
     /**
      * [blockStartup]=false (default) binds the App API immediately and builds the semantic index in
@@ -429,6 +440,7 @@ data class SvodConfig(
             if (ROLES.none { it.equals(a.role, ignoreCase = true) }) errors += "agent '${a.agentId}' role must be one of $ROLES, was '${a.role}'"
         }
         if (syncRemotes.isNotEmpty() && hostId.isBlank()) errors += "hostId must be set when syncRemotes is configured"
+        if (mcp.sessionIdleMinutes < 1) errors += "mcp.sessionIdleMinutes must be >= 1, was ${mcp.sessionIdleMinutes}"
         backup?.let { b ->
             if (b.remote.isBlank()) errors += "backup.remote must be non-blank"
             else if (remoteHasInlineCredentials(b.remote)) {

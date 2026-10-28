@@ -3,6 +3,58 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.29.0 — 2026-10-28 (App API contract 0.37.0, unchanged)
+
+Three fixes for a two-way sync that stood still for 12 days and an MCP server that kept every
+session it ever opened. No change to the App API contract, the vault format or existing configs.
+
+### Fixed — a merge that carries a soft delete no longer fails, and a failed merge leaves no trace (#39)
+
+Soft delete moves a note under `.trash/` and commits it, so a diverged merge legitimately contains
+`.trash/` paths. `applyMerge` validated them with the user-write guard and threw
+`IllegalArgumentException: reserved top-level path: '.trash'` on every poll, so the vault stayed
+diverged. Worse, the files written before the throw stayed in the working tree and the next cycle
+committed them as `external: ingest working-tree changes`, a plain commit with no merge parent.
+
+- Merge paths come from git history and are checked with `VaultPath.ofHistory`: `.trash/` merges like
+  any file; `.git` and `.svod/` stay refused. User writes keep the old guard.
+- An incoming change under `.svod/` (git-ignored, per-machine engine state) is never taken from a
+  peer: the local side is kept and a WARN names the paths.
+- `applyMerge` validates every path before touching the tree, and if a write, delete or the commit
+  fails part way, it puts back the files it already changed. Nothing is left for the next ingest.
+- A vault that already has such a half-applied merge committed as `external` merges cleanly on its
+  next cycle: hunks that are identical on both sides are not a conflict (covered by a test).
+
+### Fixed — a sync held on conflicts, or unable to reach its remote, is no longer silent (#38)
+
+- While open conflicts hold the sync, the engine log says so at WARN once an hour per vault, with
+  the conflict count, how long it has been held and the first paths: `sync of '<vault>' is held on 2
+  unresolved conflict(s) for 26h 4m (since …)`.
+- A failed fetch or push is logged with its cause at once, then at most once an hour while it keeps
+  failing (with how long the vault has been out of sync); a cycle that ends in sync again says so.
+  Before, a failing fetch logged on every cycle and a push error was logged only inside the git layer.
+- `/metrics` (Prometheus) has two new per-vault gauges for synced vaults:
+  `svod_sync_held_seconds{vault}` (age of the conflict hold, 0 when none is open) and
+  `svod_sync_out_of_sync_seconds{vault}` (time since the last cycle that ended in sync, 0 when in
+  sync). Both count from the first such cycle since the engine started.
+
+Sync behaviour is otherwise unchanged.
+
+### Fixed — idle MCP sessions are evicted (#37)
+
+A session-based (2025-11-25) MCP client that exits without `DELETE` (Ctrl+C, a closed terminal) left
+its session in memory for the life of the process; one engine had 3344 after 12 days. Sessions with
+no request for `mcp.sessionIdleMinutes` (default 30) are now closed and dropped by a sweep. A request
+in progress keeps its session; an open SSE stream alone does not. A client that comes back gets 404
+and re-initializes, as after a restart. `/metrics` reports `svod_mcp_live_sessions`. Stateless
+(2026-07-28) requests keep no session and are not affected.
+
+New engine config setting, read at startup (optional, existing configs need no edit):
+
+```json
+"mcp": { "sessionIdleMinutes": 30 }
+```
+
 ## v1.28.0 — 2026-10-16 (App API contract 0.37.0)
 
 ### Added — memory review can be turned off (`memory.requireReview`)

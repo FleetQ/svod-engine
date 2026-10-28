@@ -82,6 +82,11 @@ open class SyncGit(root: Path, private val timeoutSeconds: Int = TRANSPORT_TIMEO
     /** Outcome of a canonical-ref push: pushed cleanly, rejected (a peer advanced it first), or a transport error. */
     enum class PushResult { OK, REJECTED, ERROR }
 
+    /** Root cause of the last [pushSync] that ended [PushResult.ERROR] (credentials stripped); logged by [SyncEngine]. */
+    @Volatile
+    var lastPushFailure: String? = null
+        protected set
+
     /**
      * Push [source] — the commit a sync cycle pinned (or a local branch name) — to the canonical sync
      * ref `refs/svod/sync/<vaultId>` on [remote], **non-force**: a non-fast-forward (another machine
@@ -102,7 +107,8 @@ open class SyncGit(root: Path, private val timeoutSeconds: Int = TRANSPORT_TIMEO
         }
         if (ok) PushResult.OK else PushResult.REJECTED
     } catch (e: Exception) {
-        log.warn("push of sync ref for '$vaultId' failed: ${describeFailure(e)}")
+        lastPushFailure = describeFailure(e)
+        log.debug("push of sync ref for '$vaultId' failed: $lastPushFailure")
         PushResult.ERROR
     }
 

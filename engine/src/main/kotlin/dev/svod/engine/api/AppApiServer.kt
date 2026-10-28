@@ -107,6 +107,10 @@ class AppApiServer(
     private val activity: UserActivity? = null,
     /** Per-request audit of keyed principals; null ⇒ off. */
     private val audit: ApiAuditLog? = null,
+    /** The two-way sync engine of a synced vault, for the sync-age gauges in `/metrics`; null ⇒ not synced. */
+    private val syncEngineOf: (VaultView) -> dev.svod.engine.sync.SyncEngine? = { null },
+    /** Live MCP sessions for `/metrics`; null ⇒ the gauge is not emitted (no MCP server in this process). */
+    private val mcpLiveSessions: (() -> Int)? = null,
 ) {
     /** Back-compat single-vault constructor (one engine/index, optional conflicts + sync status). */
     constructor(
@@ -1187,6 +1191,16 @@ class AppApiServer(
             snaps.map { vlabel(it.id) to it.queuePeak })
         emit("svod_conflicts", "gauge", "Open sync conflicts per vault.",
             snaps.map { vlabel(it.id) to it.conflicts })
+        val synced = vaults.all().mapNotNull { v -> syncEngineOf(v)?.let { v.id to it } }
+        if (synced.isNotEmpty()) {
+            emit("svod_sync_held_seconds", "gauge", "Seconds a synced vault has been held on unresolved conflicts (0 when none).",
+                synced.map { (id, s) -> vlabel(id) to s.heldSeconds() })
+            emit("svod_sync_out_of_sync_seconds", "gauge", "Seconds since a synced vault's last cycle that ended in sync, while later cycles did not (0 when in sync).",
+                synced.map { (id, s) -> vlabel(id) to s.outOfSyncSeconds() })
+        }
+        mcpLiveSessions?.let { live ->
+            emit("svod_mcp_live_sessions", "gauge", "Live session-based (2025-11-25) MCP sessions.", listOf("" to live()))
+        }
         return sb.toString()
     }
 

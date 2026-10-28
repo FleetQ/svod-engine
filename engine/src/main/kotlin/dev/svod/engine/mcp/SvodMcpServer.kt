@@ -31,7 +31,6 @@ import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.sse.SSE
 import io.ktor.server.sse.sse
-import io.ktor.util.collections.ConcurrentMap
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.server.StreamableHttpServerTransport
@@ -41,6 +40,9 @@ import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 import io.modelcontextprotocol.kotlin.sdk.types.McpJson
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -68,15 +70,67 @@ class SvodMcpServer(
     private val host: String = "127.0.0.1",
     /** `memory.requireReview`: the tool descriptions and instructions tell agents what `remember` really does. */
     private val requireReview: Boolean = true,
+    /**
+     * `mcp.sessionIdleMinutes`: a 2025-11-25 session with no request for this long is closed and
+     * dropped. A client that exits without DELETE (Ctrl+C, a closed terminal) otherwise stays in
+     * memory for the life of the process (#37). A client that comes back gets 404 and re-initializes.
+     */
+    private val sessionIdleTtl: java.time.Duration = java.time.Duration.ofMinutes(DEFAULT_SESSION_IDLE_MINUTES.toLong()),
+    /** Milliseconds clock for session idle times; injectable for tests. */
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     /** Single-vault convenience: one tool set for every vault id. */
     constructor(tools: SvodTools, registry: AgentRegistry, host: String = "127.0.0.1", requireReview: Boolean = true)
         : this({ _ -> tools }, "default", registry, host, requireReview)
 
+    /** A live 2025-11-25 session. [inFlight] > 0 while a POST/DELETE is being served. */
+    private class Session(val transport: StreamableHttpServerTransport, @Volatile var lastSeen: Long) {
+        val inFlight = java.util.concurrent.atomic.AtomicInteger()
+    }
+
+    private val sessions = java.util.concurrent.ConcurrentHashMap<String, Session>()
+
+    /** Live 2025-11-25 sessions, for `/metrics` (`svod_mcp_live_sessions`). */
+    fun liveSessions(): Int = sessions.size
+
+    /**
+     * Close and drop every session idle longer than the TTL. A session serving a POST/DELETE right
+     * now is never idle. An open SSE stream does not count: a client that vanished without closing
+     * its socket would hold it open, and keep its session, forever; a live client whose stream is
+     * closed by the eviction reconnects, gets 404 and re-initializes. Runs on a timer from [start];
+     * public for tests.
+     * Returns how many sessions were evicted.
+     */
+    suspend fun evictIdle(): Int {
+        val cutoff = clock() - sessionIdleTtl.toMillis()
+        var evicted = 0
+        for ((id, s) in sessions) {
+            if (s.inFlight.get() > 0 || s.lastSeen > cutoff) continue
+            if (!sessions.remove(id, s)) continue
+            evicted++
+            runCatching { s.transport.close() }.onFailure { log.debug("closing idle MCP session {} failed", id, it) }
+        }
+        if (evicted > 0) log.info("evicted {} MCP session(s) idle for more than {} min; live sessions: {}", evicted, sessionIdleTtl.toMinutes(), sessions.size)
+        return evicted
+    }
+
+    /** Route one request to [s], keeping it from being evicted while it is served. */
+    private suspend fun serve(s: Session, block: suspend () -> Unit) {
+        s.inFlight.incrementAndGet()
+        s.lastSeen = clock()
+        try { block() } finally {
+            s.lastSeen = clock()
+            s.inFlight.decrementAndGet()
+        }
+    }
+
     private val serverInstructions = instructions(requireReview)
 
-    class Running(val embedded: EmbeddedServer<*, *>, val port: Int) {
-        fun stop() = embedded.stop(500, 1000)
+    class Running(val embedded: EmbeddedServer<*, *>, val port: Int, private val sweeper: kotlinx.coroutines.Job? = null) {
+        fun stop() {
+            sweeper?.cancel()
+            embedded.stop(500, 1000)
+        }
     }
 
     /** TLS material for serving MCP over HTTPS (remote agents reach MCP encrypted). */
@@ -100,7 +154,14 @@ class SvodMcpServer(
         }) { configure() }
         embedded.start(wait = false)
         val port = runBlocking { embedded.engine.resolvedConnectors().first().port }
-        return Running(embedded, port)
+        val sweepEvery = (sessionIdleTtl.toMillis() / 4).coerceIn(1_000L, 60_000L)
+        val sweeper = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
+            while (isActive) {
+                delay(sweepEvery)
+                runCatching { evictIdle() }.onFailure { log.warn("MCP idle-session sweep failed", it) }
+            }
+        }
+        return Running(embedded, port, sweeper)
     }
 
     private fun Application.configure() {
@@ -117,14 +178,13 @@ class SvodMcpServer(
             }
         }
 
-        val transports = ConcurrentMap<String, StreamableHttpServerTransport>()
-
         routing {
             authenticate("mcp") {
                 route("/mcp") {
                     sse {
-                        val transport = findTransport(call, transports) ?: return@sse
-                        transport.handleRequest(this, call)
+                        val session = findSession(call) ?: return@sse
+                        session.lastSeen = clock()
+                        session.transport.handleRequest(this, call)
                     }
                     post {
                         // The body is read here to pick a wire format and then again by the legacy
@@ -132,15 +192,15 @@ class SvodMcpServer(
                         val raw = call.receiveText()
                         val parsed = runCatching { McpJson.parseToJsonElement(raw) }.getOrNull()
                         if (isLegacyHandshake(call, parsed)) {
-                            val transport = getOrCreateTransport(call, transports) ?: return@post
-                            transport.handleRequest(null, call)
+                            val session = getOrCreateSession(call) ?: return@post
+                            serve(session) { session.transport.handleRequest(null, call) }
                         } else {
                             handleStateless(call, parsed)
                         }
                     }
                     delete {
-                        val transport = findTransport(call, transports) ?: return@delete
-                        transport.handleRequest(null, call)
+                        val session = findSession(call) ?: return@delete
+                        serve(session) { session.transport.handleRequest(null, call) }
                     }
                 }
             }
@@ -203,31 +263,32 @@ class SvodMcpServer(
         call.respondText(McpJson.encodeToString(JsonElement.serializer(), body), ContentType.Application.Json, status)
     }
 
-    private suspend fun findTransport(call: ApplicationCall, transports: ConcurrentMap<String, StreamableHttpServerTransport>): StreamableHttpServerTransport? {
+    private suspend fun findSession(call: ApplicationCall): Session? {
         val sessionId = call.request.header(SESSION_HEADER)
         if (sessionId.isNullOrEmpty()) {
             call.respond(HttpStatusCode.BadRequest, "No valid session ID")
             return null
         }
-        val transport = transports[sessionId]
-        if (transport == null) {
-            log.info("unknown MCP session {} ({} {}) → 404; live sessions: {}", sessionId, call.request.local.method.value, call.request.local.uri, transports.size)
+        val session = sessions[sessionId]
+        if (session == null) {
+            log.info("unknown MCP session {} ({} {}) → 404; live sessions: {}", sessionId, call.request.local.method.value, call.request.local.uri, sessions.size)
             call.respond(HttpStatusCode.NotFound, "Session not found")
         }
-        return transport
+        return session
     }
 
-    private suspend fun getOrCreateTransport(call: ApplicationCall, transports: ConcurrentMap<String, StreamableHttpServerTransport>): StreamableHttpServerTransport? {
+    private suspend fun getOrCreateSession(call: ApplicationCall): Session? {
         val sessionId = call.request.header(SESSION_HEADER)
         if (sessionId != null) {
-            val transport = transports[sessionId]
-            if (transport == null) {
-                // A stale id after an engine restart is the expected cause (in-memory sessions);
-                // the client must re-initialize. Invisible in logs during the 2026-07-03 incident.
-                log.info("unknown MCP session {} (POST) → 404; live sessions: {}", sessionId, transports.size)
+            val session = sessions[sessionId]
+            if (session == null) {
+                // A stale id after an engine restart or an idle eviction is the expected cause
+                // (in-memory sessions); the client must re-initialize. Invisible in logs during the
+                // 2026-07-03 incident.
+                log.info("unknown MCP session {} (POST) → 404; live sessions: {}", sessionId, sessions.size)
                 call.respond(HttpStatusCode.NotFound, "Session not found")
             }
-            return transport
+            return session
         }
 
         val agentId = call.principal<UserIdPrincipal>()?.name
@@ -238,19 +299,21 @@ class SvodMcpServer(
         }
 
         val transport = StreamableHttpServerTransport(StreamableHttpServerTransport.Configuration(enableJsonResponse = true))
+        // Not in [sessions] until the handshake hands out an id; [serve] keeps it busy meanwhile.
+        val session = Session(transport, clock())
         transport.setOnSessionInitialized { id ->
-            transports[id] = transport
-            log.info("MCP session {} initialized for agent '{}'; live sessions: {}", id, agent.agentId, transports.size)
+            sessions[id] = session
+            log.info("MCP session {} initialized for agent '{}'; live sessions: {}", id, agent.agentId, sessions.size)
         }
         transport.setOnSessionClosed { id ->
-            transports.remove(id)
-            log.info("MCP session {} closed; live sessions: {}", id, transports.size)
+            sessions.remove(id)
+            log.info("MCP session {} closed; live sessions: {}", id, sessions.size)
         }
 
         val server = buildServer(agent)
-        server.onClose { transport.sessionId?.let { transports.remove(it) } }
+        server.onClose { transport.sessionId?.let { sessions.remove(it) } }
         server.createSession(transport)
-        return transport
+        return session
     }
 
     /** A fresh MCP server for [agent], serving the same catalogue as the stateless path. */
@@ -418,6 +481,9 @@ class SvodMcpServer(
 
     companion object {
         private const val SESSION_HEADER = "mcp-session-id"
+
+        /** Default `mcp.sessionIdleMinutes` (single source: the config default reads it from here). */
+        const val DEFAULT_SESSION_IDLE_MINUTES = 30
         private const val SERVER_NAME = "svod"
         private const val SERVER_VERSION = "0.1.0"
 
