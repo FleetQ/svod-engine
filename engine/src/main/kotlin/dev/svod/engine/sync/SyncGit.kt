@@ -176,9 +176,12 @@ open class SyncGit(root: Path, private val timeoutSeconds: Int = TRANSPORT_TIMEO
         return out
     }
 
-    fun read(commit: String, path: String): String? {
+    fun read(commit: String, path: String): String? = readBytes(commit, path)?.let { String(it, UTF_8) }
+
+    /** The exact blob bytes — what a merge must write, so an attachment is never round-tripped through text. */
+    fun readBytes(commit: String, path: String): ByteArray? {
         val tree = RevWalk(repo).use { it.parseCommit(ObjectId.fromString(commit)).tree }
-        TreeWalk.forPath(repo, path, tree)?.use { return String(repo.open(it.getObjectId(0)).bytes, UTF_8) }
+        TreeWalk.forPath(repo, path, tree)?.use { return repo.open(it.getObjectId(0)).bytes }
         return null
     }
 

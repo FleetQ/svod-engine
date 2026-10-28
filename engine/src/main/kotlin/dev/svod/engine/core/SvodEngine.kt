@@ -239,7 +239,7 @@ class SvodEngine private constructor(
      * commit with no merge parent (#39).
      */
     suspend fun applyMerge(
-        writes: Map<String, String>,
+        writes: Map<String, ByteArray>,
         deletes: List<String>,
         theirs: String,
         message: String,
@@ -260,7 +260,7 @@ class SvodEngine private constructor(
                 }.onFailure { log.error("could not restore {} after a failed merge", p, it) }
             }
             try {
-                for ((target, content) in writeTargets) AtomicFile.write(target, content.toByteArray(UTF_8), crash)
+                for ((target, content) in writeTargets) AtomicFile.write(target, content, crash)
                 for (target in deleteTargets) Files.deleteIfExists(target)
                 git.commitMerge(message, author, theirs, expectedHead).also { if (it == null) restore() }
             } catch (t: Throwable) {

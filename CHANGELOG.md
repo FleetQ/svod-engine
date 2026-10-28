@@ -3,6 +3,20 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.29.1 — 2026-10-28 (App API contract 0.37.0, unchanged)
+
+### Fixed — sync no longer round-trips incoming files through text
+
+A diverged 3-way merge read every incoming file from git as a UTF-8 string and wrote it back as
+UTF-8 bytes. Markdown was unaffected, but an attachment (PNG, PDF, archive) taken from a peer had
+every invalid byte sequence replaced by U+FFFD, so the image arrived corrupted. A fast-forward was
+never affected; only a merge where both machines had changes of their own.
+
+- The merge plan and `applyMerge` carry exact blob bytes (`SyncGit.readBytes`). The secret scanner
+  still reads a text decoding of incoming content; what is written is always the original bytes.
+- Covered by a test that adds and then changes a non-UTF-8 file on one machine while the other has
+  its own edits, and checks the bytes on arrival.
+
 ## v1.29.0 — 2026-10-28 (App API contract 0.37.0, unchanged)
 
 Three fixes for a two-way sync that stood still for 12 days and an MCP server that kept every

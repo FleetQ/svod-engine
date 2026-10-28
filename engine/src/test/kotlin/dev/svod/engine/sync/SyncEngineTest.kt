@@ -602,13 +602,36 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `an incoming binary file arrives byte for byte, added and then changed`(): Unit = runBlocking {
+        Cluster().use { c ->
+            c.bootstrap()
+            // A PNG header plus bytes that are not valid UTF-8; a text round-trip turns them into U+FFFD.
+            val png = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0xFF.toByte(), 0xC3.toByte(), 0x28)
+            // B always has a local edit of its own, so it takes A's file through a 3-way merge, not a fast-forward.
+            c.engineA.writeBytes("img/shot.png", png, null, T)
+            c.engineB.write("notes/b1.md", "# b1\n", null, T)
+            c.syncA.sync(c.remote); c.syncB.sync(c.remote)
+            assertTrue(png.contentEquals(c.engineB.readBytes("img/shot.png")), "added on A, taken by B unchanged")
+
+            c.syncA.sync(c.remote)
+            val png2 = png + byteArrayOf(0x80.toByte(), 0x00, 0xFE.toByte())
+            c.engineA.writeBytes("img/shot.png", png2, c.engineA.blobId(png), T)
+            c.engineB.write("notes/b2.md", "# b2\n", null, T)
+            c.syncA.sync(c.remote); c.syncB.sync(c.remote)
+            assertTrue(png2.contentEquals(c.engineB.readBytes("img/shot.png")), "changed on A, taken by B unchanged")
+            c.syncA.sync(c.remote)
+            assertEquals(c.engineA.head(), c.engineB.head())
+        }
+    }
+
+    @Test
     fun `applyMerge validates every path before touching the tree`(): Unit = runBlocking {
         Cluster().use { c ->
             c.engineA.write("notes/x.md", "# old\n", null, T)
             val head = c.engineA.head()!!
             assertFailsWith<IllegalArgumentException> {
                 c.engineA.applyMerge(
-                    mapOf("notes/x.md" to "# new\n", "notes/y.md" to "# y\n", ".git/config" to "nope"),
+                    mapOf("notes/x.md" to "# new\n", "notes/y.md" to "# y\n", ".git/config" to "nope").mapValues { it.value.toByteArray() },
                     emptyList(), head, "sync: merge", T, expectedHead = head,
                 )
             }
@@ -627,7 +650,7 @@ class SyncEngineTest {
             val head = c.engineA.head()!!
             assertFailsWith<java.io.IOException> {
                 c.engineA.applyMerge(
-                    mapOf("notes/x.md" to "# new\n", "notes/new.md" to "# n\n", "blocker.md/child.md" to "# cannot be written\n"),
+                    mapOf("notes/x.md" to "# new\n", "notes/new.md" to "# n\n", "blocker.md/child.md" to "# cannot be written\n").mapValues { it.value.toByteArray() },
                     emptyList(), head, "sync: merge", T, expectedHead = head,
                 )
             }
