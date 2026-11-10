@@ -39,7 +39,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14,       label: macos-arm64,   exe: "" }
+          - { os: macos-15,       label: macos-arm64,   exe: "" }
           - { os: ubuntu-latest,  label: linux-x64,     exe: "" }
           - { os: windows-latest, label: windows-x64,   exe: ".exe" }
     runs-on: ${{ matrix.os }}

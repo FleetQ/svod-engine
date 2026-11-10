@@ -50,6 +50,36 @@ class AgentAdminTest {
     }
 
     @Test
+    fun `requireReview is stored, kept on unrelated updates and reaches the registry`(): Unit = runBlocking {
+        val (ctrl, registry, store) = controller()
+        val created = ctrl.create(CreateAgentRequest(agentId = "colleague", role = "WRITE", tokenRef = tokenRef("t-colleague"), requireReview = true))
+        assertEquals(true, created.requireReview)
+        assertEquals(true, registry.byAgentId("colleague")!!.requireReview)
+
+        assertEquals(true, ctrl.update("colleague", UpdateAgentRequest(name = "Colleague")).requireReview, "omitted = unchanged")
+        assertEquals(false, ctrl.update("colleague", UpdateAgentRequest(requireReview = false)).requireReview)
+        assertEquals(false, store.config.agents.single { it.agentId == "colleague" }.requireReview)
+        assertEquals(false, registry.byAgentId("colleague")!!.requireReview)
+
+        assertNull(ctrl.create(CreateAgentRequest(agentId = "plain", role = "WRITE", tokenRef = tokenRef("t-plain"))).requireReview)
+    }
+
+    @Test
+    fun `requireReview survives a write of config json and an unset one is not written`(): Unit = runBlocking {
+        val file = Files.createTempFile("svod-config-", ".json").also { it.toFile().deleteOnExit() }
+        val store = ConfigStore(SvodConfig(vaultPath = "/tmp/test-vault", mcpPort = 7518), file)
+        val ctrl = AgentController(store, AgentRegistry(emptyList()), "127.0.0.1")
+        ctrl.create(CreateAgentRequest(agentId = "waits", role = "WRITE", tokenRef = tokenRef("t-waits"), requireReview = true))
+        ctrl.create(CreateAgentRequest(agentId = "plain", role = "WRITE", tokenRef = tokenRef("t-plain2")))
+        ctrl.update("plain", UpdateAgentRequest(name = "Plain"))
+
+        val reloaded = SvodConfig.load(file)
+        assertEquals(true, reloaded.agents.single { it.agentId == "waits" }.requireReview)
+        assertNull(reloaded.agents.single { it.agentId == "plain" }.requireReview)
+        assertTrue("null" !in Files.readString(file), "an unset requireReview must not be written as null")
+    }
+
+    @Test
     fun `duplicate agent id — Conflict`(): Unit = runBlocking {
         val (ctrl, _, _) = controller()
         val ref = tokenRef("token-1")

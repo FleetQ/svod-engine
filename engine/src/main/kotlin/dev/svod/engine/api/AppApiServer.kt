@@ -1217,7 +1217,7 @@ class AppApiServer(
         )
     }
 
-    private fun AgentSpecView.toDto() = AgentDto(agentId, name, role, vaults, tokenRef, prompt)
+    private fun AgentSpecView.toDto() = AgentDto(agentId, name, role, vaults, tokenRef, prompt, requireReview)
     private fun UserSpecView.toDto() = UserDto(userId, name, email, admin, grants, keyRef, lastUsedAt = activity?.lastUsedIso(userId))
 
     /** All captured session notes' frontmatter for [vc] (bypasses the index — reads notes directly). */

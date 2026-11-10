@@ -27,17 +27,22 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * `memory.requireReview`: on (default) a remembered fact/policy waits for a person as `provisional`;
- * off it is stored `active`, except UNCERTAIN and CONTRADICTION, which still go to the review queue.
+ * Memory review: an agent's own `requireReview` wins, else `memory.requireReview` (default off since
+ * 1.30.0). On, a remembered fact/policy waits for a person as `provisional`; off, every memory is
+ * stored `active`, an UNCERTAIN one flagged `needs-review: true`.
  */
 class MemoryReviewSettingTest {
 
-    private class Fixture(requireReview: Boolean, adjudicator: MemoryAdjudicator? = null) : AutoCloseable {
+    private class Fixture(
+        requireReview: Boolean,
+        adjudicator: MemoryAdjudicator? = null,
+        agentReview: Boolean? = null,
+    ) : AutoCloseable {
         val root: Path = Files.createTempDirectory("svod-review-setting-")
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val engine: SvodEngine = SvodEngine.open(root, scope)
         val index: IndexService = IndexService(root, root.resolve(".svod").resolve("index"), NoneEmbedder).start()
-        val registry = AgentRegistry(listOf(WRITE_AGENT))
+        val registry = AgentRegistry(listOf(WRITE_AGENT.copy(requireReview = agentReview)))
         val tools = SvodTools(
             engine, index, AuditLog(root.resolve(".svod").resolve("audit").resolve("audit.log")),
             RateLimiter.default(), EventBus(), adjudicator, requireReview = requireReview,
@@ -52,6 +57,8 @@ class MemoryReviewSettingTest {
         }
 
         fun fileStatus(path: String): String? = runBlocking { MarkdownChunker.parse(engine.read(path)!!.text).status }
+
+        fun fileText(path: String): String = runBlocking { engine.read(path)!!.text }
 
         fun queued(): Set<String> = runBlocking {
             index.waitIdle()
@@ -112,26 +119,47 @@ class MemoryReviewSettingTest {
     }
 
     @Test
-    fun `review off - UNCERTAIN stays provisional and queued`() {
+    fun `review off - UNCERTAIN is active and flagged for a person to look at`() {
         Fixture(requireReview = false, adjudicator = null).use { fx ->
             val first = fx.remember(US)
             fx.index.waitIdle()
             val r = fx.remember(EU)
             assertEquals("UNCERTAIN", str(r, "classification"))
-            assertEquals("provisional", str(r, "memoryStatus"))
-            assertEquals("provisional", fx.fileStatus(str(r, "path")!!))
-            assertEquals(setOf(str(r, "path")), fx.queued(), "only the uncertain one waits; ${str(first, "path")} is active")
+            assertEquals("active", str(r, "memoryStatus"))
+            assertEquals("active", fx.fileStatus(str(r, "path")!!))
+            assertTrue("needs-review: true" in fx.fileText(str(r, "path")!!))
+            assertEquals(setOf(str(r, "path")), fx.queued(), "listed for a look because of needs-review; ${str(first, "path")} is not")
         }
     }
 
     @Test
-    fun `review off - CONTRADICTION stays provisional and queued`() {
+    fun `review off - CONTRADICTION is active and keeps both sides linked`() {
         Fixture(requireReview = false, adjudicator = FixedAdjudicator(Classification.CONTRADICTION)).use { fx ->
             val first = fx.remember(US)
             fx.index.waitIdle()
             val r = fx.remember(EU)
             assertEquals("CONTRADICTION", str(r, "classification"))
             assertEquals(str(first, "path"), str(r, "contradicts"))
+            assertEquals("active", str(r, "memoryStatus"))
+            assertEquals("active", fx.fileStatus(str(r, "path")!!))
+            assertEquals("active", fx.fileStatus(str(first, "path")!!), "the other side is not overwritten")
+        }
+    }
+
+    @Test
+    fun `an agent that turned review off writes active on an engine that reviews`() {
+        Fixture(requireReview = true, agentReview = false).use { fx ->
+            val r = fx.remember("Deploys go through a PR.", "policy")
+            assertEquals("active", str(r, "memoryStatus"))
+            assertEquals("active", fx.fileStatus(str(r, "path")!!))
+            assertTrue(fx.queued().isEmpty())
+        }
+    }
+
+    @Test
+    fun `an agent that turned review on waits on an engine without review`() {
+        Fixture(requireReview = false, agentReview = true).use { fx ->
+            val r = fx.remember(US)
             assertEquals("provisional", str(r, "memoryStatus"))
             assertEquals("provisional", fx.fileStatus(str(r, "path")!!))
             assertEquals(setOf(str(r, "path")), fx.queued())
@@ -145,18 +173,27 @@ class MemoryReviewSettingTest {
         assertEquals(SvodMcpServer.INSTRUCTIONS, on)
         assertTrue("Do not pass status='active' for a fact or policy" in on)
         assertFalse("until a person approves it in the Svod app. Do not pass" in off)
-        assertTrue("A fact or policy is stored 'active'" in off)
-        assertTrue("UNCERTAIN or CONTRADICTION" in off)
+        assertTrue("Your memories are stored 'active'" in off)
+        assertFalse("is stored 'provisional'" in off)
     }
 
     @Test
-    fun `config defaults to review on and reads memory requireReview`() {
-        assertTrue(SvodConfig().memory.requireReview)
+    fun `config defaults to review off and reads memory and agent requireReview`() {
+        assertFalse(SvodConfig().memory.requireReview)
         val dir = Files.createTempDirectory("svod-config-")
-        val on = dir.resolve("on.json").also { Files.writeString(it, """{"vaultPath":"/tmp/v"}""") }
-        val off = dir.resolve("off.json").also { Files.writeString(it, """{"vaultPath":"/tmp/v","memory":{"requireReview":false}}""") }
+        val unset = dir.resolve("unset.json").also { Files.writeString(it, """{"vaultPath":"/tmp/v"}""") }
+        val on = dir.resolve("on.json").also { Files.writeString(it, """{"vaultPath":"/tmp/v","memory":{"requireReview":true}}""") }
+        assertFalse(SvodConfig.load(unset).memory.requireReview)
         assertTrue(SvodConfig.load(on).memory.requireReview)
-        assertFalse(SvodConfig.load(off).memory.requireReview)
+
+        val agents = dir.resolve("agents.json").also {
+            Files.writeString(it, """{"vaultPath":"/tmp/v","memory":{"requireReview":true},"agents":[""" +
+                """{"token":"t1","agentId":"own","role":"WRITE","requireReview":false},""" +
+                """{"token":"t2","agentId":"inherits","role":"WRITE"}]}""")
+        }
+        val registry = AgentRegistry(SvodConfig.load(agents).toAgentSpecs())
+        assertFalse(registry.byAgentId("own")!!.reviewsMemory(default = true))
+        assertTrue(registry.byAgentId("inherits")!!.reviewsMemory(default = true))
     }
 
     @Test
