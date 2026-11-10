@@ -381,7 +381,7 @@ class SvodMcpServer(
             val (t, d) = routed(req); d ?: t!!.move(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
         tool("promote", "Move a draft note from messy/ into the curated vault (a file move, nothing else). It does NOT change a memory's 'status': a provisional " +
-            (if (review) "fact or policy" else "memory (your memories are stored active, so only one a person reopened is provisional)") +
+            (if (review) "fact or policy" else "memory (yours are stored active unless you pass a status)") +
             " stays provisional and hidden from recall until a person approves it in the Svod app. Do not use it on notes outside messy/.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
             val (t, d) = routed(req); d ?: t!!.promote(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }

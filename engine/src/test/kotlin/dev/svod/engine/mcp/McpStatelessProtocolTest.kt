@@ -279,6 +279,43 @@ class McpStatelessProtocolTest {
     }
 
     @Test
+    fun `each agent's session says what its own review setting does`() = runBlocking {
+        // Engine-wide review is off; "scribe" turned it on for itself, "open" follows the engine.
+        val open = AgentRegistry.AgentSpec("open-token", "open", AgentRole.WRITE, name = "Open", email = "open@agents.test")
+        McpFixture(agents = listOf(WRITE_AGENT.copy(requireReview = true), open)).use { fx ->
+            val server = SvodMcpServer(fx.tools, fx.registry, requireReview = false).start(0)
+            try {
+                val legacyHttp = HttpClient(ClientCIO) {
+                    install(SSE)
+                    install(DefaultRequest) { header(HttpHeaders.Authorization, "Bearer write-token") }
+                }
+                val legacy = Client(Implementation(name = "legacy-test-client", version = "1.0.0"))
+                legacy.connect(StreamableHttpClientTransport(client = legacyHttp, url = "http://127.0.0.1:${server.port}/mcp"))
+                try {
+                    assertEquals(SvodMcpServer.instructions(requireReview = true), legacy.serverInstructions, "session: the agent's own setting")
+                } finally { legacy.close(); legacyHttp.close() }
+
+                client().use { http ->
+                    fun instructions(token: String) = runBlocking {
+                        http.rpc(server.port, """{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{${meta()}}}""", token = token)
+                            .jsonBody()["result"]!!.jsonObject["instructions"]!!.jsonPrimitive.content
+                    }
+                    fun remember(token: String) = runBlocking {
+                        http.rpc(server.port, """{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{${meta()}}}""", token = token)
+                            .jsonBody()["result"]!!.jsonObject["tools"]!!.jsonArray
+                            .single { it.jsonObject["name"]!!.jsonPrimitive.content == "remember" }
+                            .jsonObject["description"]!!.jsonPrimitive.content
+                    }
+                    assertEquals(SvodMcpServer.instructions(requireReview = true), instructions("write-token"))
+                    assertEquals(SvodMcpServer.instructions(requireReview = false), instructions("open-token"))
+                    assertTrue("Do not pass status='active' for a fact or policy" in remember("write-token"))
+                    assertTrue("memory review is off for you" in remember("open-token"), remember("open-token"))
+                }
+            } finally { server.stop() }
+        }
+    }
+
+    @Test
     fun `an unknown bearer token is rejected on the stateless path too`() = runBlocking {
         McpFixture().use { fx ->
             val server = SvodMcpServer(fx.tools, fx.registry).start(0)
