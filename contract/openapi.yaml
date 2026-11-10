@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.37.0
+  version: 0.38.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -1927,10 +1927,11 @@ components:
       type: object
       required: [requireReview]
       description: >
-        How agent-written memory enters the vault (config `memory.requireReview`). Since 0.37.0.
-        requireReview true (default): `remember` stores a fact/policy as provisional, hidden from recall
-        until a person approves it. false: it is stored active; one classified UNCERTAIN or CONTRADICTION
-        is still provisional and waits in GET /memory/review.
+        How agent-written memory enters the vault (config `memory.requireReview`). Since 0.37.0. This is
+        the default for agents without their own `requireReview` (Agent.requireReview, 0.38.0).
+        false (default since 0.38.0): `remember` stores every memory active; one classified UNCERTAIN also
+        carries `needs-review: true` and is listed in GET /memory/review. true: a fact/policy is stored
+        provisional, hidden from recall until a person approves it.
       properties:
         requireReview: { type: boolean }
 
@@ -2208,6 +2209,12 @@ components:
           type: string
           description: "Secrets ref for the bearer token (env:/file:/keychain:) — never the raw value."
         prompt: { type: string, nullable: true, description: Optional system prompt (config-only metadata). }
+        requireReview:
+          type: boolean
+          nullable: true
+          description: >
+            Since 0.38.0. Whether this agent's fact/policy memories wait for a person's approval. Null or
+            absent = the engine-wide `memory.requireReview` (GET /api/v1/settings).
 
     Agents:
       type: object
@@ -2240,6 +2247,12 @@ components:
           type: string
           description: "Secrets ref for the bearer token (env:/file:/keychain:) — raw tokens are rejected (422)."
         prompt: { type: string, nullable: true, description: Optional system prompt (config-only metadata). }
+        requireReview:
+          type: boolean
+          nullable: true
+          description: >
+            Since 0.38.0. Whether this agent's fact/policy memories wait for a person's approval. Null or
+            absent = the engine-wide `memory.requireReview` (GET /api/v1/settings).
 
     UpdateAgentRequest:
       type: object
@@ -2256,6 +2269,12 @@ components:
           nullable: true
           description: "Secrets ref for the bearer token (env:/file:/keychain:) — raw tokens are rejected (422)."
         prompt: { type: string, nullable: true }
+        requireReview:
+          type: boolean
+          nullable: true
+          description: >
+            Since 0.38.0. Omitted or null leaves it unchanged. An agent falls back to `memory.requireReview`
+            again only when the field is removed from config.json.
 
     ImportRequest:
       type: object

@@ -146,11 +146,14 @@ enforced *before* the engine is touched.
 - `remember` is the **promotion gate**: it turns an observation into a durable typed memory note —
   dedups by content, sets `status` by type (fact/policy enter `provisional`), and `supersedes` an
   older memory by revoking + linking it — so an agent-written KB doesn't poison its own recall.
-  A `provisional` memory waits in the review queue until a person approves it in the Svod app. To
-  turn that review off, set `"memory": { "requireReview": false }` in the engine config (default
-  `true`) and restart the engine: fact/policy then enter `active` at once. A memory classified
-  `UNCERTAIN` or `CONTRADICTION` still enters `provisional` and waits for a person. The MCP tool
-  descriptions follow the setting, and `GET /api/v1/settings` reports it as `memory.requireReview`.
+  Review of agent-written memory is chosen per agent. By default (since 1.30.0) there is none: every
+  memory enters `active` at once, an `UNCERTAIN` one with `needs-review: true` so a person can still
+  look at it, and a `CONTRADICTION` with its `contradicts:` link to the other side. An agent with
+  `"requireReview": true` in its `agents[]` entry (or set via `PUT /api/v1/agents/{id}`) has its
+  fact/policy stored `provisional`, waiting in the review queue until a person approves it in the
+  Svod app. Agents without their own setting follow `"memory": { "requireReview": … }` (default
+  `false`). Each agent's MCP instructions and tool descriptions say what applies to it, and
+  `GET /api/v1/settings` reports the engine-wide default as `memory.requireReview`.
 - `write` / `delete` / `move` take an optional `expectedRevision` for optimistic concurrency —
   a mismatch returns a structured `conflict` (with current content), not a protocol error.
 - `move` rewrites all backlinks atomically.

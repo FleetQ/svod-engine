@@ -40,6 +40,7 @@ class AgentController(
             name = req.name,
             vaults = req.vaults,
             prompt = req.prompt,
+            requireReview = req.requireReview,
         )
         configStore.update { it.copy(agents = it.agents + new) }
         registry.reload(configStore.config.toAgentSpecs())
@@ -57,6 +58,7 @@ class AgentController(
             vaults = req.vaults ?: existing.vaults,
             token = req.tokenRef ?: existing.token,
             prompt = req.prompt ?: existing.prompt,
+            requireReview = req.requireReview ?: existing.requireReview,
         )
         configStore.update { cfg ->
             cfg.copy(agents = cfg.agents.map { if (it.agentId == id) updated else it })
@@ -92,6 +94,7 @@ class AgentController(
         vaults = vaults,
         tokenRef = token,
         prompt = prompt,
+        requireReview = requireReview,
     )
 
     companion object {

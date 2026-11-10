@@ -56,8 +56,10 @@ class SvodTools(
      */
     private val vaultId: String? = null,
     /**
-     * `memory.requireReview`. True keeps a remembered fact/policy `provisional` until a person approves
-     * it; false stores it `active`, except UNCERTAIN and CONTRADICTION, which still wait for review.
+     * `memory.requireReview`, the default for an agent without its own `requireReview`. True keeps a
+     * remembered fact/policy `provisional` until a person approves it; false stores every memory
+     * `active`. The engine always passes the config value (default false); this parameter's own
+     * default only applies to code that builds SvodTools directly.
      */
     private val requireReview: Boolean = true,
 ) {
@@ -598,8 +600,9 @@ class SvodTools(
      * Promotion gate: turn an observation into a durable, typed memory note. Mirrors the
      * classify→dedup→verify→write flow: scope is the vault; dedup is by normalized content hash
      * (identical content+type ⇒ no second note); status defaults by type (fact/policy enter
-     * `provisional` — kept out of recall until confirmed — preference/episode/note enter `active`;
-     * with `memory.requireReview=false` fact/policy enter `active` too, unless UNCERTAIN or CONTRADICTION);
+     * `provisional` — kept out of recall until confirmed — when the writing agent reviews memory
+     * (its own `requireReview`, else `memory.requireReview`); otherwise every memory enters `active`,
+     * an UNCERTAIN one still flagged `needs-review: true`; preference/episode/note are always `active`);
      * a `supersedes` target is revoked and linked. Writes through the engine (secret-scanned,
      * committed, indexed, conflict-guarded). Keeps an agent-written KB from poisoning itself.
      *
@@ -628,7 +631,7 @@ class SvodTools(
         }
         val t = type?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "fact"
         val callerStatus = status?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
-        val st = callerStatus ?: defaultStatusFor(t, null)
+        val st = callerStatus ?: defaultStatusFor(t, agent)
         val dir = (into ?: "memory").trim('/').ifEmpty { "memory" }
         val hash = dev.svod.engine.index.sha256Hex("$t\n${content.trim()}").take(12)
         val path = "$dir/$t/$hash.md"
@@ -686,7 +689,7 @@ class SvodTools(
             }
 
             val related = plan.related
-            val noteStatus = callerStatus ?: defaultStatusFor(t, plan.classification)
+            val noteStatus = callerStatus ?: defaultStatusFor(t, agent)
             val note = buildMemoryNote(
                 t, noteStatus, subject, confidence, source, content.trim(),
                 contradicts = related?.path?.takeIf { plan.classification == Classification.CONTRADICTION },
@@ -740,12 +743,13 @@ class SvodTools(
         ToolResult.internalError("remember: classification did not converge")
     }
 
-    /** [classification] null = not classified yet (dedup answers); only review-off fact/policy depend on it. */
-    private fun defaultStatusFor(type: String, classification: Classification?): String = when {
-        type != "fact" && type != "policy" -> "active" // preference / episode / note
-        requireReview -> "provisional"                 // durable but kept out of recall until confirmed
-        // Review is off, but the engine could not settle these alone: a person still decides.
-        classification == Classification.UNCERTAIN || classification == Classification.CONTRADICTION -> "provisional"
+    /**
+     * With review off nothing waits: an UNCERTAIN memory is `active` with `needs-review: true`, and a
+     * CONTRADICTION is `active` with its `contradicts:` link, so a person can still find both.
+     */
+    private fun defaultStatusFor(type: String, agent: AgentIdentity): String = when {
+        type != "fact" && type != "policy" -> "active"             // preference / episode / note
+        agent.reviewsMemory(requireReview) -> "provisional"         // durable but kept out of recall until confirmed
         else -> "active"
     }
 

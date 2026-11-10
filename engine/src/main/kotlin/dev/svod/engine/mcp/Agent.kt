@@ -24,9 +24,14 @@ data class AgentIdentity(
     val author: Author,
     /** Vault ids this agent may access. Empty ⇒ the default vault only. */
     val vaults: List<String> = emptyList(),
+    /** This agent's own `requireReview`; null ⇒ the engine's `memory.requireReview`. */
+    val requireReview: Boolean? = null,
 ) {
     /** The vault this agent's MCP session is bound to (its first grant, else [default]). */
     fun primaryVault(default: String): String = vaults.firstOrNull() ?: default
+
+    /** Whether this agent's fact/policy memories wait for a person, given the engine-wide [default]. */
+    fun reviewsMemory(default: Boolean): Boolean = requireReview ?: default
 }
 
 /**
@@ -43,6 +48,7 @@ class AgentRegistry(agents: List<AgentSpec>) {
         val name: String = agentId,
         val email: String = "$agentId@agents.svod.local",
         val vaults: List<String> = emptyList(),
+        val requireReview: Boolean? = null,
     )
 
     @Volatile private var byToken: Map<String, AgentIdentity> = buildByToken(agents)
@@ -81,9 +87,11 @@ class AgentRegistry(agents: List<AgentSpec>) {
 
     private companion object {
         fun buildByToken(agents: List<AgentSpec>): Map<String, AgentIdentity> =
-            agents.associate { it.token to AgentIdentity(it.agentId, it.role, Author(it.name, it.email), it.vaults) }
+            agents.associate { it.token to it.identity() }
 
         fun buildByAgentId(agents: List<AgentSpec>): Map<String, AgentIdentity> =
-            agents.associate { it.agentId to AgentIdentity(it.agentId, it.role, Author(it.name, it.email), it.vaults) }
+            agents.associate { it.agentId to it.identity() }
+
+        fun AgentSpec.identity() = AgentIdentity(agentId, role, Author(name, email), vaults, requireReview)
     }
 }

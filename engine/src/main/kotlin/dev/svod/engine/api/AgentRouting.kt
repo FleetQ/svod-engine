@@ -32,4 +32,5 @@ data class AgentSpecView(
     val vaults: List<String>,
     val tokenRef: String,
     val prompt: String?,
+    val requireReview: Boolean? = null,
 )

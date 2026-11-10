@@ -38,8 +38,8 @@ class GraphRagUnitTest {
 
     @Test
     fun `contract version was bumped for the additive graph routes`() {
-        // Bumped deliberately in v1.28.0: Settings.memory (memory.requireReview).
-        assertEquals("0.37.0", ApiCompatibility.CURRENT_CONTRACT_VERSION)
+        // Bumped deliberately in v1.30.0: Agent.requireReview (per-agent memory review).
+        assertEquals("0.38.0", ApiCompatibility.CURRENT_CONTRACT_VERSION)
     }
 
     // ---- B4/B5: edge canonicalisation ----

@@ -471,6 +471,8 @@ data class AgentDto(
     /** The Secrets ref used to resolve this agent's bearer token (env:/file:/keychain:). Never the raw value. */
     val tokenRef: String,
     val prompt: String? = null,
+    /** Whether this agent's fact/policy memories wait for a person's approval. Null ⇒ the engine's `memory.requireReview`. */
+    val requireReview: Boolean? = null,
 )
 
 @Serializable
@@ -507,6 +509,8 @@ data class CreateAgentRequest(
     /** Secrets ref for the bearer token (env:/file:/keychain:) — raw tokens are rejected (422). */
     val tokenRef: String,
     val prompt: String? = null,
+    /** Whether this agent's fact/policy memories wait for a person's approval. Null ⇒ the engine's `memory.requireReview`. */
+    val requireReview: Boolean? = null,
 )
 
 @Serializable
@@ -517,6 +521,8 @@ data class UpdateAgentRequest(
     /** Secrets ref for the bearer token (env:/file:/keychain:) — raw tokens are rejected (422). */
     val tokenRef: String? = null,
     val prompt: String? = null,
+    /** Omitted or null leaves it unchanged; to fall back to `memory.requireReview` again, remove it from config.json. */
+    val requireReview: Boolean? = null,
 )
 
 // ---- People: App API principals (GET/POST/PUT/DELETE /api/v1/users, /me, /secrets — 0.30.0, ADR-0019) ----

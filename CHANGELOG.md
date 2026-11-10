@@ -3,6 +3,26 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.30.0 — 2026-11-10 (App API contract 0.38.0, additive)
+
+### Changed — memory review is per agent and off by default
+
+`memory.requireReview` was one switch for the whole engine and defaulted to `true`, so on a shared
+engine every agent's fact/policy waited for a person, whoever wrote it.
+
+- New `agents[].requireReview` (`true` | `false`, optional). An agent's own value wins; an agent
+  without one follows `memory.requireReview`.
+- **The default of `memory.requireReview` is now `false`.** An engine whose config does not set it
+  stops queueing agent-written fact/policy. To keep the old behaviour, set
+  `"memory": { "requireReview": true }`, or `requireReview: true` on the agents that should wait.
+- With review off nothing waits any more: an `UNCERTAIN` memory is stored `active` with
+  `needs-review: true` (still listed by `GET /memory/review`), and a `CONTRADICTION` is stored
+  `active` with its `contradicts:` link. Before, both stayed `provisional`.
+- The MCP instructions and the `remember`/`promote` descriptions are built per session from the
+  agent's effective setting.
+- App API: `Agent`, `CreateAgentRequest` and `UpdateAgentRequest` carry `requireReview`
+  (contract 0.38.0, additive). In an update, omitted or null leaves it unchanged.
+
 ## v1.29.1 — 2026-10-28 (App API contract 0.37.0, unchanged)
 
 ### Fixed — sync no longer round-trips incoming files through text

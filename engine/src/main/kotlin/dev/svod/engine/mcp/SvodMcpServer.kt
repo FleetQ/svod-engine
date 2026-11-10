@@ -68,7 +68,10 @@ class SvodMcpServer(
     private val defaultVaultId: String,
     private val registry: AgentRegistry,
     private val host: String = "127.0.0.1",
-    /** `memory.requireReview`: the tool descriptions and instructions tell agents what `remember` really does. */
+    /**
+     * `memory.requireReview`, the default for an agent without its own `requireReview`. Each session's
+     * instructions and tool descriptions tell that agent what `remember` really does for it.
+     */
     private val requireReview: Boolean = true,
     /**
      * `mcp.sessionIdleMinutes`: a 2025-11-25 session with no request for this long is closed and
@@ -124,7 +127,7 @@ class SvodMcpServer(
         }
     }
 
-    private val serverInstructions = instructions(requireReview)
+    private fun instructionsFor(agent: AgentIdentity) = instructions(agent.reviewsMemory(requireReview))
 
     class Running(val embedded: EmbeddedServer<*, *>, val port: Int, private val sweeper: kotlinx.coroutines.Job? = null) {
         fun stop() {
@@ -251,7 +254,7 @@ class SvodMcpServer(
         }
 
         val tools = buildTools(agent)
-        val responses = messages.mapNotNull { dispatchStateless(it, tools, SERVER_NAME, SERVER_VERSION, serverInstructions) }
+        val responses = messages.mapNotNull { dispatchStateless(it, tools, SERVER_NAME, SERVER_VERSION, instructionsFor(agent)) }
         when {
             responses.isEmpty() -> call.respond(HttpStatusCode.Accepted)
             parsed is JsonArray -> respondJson(call, HttpStatusCode.OK, JsonArray(responses))
@@ -321,7 +324,7 @@ class SvodMcpServer(
         val server = Server(
             Implementation(name = SERVER_NAME, version = SERVER_VERSION),
             ServerOptions(capabilities = ServerCapabilities(tools = ServerCapabilities.Tools(listChanged = false))),
-            instructions = serverInstructions,
+            instructions = instructionsFor(agent),
         )
         buildTools(agent).forEach { tool ->
             server.addTool(tool.name, tool.description, tool.schema()) { req -> tool.handler(req) }
@@ -332,6 +335,7 @@ class SvodMcpServer(
     /** The tool catalogue bound to [agent]; each call selects its target vault (default = the agent's). */
     private fun buildTools(agent: AgentIdentity): List<ToolDef> {
         val tools = mutableListOf<ToolDef>()
+        val review = agent.reviewsMemory(requireReview)
 
         // Every per-vault tool's schema gets an optional `vault` (default = the agent's vault). A
         // call may target any vault the agent is granted; an ungranted/unknown vault is rejected.
@@ -377,7 +381,7 @@ class SvodMcpServer(
             val (t, d) = routed(req); d ?: t!!.move(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
         tool("promote", "Move a draft note from messy/ into the curated vault (a file move, nothing else). It does NOT change a memory's 'status': a provisional " +
-            (if (requireReview) "fact or policy" else "memory (with review off, only one classified UNCERTAIN or CONTRADICTION is provisional)") +
+            (if (review) "fact or policy" else "memory (your memories are stored active, so only one a person reopened is provisional)") +
             " stays provisional and hidden from recall until a person approves it in the Svod app. Do not use it on notes outside messy/.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
             val (t, d) = routed(req); d ?: t!!.promote(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
@@ -393,7 +397,7 @@ class SvodMcpServer(
                 t!!.contextPack(agent, q, req.int("tokenBudget", 2000), req.bool("enumerate", false), req.bool("graphExpand", false)).toCallToolResult()
             }
         }
-        tool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Classifies the incoming memory against existing memory of the same type+subject and returns 'classification' (NEW|DUPLICATE|UPDATE|CONTRADICTION|UNCERTAIN) with 'relatedNote' and 'confidence': DUPLICATE is a no-op, UPDATE revokes+links its predecessor, CONTRADICTION keeps BOTH sides linked by 'contradicts' (never overwrites), UNCERTAIN is stored with 'needs-review: true'. " + rememberReviewText(requireReview) + " Use 'supersedes' to declare a replacement explicitly. 'expiresAt' (ISO-8601 instant or date, must be in the future) stores 'expires_at'; recall hides the memory after it. Do not use it for scratch notes or drafts: write those under messy/.", mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string", "expiresAt" to "string"), listOf("content")) { req ->
+        tool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Classifies the incoming memory against existing memory of the same type+subject and returns 'classification' (NEW|DUPLICATE|UPDATE|CONTRADICTION|UNCERTAIN) with 'relatedNote' and 'confidence': DUPLICATE is a no-op, UPDATE revokes+links its predecessor, CONTRADICTION keeps BOTH sides linked by 'contradicts' (never overwrites), UNCERTAIN is stored with 'needs-review: true'. " + rememberReviewText(review) + " Use 'supersedes' to declare a replacement explicitly. 'expiresAt' (ISO-8601 instant or date, must be in the future) stores 'expires_at'; recall hides the memory after it. Do not use it for scratch notes or drafts: write those under messy/.", mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string", "expiresAt" to "string"), listOf("content")) { req ->
             val (t, d) = routed(req)
             d ?: t!!.remember(agent, req.str("content") ?: "", req.str("type"), req.str("subject"), req.double("confidence"), req.str("source"), req.str("status"), req.str("into"), req.str("supersedes"), req.str("expiresAt")).toCallToolResult()
         }
@@ -501,8 +505,8 @@ class SvodMcpServer(
                     "A fact or policy defaults to 'provisional', hidden from search and context_pack until a person approves it " +
                         "in the Svod app. Do not pass status='active' for a fact or policy: that skips the person's review. "
                 } else {
-                    "A fact or policy is stored 'active' and is found by search at once; only one classified UNCERTAIN or " +
-                        "CONTRADICTION is stored 'provisional', hidden from recall until a person approves it in the Svod app. "
+                    "Your memories are stored 'active' and are found by search at once, without a person's review; one " +
+                        "classified UNCERTAIN carries 'needs-review: true' and a CONTRADICTION keeps a 'contradicts' link to the other side. "
                 }) +
                 "The review queue has no tool here, and 'promote' does not change a memory's status. Write changes with 'edit' or " +
                 "'write' and pass expectedRevision from your last read."
@@ -515,9 +519,8 @@ class SvodMcpServer(
                 "fact/policy default to 'provisional': hidden from search and context_pack until a person approves them in the Svod app " +
                     "(the review queue has no MCP tool). Do not pass status='active' for a fact or policy: that skips the person's review."
             } else {
-                "fact/policy are stored 'active' (this engine has memory review turned off); one classified UNCERTAIN or CONTRADICTION " +
-                    "is stored 'provisional', hidden from search and context_pack until a person approves it in the Svod app (the review " +
-                    "queue has no MCP tool)."
+                "fact/policy are stored 'active' (memory review is off for you): found by search at once. One classified UNCERTAIN " +
+                    "also carries 'needs-review: true' so a person can look at it in the Svod app."
             }
         private val log = org.slf4j.LoggerFactory.getLogger(SvodMcpServer::class.java)
     }

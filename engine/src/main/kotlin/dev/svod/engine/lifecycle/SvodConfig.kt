@@ -142,14 +142,15 @@ data class SvodConfig(
         val hierarchicalSummaries: Boolean = false,
     )
     /**
-     * [requireReview]=true (default) stores a `remember`ed fact/policy as `provisional`, hidden from
-     * recall until a person approves it in the Svod app. False stores it `active` at once; a memory
-     * classified UNCERTAIN or CONTRADICTION still goes to the review queue, because there the engine
-     * could not settle it alone.
+     * [requireReview] is the engine-wide default for agents that set no `requireReview` of their own
+     * ([AgentSettings.requireReview] wins). False (default since 1.30.0) stores every `remember`ed
+     * memory `active` at once, an UNCERTAIN one with `needs-review: true` so a person can still look
+     * at it. True stores a fact/policy as `provisional`, hidden from recall until a person approves it
+     * in the Svod app.
      */
     @Serializable
     data class MemorySettings(
-        val requireReview: Boolean = true,
+        val requireReview: Boolean = false,
     )
     /**
      * [sessionIdleMinutes]: a 2025-11-25 (session-based) MCP session with no request for this long is
@@ -286,6 +287,8 @@ data class SvodConfig(
         val vaults: List<String> = emptyList(),
         /** Optional system prompt surfaced to the UI (config-only metadata; not threaded into AgentSpec). */
         val prompt: String? = null,
+        /** Whether this agent's fact/policy memories wait for a person's approval. Null ⇒ `memory.requireReview`. */
+        val requireReview: Boolean? = null,
     )
 
     /**
@@ -540,6 +543,7 @@ data class SvodConfig(
             name = a.name ?: a.agentId,
             email = a.email ?: "${a.agentId}@agents.svod.local",
             vaults = a.vaults.ifEmpty { listOf(defaultVaultId()) },
+            requireReview = a.requireReview,
         )
     }
 
