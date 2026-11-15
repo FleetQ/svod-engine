@@ -87,6 +87,11 @@ data class CommitInfo(
     val authorEmail: String,
     val epochSeconds: Long,
     val message: String,
+    /** `Svod-Agent:` trailer of the commit message (ADR-0020), null when absent. */
+    val agent: String? = null,
 )
+
+/** Who a note's creation / last change is attributed to; derived from git only. */
+data class Attribution(val name: String, val email: String, val agent: String? = null)
 
 class VaultLockedException(root: Any) : IllegalStateException("vault already locked by another instance: $root")

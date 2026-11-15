@@ -41,6 +41,10 @@ class GitRepo private constructor(
     private val committer: Author? = null,
 ) : AutoCloseable {
 
+    private fun agentTrailer(message: String): String? =
+        message.trim().substringAfterLast("\n\n").lineSequence()
+            .firstOrNull { it.startsWith("Svod-Agent:") }?.substringAfter(':')?.trim()?.takeIf { it.isNotEmpty() }
+
     private fun withAgentTrailer(message: String, author: Author): String =
         if (author.agent == null) message else "$message\n\nSvod-Agent: ${author.agent}"
 
@@ -217,6 +221,27 @@ class GitRepo private constructor(
      * Renames are NOT followed (no `--follow`), matching the previous jgit behaviour.
      * Falls back to the jgit walk if the git subprocess can't be run.
      */
+    /**
+     * The commit that ADDED [path] (`git log --diff-filter=A -n 1`). A path deleted and re-added
+     * reports the latest add. Renames are not followed. Null when the path was never added.
+     */
+    fun added(path: String): CommitInfo? {
+        if (headId() == null) return null
+        return try {
+            nativeLog(path, 1, listOf("--diff-filter=A")).firstOrNull()
+        } catch (_: Exception) {
+            jgitAdded(path)
+        }
+    }
+
+    private fun jgitAdded(path: String): CommitInfo? =
+        RevWalk(repo).use { rw ->
+            jgitLog(path, Int.MAX_VALUE).firstOrNull { ci ->
+                val c = rw.parseCommit(ObjectId.fromString(ci.commit))
+                c.parentCount == 0 || TreeWalk.forPath(repo, path, rw.parseCommit(c.getParent(0)).tree) == null
+            }
+        }
+
     fun log(path: String?, max: Int): List<CommitInfo> {
         if (headId() == null) return emptyList()
         return try {
@@ -248,13 +273,13 @@ class GitRepo private constructor(
         false
     }
 
-    private fun nativeLog(path: String?, max: Int): List<CommitInfo> {
+    private fun nativeLog(path: String?, max: Int, extra: List<String> = emptyList()): List<CommitInfo> {
         // %x1f (unit sep) between fields, %x1e (record sep) between commits — bytes that
         // never occur in commit metadata, so parsing survives multi-line messages.
-        val args = mutableListOf(
+        val args = mutableListOf<String>(
             GIT_BIN, "log", "-n", max.toString(),
             "--format=%H%x1f%an%x1f%ae%x1f%at%x1f%B%x1e",
-        )
+        ) .also { it.addAll(extra) }
         if (path != null) { args += "--"; args += path }
         val proc = ProcessBuilder(args)
             .directory(repo.workTree)
@@ -270,7 +295,7 @@ class GitRepo private constructor(
             .filter { it.isNotEmpty() }
             .map { rec ->
                 val f = rec.split('')
-                CommitInfo(f[0], f[1], f[2], f[3].toLong(), f[4].trim())
+                CommitInfo(f[0], f[1], f[2], f[3].toLong(), f[4].trim(), agentTrailer(f[4]))
             }
             .toList()
     }
@@ -285,6 +310,7 @@ class GitRepo private constructor(
                 authorEmail = c.authorIdent.emailAddress,
                 epochSeconds = c.authorIdent.whenAsInstant.epochSecond,
                 message = c.fullMessage.trim(),
+                agent = agentTrailer(c.fullMessage),
             )
         }
     }

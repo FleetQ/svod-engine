@@ -14,7 +14,13 @@ data class ReadyDto(val ready: Boolean, val engine: Boolean, val index: Boolean)
 data class ErrorDto(val error: String, val message: String)
 
 @Serializable
-data class FileContentDto(val path: String, val revision: String, val content: String)
+data class FileContentDto(
+    val path: String, val revision: String, val content: String,
+    val author: AttributionDto? = null, val lastModifiedBy: AttributionDto? = null,
+)
+
+@Serializable
+data class AttributionDto(val name: String, val email: String, val agent: String? = null)
 
 @Serializable
 data class WriteRequestDto(val content: String, val expectedRevision: String? = null)
@@ -43,7 +49,7 @@ data class RestoreRequestDto(val trashPath: String, val to: String? = null)
 data class TreeNodeDto(val name: String, val path: String, val type: String, val children: List<TreeNodeDto>? = null)
 
 @Serializable
-data class CommitInfoDto(val commit: String, val author: String, val email: String, val epochSeconds: Long, val message: String)
+data class CommitInfoDto(val commit: String, val author: String, val email: String, val epochSeconds: Long, val message: String, val agent: String? = null)
 
 @Serializable
 data class HistoryDto(val commits: List<CommitInfoDto>)

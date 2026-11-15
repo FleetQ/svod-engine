@@ -1,5 +1,6 @@
 package dev.svod.engine.api
 
+import dev.svod.engine.core.Attribution
 import dev.svod.engine.core.Author
 import dev.svod.engine.core.SvodEngine
 import dev.svod.engine.core.WriteOutcome
@@ -395,7 +396,9 @@ class AppApiServer(
                 val vc = vault() ?: return@get call.notFound("vault")
                 val path = call.path() ?: return@get call.badRequest("missing path")
                 val f = vc.engine.read(path) ?: return@get call.notFound(path)
-                call.respond(FileContentDto(f.path, f.revision, f.text))
+                val (created, modified) = vc.engine.attribution(path)
+                fun Attribution.dto() = AttributionDto(name, email, agent)
+                call.respond(FileContentDto(f.path, f.revision, f.text, created?.dto(), modified?.dto()))
             }
             put("/api/v1/file") {
                 val vc = vault() ?: return@put call.notFound("vault")
@@ -440,7 +443,7 @@ class AppApiServer(
                 val vc = vault() ?: return@get call.notFound("vault")
                 val path = call.path() ?: return@get call.badRequest("missing path")
                 val max = call.request.queryParameters["max"]?.toIntOrNull() ?: 100
-                call.respond(HistoryDto(vc.engine.history(path, max).map { CommitInfoDto(it.commit, it.authorName, it.authorEmail, it.epochSeconds, it.message) }))
+                call.respond(HistoryDto(vc.engine.history(path, max).map { CommitInfoDto(it.commit, it.authorName, it.authorEmail, it.epochSeconds, it.message, it.agent) }))
             }
             get("/api/v1/file/diff") {
                 val vc = vault() ?: return@get call.notFound("vault")
