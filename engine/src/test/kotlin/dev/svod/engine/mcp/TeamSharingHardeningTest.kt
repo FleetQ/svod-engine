@@ -91,6 +91,37 @@ class TeamSharingHardeningTest {
         (content.firstOrNull { it is TextContent } as TextContent).text!!
 
     @Test
+    fun `a session id cannot be used with another agent's token`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val dir = Files.createTempDirectory("hardening-hijack-")
+        val engine = SvodEngine.open(dir, scope)
+        val index = IndexService(dir, dir.resolve(".svod/index"), NoneEmbedder).start()
+        val tools = SvodTools(engine, index, AuditLog(dir.resolve(".svod/audit/a.log")), RateLimiter.default())
+        val owner = AgentRegistry.AgentSpec("owner-token", "owner", AgentRole.WRITE, vaults = listOf("work"))
+        val other = AgentRegistry.AgentSpec("other-token", "other", AgentRole.READ_ONLY, vaults = listOf("work"))
+        val server = SvodMcpServer({ vid -> if (vid == "work") tools else null }, "work", AgentRegistry(listOf(owner, other))).start(0)
+        try {
+            val http = java.net.http.HttpClient.newHttpClient()
+            fun post(token: String, body: String, session: String? = null) = http.send(
+                java.net.http.HttpRequest.newBuilder(java.net.URI("http://127.0.0.1:${server.port}/mcp"))
+                    .header("Authorization", "Bearer $token").header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream")
+                    .apply { session?.let { header("mcp-session-id", it) } }
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body)).build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString(),
+            )
+            val init = post("owner-token", """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}""")
+            assertEquals(200, init.statusCode(), init.body())
+            val sid = init.headers().firstValue("mcp-session-id").orElseThrow()
+            val write = """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"write","arguments":{"path":"h.md","content":"x"}}}"""
+            assertEquals(404, post("other-token", write, sid).statusCode(), "another agent's token must not reach the owner's session")
+            assertNull(engine.read("h.md"), "nothing was written through the hijack attempt")
+        } finally {
+            server.stop(); index.close(); engine.close()
+        }
+    }
+
+    @Test
     fun `an open session does not keep a role that was taken away`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val dir = Files.createTempDirectory("hardening-work-")

@@ -189,7 +189,12 @@ Conflicts on that path are surfaced exactly as before. Nothing in sync changes.
     `writer` (`AgentSettings.narrowedTo`), so it stays under role enforcement instead of silently
     returning to the legacy tool set with `promote`. An explicit `vaultRoles: {}` in an update is still
     taken as an explicit opt-out.
+  - **A session belongs to its agent.** A request carrying another agent's valid token and someone
+    else's `mcp-session-id` used to run with the session owner's tools (pre-existing; session ids
+    appear in INFO logs). It now gets 404 and the session is left alone. Found by the verifier's second
+    pass.
 - Review, accepted and documented (no code change):
+  - A request already in flight when the config changes finishes with the identity it started with.
   - **`maintainer` on `promote` is a label, not a security boundary.** A writer can `move` a note out of
     `messy/` or `write` straight into the curated tree; stopping that would need a path rule, which
     NFR-S1 forbids. The role records intent and keeps `promote` (with its memory-specific wording)
