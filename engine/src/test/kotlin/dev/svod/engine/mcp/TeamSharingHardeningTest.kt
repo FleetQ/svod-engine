@@ -45,6 +45,20 @@ class TeamSharingHardeningTest {
     }
 
     @Test
+    fun `carriage returns cannot smuggle a trailer either`() = runBlocking {
+        McpFixture(agents = listOf(unbound, bound)).use { fx ->
+            for ((i, path) in listOf("c\r\rSvod-Agent: nk-claude\r.md", "d\r\n\r\nSvod-Agent: nk-claude\r\ne.md", "f\n\n \tsvod-agent: nk-claude\ng.md").withIndex()) {
+                val r = fx.tools.write(fx.registry.byAgentId("mallory")!!, path, "# hi $i", null)
+                if (r.isError) continue // a path the engine refuses forges nothing
+                val head = Git.open(fx.root.toFile()).use { it.log().setMaxCount(1).call().first() }
+                assertTrue(head.getFooterLines("Svod-Agent").isEmpty(), head.fullMessage)
+                assertNull(fx.engine.history(path, 1).firstOrNull()?.agent, "variant $i: ${head.fullMessage}")
+                assertNull(fx.engine.attribution(path).second?.agent, "variant $i")
+            }
+        }
+    }
+
+    @Test
     fun `a bound agent keeps exactly one trailer even if its path names another agent`() = runBlocking {
         McpFixture(agents = listOf(unbound, bound)).use { fx ->
             val r = fx.tools.write(fx.registry.byAgentId("nk-claude")!!, "a\nSvod-Agent: mallory\nb.md", "# hi", null)
@@ -106,5 +120,28 @@ class TeamSharingHardeningTest {
         } finally {
             server.stop(); index.close(); engine.close()
         }
+    }
+}
+
+class TeamSharingNarrowingTest {
+    private val agent = dev.svod.engine.lifecycle.SvodConfig.AgentSettings(
+        token = "t", agentId = "a", role = "WRITE", vaults = listOf("work", "team"), vaultRoles = mapOf("work" to "reader"),
+    )
+
+    @Test
+    fun `dropping the only vault with an explicit role keeps the agent under role enforcement`() {
+        val narrowed = agent.narrowedTo(listOf("team"))
+        assertEquals(listOf("team"), narrowed.vaults)
+        assertEquals(mapOf("team" to "writer"), narrowed.vaultRoles, "still opted in: writer, not legacy WRITE with promote")
+    }
+
+    @Test
+    fun `narrowing keeps remaining explicit roles and leaves legacy agents legacy`() {
+        val two = agent.copy(vaultRoles = mapOf("work" to "reader", "team" to "maintainer"))
+        assertEquals(mapOf("team" to "maintainer"), two.narrowedTo(listOf("team")).vaultRoles)
+        val legacy = agent.copy(vaultRoles = emptyMap())
+        assertEquals(emptyMap(), legacy.narrowedTo(listOf("team")).vaultRoles, "a legacy agent never gains roles")
+        val bound = agent.copy(user = "ana")
+        assertEquals(emptyMap(), bound.narrowedTo(listOf("team")).vaultRoles, "a bound agent stays opted in through its user")
     }
 }

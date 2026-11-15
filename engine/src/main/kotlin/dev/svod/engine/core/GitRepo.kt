@@ -33,6 +33,9 @@ import java.util.concurrent.TimeUnit
 /** Commit trailer naming the agent that acted for a person (ADR-0020). */
 private const val AGENT_TRAILER = "Svod-Agent:"
 
+/** Every line ending a caller could use; the trailer filter must see at least what any reader splits on. */
+private val LINE_BREAK = Regex("\r\n|\r|\n")
+
 class GitRepo private constructor(
     private val repo: Repository,
     private val git: Git,
@@ -45,8 +48,8 @@ class GitRepo private constructor(
 ) : AutoCloseable {
 
     private fun agentTrailer(message: String): String? =
-        message.trim().substringAfterLast("\n\n").lineSequence()
-            .firstOrNull { it.startsWith("Svod-Agent:") }?.substringAfter(':')?.trim()?.takeIf { it.isNotEmpty() }
+        message.trim().substringAfterLast("\n\n").split('\n')
+            .firstOrNull { it.startsWith(AGENT_TRAILER) }?.substringAfter(':')?.trim()?.takeIf { it.isNotEmpty() }
 
     /**
      * The `Svod-Agent` trailer is engine-owned: a line with that key arriving inside caller-built text
@@ -55,7 +58,7 @@ class GitRepo private constructor(
      */
     private fun withAgentTrailer(message: String, author: Author): String {
         val clean = if (!message.contains(AGENT_TRAILER, ignoreCase = true)) message
-        else message.split('\n').filterNot { it.trimStart().startsWith(AGENT_TRAILER, ignoreCase = true) }.joinToString("\n")
+        else message.split(LINE_BREAK).filterNot { it.trimStart().startsWith(AGENT_TRAILER, ignoreCase = true) }.joinToString("\n")
         return if (author.agent == null) clean else "$clean\n\n$AGENT_TRAILER ${author.agent}"
     }
 

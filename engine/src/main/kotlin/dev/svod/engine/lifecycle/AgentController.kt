@@ -58,9 +58,10 @@ class AgentController(
         req.tokenRef?.let { validateRef(it) }
         req.user?.takeIf { it.isNotEmpty() }?.let { validateUser(it) }
         val vaults = req.vaults ?: existing.vaults
-        // Roles follow their vaults: a vault dropped from the grant takes its role with it.
-        val vaultRoles = (req.vaultRoles ?: existing.vaultRoles).filterKeys { it in vaults }
+        // Roles follow their vaults: a vault dropped from the grant takes its role with it. An explicit
+        // vaultRoles in the request is taken as given (even {} — an explicit opt-out).
         req.vaultRoles?.let { validateVaultRoles(it, vaults) }
+        val vaultRoles = req.vaultRoles ?: existing.narrowedTo(vaults).vaultRoles
         val updated = existing.copy(
             name = req.name ?: existing.name,
             role = req.role?.uppercase() ?: existing.role,

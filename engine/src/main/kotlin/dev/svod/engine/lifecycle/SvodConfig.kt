@@ -312,7 +312,19 @@ data class SvodConfig(
         val user: String? = null,
         /** Explicit role per granted vault (`reader` | `writer` | `maintainer`), from `{vault, role}` entries. */
         val vaultRoles: Map<String, String> = emptyMap(),
-    )
+    ) {
+        /**
+         * This agent with its grants narrowed to [keep]. Roles of dropped vaults go with them; if that
+         * would leave an agent that HAD explicit roles with none, its remaining vaults are written as
+         * `writer` so it stays under role enforcement — otherwise dropping a vault would silently hand
+         * it back the legacy full tool set, `promote` included (ADR-0020 review).
+         */
+        fun narrowedTo(keep: List<String>): AgentSettings {
+            val roles = vaultRoles.filterKeys { it in keep }
+            val stillOptedIn = roles.ifEmpty { if (vaultRoles.isNotEmpty() && user == null) keep.associateWith { GrantRole.WRITER.label } else roles }
+            return copy(vaults = keep, vaultRoles = stillOptedIn)
+        }
+    }
 
     /**
      * One person with App API access. [keyRef] is a `Secrets` ref (env:/file:/keychain:) to the

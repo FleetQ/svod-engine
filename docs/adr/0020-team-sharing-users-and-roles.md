@@ -181,7 +181,14 @@ Conflicts on that path are surfaced exactly as before. Nothing in sync changes.
     role downgrade, unbinding, person rename or agent deletion took effect only when the session went
     idle. A session whose identity no longer equals the registry's is now closed on its next request
     (404, the client re-initializes). This also closes the same pre-existing gap for vault grants.
-  - Deleting a vault now drops its role from `vaultRoles` together with the grant.
+  - The trailer filter splits on every line ending (`\r\n`, `\r`, `\n`) and the reader splits on `\n`
+    only (as git does), so a lone CR cannot get a forged line past the filter and into the reader
+    (follow-up from the automated security review).
+  - Deleting a vault, or narrowing `vaults` in an update, drops the roles of the removed vaults. If that
+    would leave an unbound agent that had explicit roles with none, its remaining vaults are written as
+    `writer` (`AgentSettings.narrowedTo`), so it stays under role enforcement instead of silently
+    returning to the legacy tool set with `promote`. An explicit `vaultRoles: {}` in an update is still
+    taken as an explicit opt-out.
 - Review, accepted and documented (no code change):
   - **`maintainer` on `promote` is a label, not a security boundary.** A writer can `move` a note out of
     `messy/` or `write` straight into the curated tree; stopping that would need a path rule, which
