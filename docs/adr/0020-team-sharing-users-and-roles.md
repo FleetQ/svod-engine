@@ -172,3 +172,21 @@ Conflicts on that path are surfaced exactly as before. Nothing in sync changes.
   a 500-commit vault). Content and attribution are two actor turns, so a write landing between them can
   make `lastModifiedBy` newer than the returned content — harmless, never older. History `message`
   still contains the trailer line; the parsed value is in `agent`.
+- Review (adversarial verifier, 2026-11-15), fixed:
+  - **Forged attribution.** A path is part of the commit message (`write: <path>`) and paths may
+    contain a newline, so any writer could end a message with `Svod-Agent: <someone>` and be shown as
+    that agent. `GitRepo` now drops caller-supplied lines that start with `Svod-Agent:` before adding
+    the engine's own trailer; a message without such a line is unchanged byte for byte.
+  - **Stale sessions.** A 2025-11-25 MCP session bound its tools to the identity it opened with, so a
+    role downgrade, unbinding, person rename or agent deletion took effect only when the session went
+    idle. A session whose identity no longer equals the registry's is now closed on its next request
+    (404, the client re-initializes). This also closes the same pre-existing gap for vault grants.
+  - Deleting a vault now drops its role from `vaultRoles` together with the grant.
+- Review, accepted and documented (no code change):
+  - **`maintainer` on `promote` is a label, not a security boundary.** A writer can `move` a note out of
+    `messy/` or `write` straight into the curated tree; stopping that would need a path rule, which
+    NFR-S1 forbids. The role records intent and keeps `promote` (with its memory-specific wording)
+    away from writers; the real boundary is the vault (reader vs writer).
+  - Agent and user admin calls check, then update the config without a common lock; two admins acting
+    at the same instant could leave an agent bound to a just-deleted person. The next start refuses
+    that config with a clear error. Admin-only, rare; left as is.
