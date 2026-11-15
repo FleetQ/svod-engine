@@ -66,13 +66,22 @@ class SvodTools(
     /** Classifies an incoming memory against existing memory of the same type/subject. */
     private val classifier = FactClassifier(engine, index, adjudicator)
 
+    private fun attributionJson(a: dev.svod.engine.core.Attribution) = buildJsonObject {
+        put("name", a.name); put("email", a.email); a.agent?.let { put("agent", it) }
+    }
+
     private fun JsonObjectBuilder.putVault() { vaultId?.let { put("vault", it) } }
 
     // ---- read-only tools ----
 
     suspend fun read(agent: AgentIdentity, path: String): ToolResult = guarded(agent, "read", write = false) {
         val f = engine.read(path) ?: return@guarded ToolResult.notFound(path)
-        ToolResult.ok { put("path", f.path); put("revision", f.revision); put("content", f.text) }
+        val (created, modified) = engine.attribution(path)
+        ToolResult.ok {
+            put("path", f.path); put("revision", f.revision); put("content", f.text)
+            created?.let { put("author", attributionJson(it)) }
+            modified?.let { put("lastModifiedBy", attributionJson(it)) }
+        }
     }
 
     suspend fun list(agent: AgentIdentity, pathPrefix: String?): ToolResult = guarded(agent, "list", write = false) {
@@ -219,6 +228,7 @@ class SvodTools(
                     addJsonObject {
                         put("commit", c.commit); put("author", c.authorName); put("email", c.authorEmail)
                         put("epochSeconds", c.epochSeconds); put("message", c.message)
+                        c.agent?.let { put("agent", it) }
                     }
                 }
             }

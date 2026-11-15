@@ -162,6 +162,16 @@ class SvodEngine private constructor(
     suspend fun history(path: String, max: Int = 100): List<CommitInfo> =
         actor.submit { git.log(VaultPath.of(path).value, max) }
 
+    /**
+     * Who created ([Pair.first], the latest commit that ADDED the path) and last changed
+     * ([Pair.second]) [path]; both null when it has no commit. Read-only, derived from git.
+     */
+    suspend fun attribution(path: String): Pair<Attribution?, Attribution?> = actor.submit {
+        val p = VaultPath.of(path).value
+        fun CommitInfo.attr() = Attribution(authorName, authorEmail, agent)
+        git.added(p)?.attr() to git.log(p, 1).firstOrNull()?.attr()
+    }
+
     /** Content of [path] at a specific [revision] (commit id / ref), or null if absent there. */
     suspend fun getRevision(path: String, revision: String): FileContent? = actor.submit {
         val vp = VaultPath.of(path)

@@ -1633,6 +1633,23 @@ components:
         path: { type: string }
         revision: { type: string }
         content: { type: string }
+        author:
+          allOf: [{ $ref: '#/components/schemas/Attribution' }]
+          description: >
+            Who created the note: the latest commit that ADDED the path. Absent when the path has
+            no commit. Since 0.39.0 (ADR-0020).
+        lastModifiedBy:
+          allOf: [{ $ref: '#/components/schemas/Attribution' }]
+          description: Who made the newest commit touching the path. Since 0.39.0 (ADR-0020).
+
+    Attribution:
+      type: object
+      required: [name, email]
+      description: A git author; `agent` is set when the commit carries a `Svod-Agent:` trailer. Since 0.39.0 (ADR-0020).
+      properties:
+        name: { type: string }
+        email: { type: string }
+        agent: { type: string }
 
     WriteRequest:
       type: object
@@ -1721,6 +1738,9 @@ components:
         email: { type: string }
         epochSeconds: { type: integer, format: int64 }
         message: { type: string }
+        agent:
+          type: string
+          description: Agent id from the commit's `Svod-Agent:` trailer; absent otherwise. Since 0.39.0 (ADR-0020).
 
     DiffResult:
       type: object
