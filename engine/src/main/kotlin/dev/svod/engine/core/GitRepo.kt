@@ -41,6 +41,9 @@ class GitRepo private constructor(
     private val committer: Author? = null,
 ) : AutoCloseable {
 
+    private fun withAgentTrailer(message: String, author: Author): String =
+        if (author.agent == null) message else "$message\n\nSvod-Agent: ${author.agent}"
+
     private fun committerIdent(author: Author): PersonIdent =
         committer?.let { PersonIdent(it.name, it.email) } ?: PersonIdent(author.name, author.email)
 
@@ -70,7 +73,7 @@ class GitRepo private constructor(
         val commit = git.commit()
             .setAuthor(PersonIdent(author.name, author.email))
             .setCommitter(committerIdent(author))
-            .setMessage(message)
+            .setMessage(withAgentTrailer(message, author))
             .setSign(false)
             .call()
         return commit.name
@@ -128,7 +131,7 @@ class GitRepo private constructor(
                     if (head != null) setParentId(head)
                     setAuthor(PersonIdent(author.name, author.email))
                     setCommitter(committerIdent(author))
-                    setMessage(message)
+                    setMessage(withAgentTrailer(message, author))
                 }
                 inserter.insert(cb).also { inserter.flush() }
             }
@@ -189,7 +192,7 @@ class GitRepo private constructor(
                 setParentIds(ours, ObjectId.fromString(theirs))
                 setAuthor(PersonIdent(author.name, author.email))
                 setCommitter(committerIdent(author))
-                setMessage(message)
+                setMessage(withAgentTrailer(message, author))
             }
             inserter.insert(cb).also { inserter.flush() }
         }

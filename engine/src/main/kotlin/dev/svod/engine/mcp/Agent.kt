@@ -129,6 +129,6 @@ class AgentRegistry(agents: List<AgentSpec>) {
         fun buildByAgentId(agents: List<AgentSpec>): Map<String, AgentIdentity> =
             agents.associate { it.agentId to it.identity() }
 
-        fun AgentSpec.identity() = AgentIdentity(agentId, role, Author(name, email), vaults, requireReview, userId, grantRoles)
+        fun AgentSpec.identity() = AgentIdentity(agentId, role, Author(name, email, agent = if (userId != null) agentId else null), vaults, requireReview, userId, grantRoles)
     }
 }
