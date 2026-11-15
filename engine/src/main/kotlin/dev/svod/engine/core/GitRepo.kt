@@ -30,6 +30,9 @@ import java.util.concurrent.TimeUnit
  * Not thread-safe by design: every method is invoked exclusively from the single
  * write-actor thread, which serializes all access.
  */
+/** Commit trailer naming the agent that acted for a person (ADR-0020). */
+private const val AGENT_TRAILER = "Svod-Agent:"
+
 class GitRepo private constructor(
     private val repo: Repository,
     private val git: Git,
@@ -45,8 +48,16 @@ class GitRepo private constructor(
         message.trim().substringAfterLast("\n\n").lineSequence()
             .firstOrNull { it.startsWith("Svod-Agent:") }?.substringAfter(':')?.trim()?.takeIf { it.isNotEmpty() }
 
-    private fun withAgentTrailer(message: String, author: Author): String =
-        if (author.agent == null) message else "$message\n\nSvod-Agent: ${author.agent}"
+    /**
+     * The `Svod-Agent` trailer is engine-owned: a line with that key arriving inside caller-built text
+     * (a path with a newline ends up in "write: <path>") is dropped, so a client cannot fake whose
+     * agent made a commit (ADR-0020). Messages without such a line are untouched byte for byte.
+     */
+    private fun withAgentTrailer(message: String, author: Author): String {
+        val clean = if (!message.contains(AGENT_TRAILER, ignoreCase = true)) message
+        else message.split('\n').filterNot { it.trimStart().startsWith(AGENT_TRAILER, ignoreCase = true) }.joinToString("\n")
+        return if (author.agent == null) clean else "$clean\n\n$AGENT_TRAILER ${author.agent}"
+    }
 
     private fun committerIdent(author: Author): PersonIdent =
         committer?.let { PersonIdent(it.name, it.email) } ?: PersonIdent(author.name, author.email)

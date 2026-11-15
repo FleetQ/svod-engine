@@ -118,7 +118,7 @@ class VaultController(
                 vaults = cur.resolvedVaults().filterNot { it.id == id },
                 vaultPath = null,
                 defaultVault = cur.defaultVaultId(),
-                agents = cur.agents.map { a -> if (id in a.vaults) a.copy(vaults = a.vaults - id) else a },
+                agents = cur.agents.map { a -> if (id in a.vaults) a.copy(vaults = a.vaults - id, vaultRoles = a.vaultRoles - id) else a },
                 users = cur.users.map { u -> if (u.grants.any { it.vault == id }) u.copy(grants = u.grants.filterNot { it.vault == id }) else u },
             )
         }

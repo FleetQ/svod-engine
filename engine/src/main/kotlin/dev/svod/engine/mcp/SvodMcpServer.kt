@@ -87,7 +87,7 @@ class SvodMcpServer(
         : this({ _ -> tools }, "default", registry, host, requireReview)
 
     /** A live 2025-11-25 session. [inFlight] > 0 while a POST/DELETE is being served. */
-    private class Session(val transport: StreamableHttpServerTransport, @Volatile var lastSeen: Long) {
+    private class Session(val transport: StreamableHttpServerTransport, @Volatile var lastSeen: Long, val agent: AgentIdentity) {
         val inFlight = java.util.concurrent.atomic.AtomicInteger()
     }
 
@@ -276,8 +276,23 @@ class SvodMcpServer(
         if (session == null) {
             log.info("unknown MCP session {} ({} {}) → 404; live sessions: {}", sessionId, call.request.local.method.value, call.request.local.uri, sessions.size)
             call.respond(HttpStatusCode.NotFound, "Session not found")
+            return null
         }
-        return session
+        return if (dropIfStale(sessionId, session, call)) null else session
+    }
+
+    /**
+     * A session's tools are bound to the identity it was opened with. When the registry no longer
+     * holds that exact identity (role, grants, person or token changed, or the agent was deleted),
+     * the session is closed and the client gets 404 and re-initializes with what is current
+     * (ADR-0020). Without this an open session kept a revoked role until it went idle.
+     */
+    private suspend fun dropIfStale(id: String, s: Session, call: ApplicationCall): Boolean {
+        if (registry.byAgentId(s.agent.agentId) == s.agent) return false
+        if (sessions.remove(id, s)) runCatching { s.transport.close() }
+        log.info("MCP session {} dropped: agent '{}' changed since it opened → 404", id, s.agent.agentId)
+        call.respond(HttpStatusCode.NotFound, "Session not found")
+        return true
     }
 
     private suspend fun getOrCreateSession(call: ApplicationCall): Session? {
@@ -290,8 +305,9 @@ class SvodMcpServer(
                 // 2026-07-03 incident.
                 log.info("unknown MCP session {} (POST) → 404; live sessions: {}", sessionId, sessions.size)
                 call.respond(HttpStatusCode.NotFound, "Session not found")
+                return null
             }
-            return session
+            return if (dropIfStale(sessionId, session, call)) null else session
         }
 
         val agentId = call.principal<UserIdPrincipal>()?.name
@@ -303,7 +319,7 @@ class SvodMcpServer(
 
         val transport = StreamableHttpServerTransport(StreamableHttpServerTransport.Configuration(enableJsonResponse = true))
         // Not in [sessions] until the handshake hands out an id; [serve] keeps it busy meanwhile.
-        val session = Session(transport, clock())
+        val session = Session(transport, clock(), agent)
         transport.setOnSessionInitialized { id ->
             sessions[id] = session
             log.info("MCP session {} initialized for agent '{}'; live sessions: {}", id, agent.agentId, sessions.size)
