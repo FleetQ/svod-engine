@@ -107,3 +107,6 @@ is decided in ADR-0020 and none changes the plan's intent:
 3. **Promote is allowed to every WRITE agent today.** The role system therefore applies only to
    agents that opt into it (bound to a user, or with at least one `{vault, role}` grant); every
    other agent keeps today's behaviour exactly.
+4. **"Merge authority" (ADR-0009) is no longer a runtime role.** Shipped sync is symmetric on one
+   shared ref (`refs/svod/sync/<vaultId>`); `mergeAuthority` only sets a label. The central instance
+   is still the single writer for everything that reaches it — see ADR-0020 Decision 5.

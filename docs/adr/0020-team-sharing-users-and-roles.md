@@ -95,9 +95,17 @@ additive (§Consequences 3).
 
 ### 5. Topology: one central instance, no new sync machinery
 
-The central engine is merge authority (ADR-0009) and the team's MCP endpoint over TLS with one token
-per agent per person. Optional local replicas sync through a shared bare repo exactly as ADR-0009
-describes. Nothing in sync changes.
+The central engine holds the team vaults and is the team's MCP endpoint over TLS, with one token per
+agent per person. Because every person's agents write through that one engine, every team write is
+already serialized by its single writer: there is nothing to merge on the server.
+
+The plan calls the central instance "merge authority" (ADR-0009). The shipped sync no longer has an
+authority: `SyncEngine` is symmetric — every engine fetches, reconciles and pushes one canonical ref
+`refs/svod/sync/<vaultId>` on a shared remote, and `mergeAuthority` only changes the role label
+reported by the API (verified in code and by the S5 runbook run, 2026-11-15). For the team topology
+this changes nothing: the central engine plus an optional off-site remote (per-vault backup/sync,
+ADR-0014) is the whole picture, and an optional replica is another engine syncing the same ref.
+Conflicts on that path are surfaced exactly as before. Nothing in sync changes.
 
 ## Alternatives rejected
 
@@ -135,10 +143,25 @@ describes. Nothing in sync changes.
    (ADR-0019 EDITOR/admin); people's App API roles are not changed by this ADR.
 6. **Update API.** `UpdateAgentRequest.user = ""` unbinds; `vaultRoles` replaces the whole map; dropping
    a vault from `vaults` drops its role.
-7. Decisions taken during implementation are appended below by stage.
+7. **"Merge authority" is a label today** (Decision 5): ADR-0009's authority/proposal-branch model was
+   replaced by symmetric sync on `refs/svod/sync/<vaultId>`. ADR-0009 itself is left unedited; this
+   note is the correction for the team topology.
+8. Decisions taken during implementation are appended below by stage.
 
 ### Implementation notes (appended per stage)
 
 - S0 (schema): `AgentSettingsSerializer` (`JsonTransformingSerializer` over the kept generated
   serializer) is the only code that knows the `{vault, role}` JSON form. An object entry without a
   `role` means `writer`; without a `vault` it is a parse error.
+- S1 (identity): `Author` gained `agent: String? = null`; `GitRepo` appends `Svod-Agent: <id>` at all
+  three commit sites (commitAll, commitPaths, commitMerge) only when `agent != null`, so an unbound
+  agent's message is unchanged byte for byte. The trailer therefore also lands on a merge commit
+  whose author is a bound agent (in practice merges are authored by the engine, not by agents).
+  `UserController` reloads the agent registry after a person changes, and refuses to delete a person
+  that any agent is bound to (this check runs before the last-admin check, so a bound last admin gets
+  the "bound" error). A user id can be reused only after every binding is removed.
+- S2 (roles): the table and `optedIn()` live in `mcp/GrantResolver.kt`; `routed(req, tool)` is the
+  only caller, for both the session and the stateless MCP transport (both build tools through
+  `buildTools`). A tool missing from the table requires `maintainer` (fail closed); a test asserts the
+  table keys equal the registered tool names. A denial names the effective role after the ceiling
+  (a READ_ONLY agent with a maintainer grant is told "role reader").
