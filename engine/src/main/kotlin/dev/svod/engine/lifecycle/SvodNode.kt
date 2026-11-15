@@ -181,7 +181,7 @@ class SvodNode private constructor(
                     registry.reload(cfg.toAgentSpecs())
                     userRegistry.reload(cfg.toUserSpecs())
                 }
-                val userController = UserController(configStore, userRegistry, secretsDir)
+                val userController = UserController(configStore, userRegistry, secretsDir, agentRegistry = registry)
                 val secretStore = SecretStore(secretsDir)
                 val appApiTls = config.appApiTls?.let { t ->
                     val ks = dev.svod.engine.security.Keystores.load(

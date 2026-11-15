@@ -1,7 +1,7 @@
 package dev.svod.engine.core
 
 /** Identity attributed to a mutation; becomes the git author/committer. */
-data class Author(val name: String, val email: String) {
+data class Author(val name: String, val email: String, val agent: String? = null) {
     companion object {
         val SYSTEM = Author("svod", "svod@localhost")
         val RECOVERY = Author("svod-recovery", "recovery@svod.localhost")
