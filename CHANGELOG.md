@@ -3,6 +3,17 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.31.0 — unreleased (App API contract 0.39.0, additive)
+
+### Added — team sharing: people behind agents, roles on vault grants (ADR-0020)
+
+- `agents[].user` binds an agent to a person in `users[]` (the ADR-0019 list). Validation refuses a
+  binding to an unknown user.
+- `agents[].vaults` entries may be `{vault, role}` with role `reader` | `writer` | `maintainer`; a bare
+  vault id keeps working. A config that uses neither is read and written exactly as before.
+- App API: `Agent`, `CreateAgentRequest`, `UpdateAgentRequest` carry `user` and `vaultRoles`
+  (contract 0.39.0, additive). In an update, `user: ""` unbinds and dropping a vault drops its role.
+
 ## v1.30.0 — 2026-11-10 (App API contract 0.38.0, additive)
 
 ### Changed — memory review is per agent and off by default

@@ -473,6 +473,10 @@ data class AgentDto(
     val prompt: String? = null,
     /** Whether this agent's fact/policy memories wait for a person's approval. Null ⇒ the engine's `memory.requireReview`. */
     val requireReview: Boolean? = null,
+    /** Since 0.39.0 (ADR-0020). The person (`users[].userId`) this agent acts for; null ⇒ unbound. */
+    val user: String? = null,
+    /** Since 0.39.0. Explicit role per granted vault: `reader` | `writer` | `maintainer`. A vault absent here is a bare grant. */
+    val vaultRoles: Map<String, String> = emptyMap(),
 )
 
 @Serializable
@@ -511,6 +515,10 @@ data class CreateAgentRequest(
     val prompt: String? = null,
     /** Whether this agent's fact/policy memories wait for a person's approval. Null ⇒ the engine's `memory.requireReview`. */
     val requireReview: Boolean? = null,
+    /** Since 0.39.0. Bind the agent to a person (`users[].userId`); unknown ⇒ 400. */
+    val user: String? = null,
+    /** Since 0.39.0. Role per granted vault (`reader` | `writer` | `maintainer`); each key must be in `vaults`. */
+    val vaultRoles: Map<String, String> = emptyMap(),
 )
 
 @Serializable
@@ -523,6 +531,10 @@ data class UpdateAgentRequest(
     val prompt: String? = null,
     /** Omitted or null leaves it unchanged; to fall back to `memory.requireReview` again, remove it from config.json. */
     val requireReview: Boolean? = null,
+    /** Since 0.39.0. Omitted or null leaves it unchanged; "" unbinds the agent from its person. */
+    val user: String? = null,
+    /** Since 0.39.0. Omitted or null leaves it unchanged; replaces the whole map otherwise. */
+    val vaultRoles: Map<String, String>? = null,
 )
 
 // ---- People: App API principals (GET/POST/PUT/DELETE /api/v1/users, /me, /secrets — 0.30.0, ADR-0019) ----

@@ -15,6 +15,35 @@ enum class AgentRole {
 }
 
 /**
+ * What an agent may do in ONE granted vault (ADR-0020). Ordered: each role includes the one before.
+ * A bare vault id in `agents[].vaults` means [WRITER]; `{vault, role}` names the role. The global
+ * [AgentRole] stays a ceiling: READ_ONLY caps every grant at [READER].
+ */
+enum class GrantRole {
+    /** read / search / graph / history. */
+    READER,
+
+    /** + write / edit / move / delete / remember. */
+    WRITER,
+
+    /** + promote (and, on the App API side, nothing new: maintainer is an MCP grant role). */
+    MAINTAINER,
+    ;
+
+    /** Lower-case label used in config and DTOs. */
+    val label: String get() = name.lowercase()
+
+    fun covers(required: GrantRole): Boolean = ordinal >= required.ordinal
+
+    companion object {
+        val LABELS: List<String> = entries.map { it.label }
+
+        /** Case-insensitive parse of a config/DTO label; null when unknown. */
+        fun parse(label: String): GrantRole? = entries.firstOrNull { it.label.equals(label, ignoreCase = true) }
+    }
+}
+
+/**
  * An authenticated agent. The [author] flows to git as the commit author, so every
  * mutation is attributable in history to the agent that made it.
  */
@@ -26,6 +55,10 @@ data class AgentIdentity(
     val vaults: List<String> = emptyList(),
     /** This agent's own `requireReview`; null ⇒ the engine's `memory.requireReview`. */
     val requireReview: Boolean? = null,
+    /** The person this agent acts for (`users[].userId`, ADR-0020); null ⇒ an unbound agent, as before. */
+    val userId: String? = null,
+    /** Explicit per-vault roles from `{vault, role}` grants. A granted vault absent here is a bare grant. */
+    val grantRoles: Map<String, GrantRole> = emptyMap(),
 ) {
     /** The vault this agent's MCP session is bound to (its first grant, else [default]). */
     fun primaryVault(default: String): String = vaults.firstOrNull() ?: default
@@ -49,6 +82,10 @@ class AgentRegistry(agents: List<AgentSpec>) {
         val email: String = "$agentId@agents.svod.local",
         val vaults: List<String> = emptyList(),
         val requireReview: Boolean? = null,
+        /** `users[].userId` this agent is bound to (ADR-0020); null ⇒ unbound. */
+        val userId: String? = null,
+        /** Explicit `{vault, role}` grant roles; bare grants are absent. */
+        val grantRoles: Map<String, GrantRole> = emptyMap(),
     )
 
     @Volatile private var byToken: Map<String, AgentIdentity> = buildByToken(agents)
@@ -92,6 +129,6 @@ class AgentRegistry(agents: List<AgentSpec>) {
         fun buildByAgentId(agents: List<AgentSpec>): Map<String, AgentIdentity> =
             agents.associate { it.agentId to it.identity() }
 
-        fun AgentSpec.identity() = AgentIdentity(agentId, role, Author(name, email), vaults, requireReview)
+        fun AgentSpec.identity() = AgentIdentity(agentId, role, Author(name, email), vaults, requireReview, userId, grantRoles)
     }
 }

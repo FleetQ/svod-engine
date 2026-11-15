@@ -7,8 +7,17 @@ import dev.svod.engine.index.RerankerConfig
 import dev.svod.engine.index.RerankerProvider
 import dev.svod.engine.mcp.AgentRegistry
 import dev.svod.engine.mcp.AgentRole
+import dev.svod.engine.mcp.GrantRole
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonTransformingSerializer
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -276,7 +285,14 @@ data class SvodConfig(
         val requestTimeoutSeconds: Int = 30,
     )
 
-    @Serializable
+    /**
+     * One MCP agent. In JSON each `vaults` entry is a bare vault id (⇒ `writer`, the pre-ADR-0020
+     * form) or `{vault, role}`; [AgentSettingsSerializer] folds the object form into [vaults] +
+     * [vaultRoles] on read and back on write, so a config without roles round-trips byte-for-byte.
+     */
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @kotlinx.serialization.KeepGeneratedSerializer
+    @Serializable(with = AgentSettingsSerializer::class)
     data class AgentSettings(
         val token: String,
         val agentId: String,
@@ -289,6 +305,13 @@ data class SvodConfig(
         val prompt: String? = null,
         /** Whether this agent's fact/policy memories wait for a person's approval. Null ⇒ `memory.requireReview`. */
         val requireReview: Boolean? = null,
+        /**
+         * The person this agent acts for: a `users[].userId` (ADR-0020). Its writes are authored by that
+         * person, with a `Svod-Agent: <agentId>` trailer. Null ⇒ unbound, authored by the agent as before.
+         */
+        val user: String? = null,
+        /** Explicit role per granted vault (`reader` | `writer` | `maintainer`), from `{vault, role}` entries. */
+        val vaultRoles: Map<String, String> = emptyMap(),
     )
 
     /**
@@ -441,6 +464,13 @@ data class SvodConfig(
         if (agents.map { it.agentId }.let { it.size != it.toSet().size }) errors += "agent ids must be unique"
         for (a in agents) {
             if (ROLES.none { it.equals(a.role, ignoreCase = true) }) errors += "agent '${a.agentId}' role must be one of $ROLES, was '${a.role}'"
+            // ADR-0020: a user binding must name a configured person; a role must be a known one and
+            // belong to a vault the agent is actually granted.
+            a.user?.let { if (it !in userIds) errors += "agent '${a.agentId}' is bound to unknown user '$it'" }
+            for ((v, r) in a.vaultRoles) {
+                if (GrantRole.parse(r) == null) errors += "agent '${a.agentId}' role for vault '$v' must be one of ${GrantRole.LABELS}, was '$r'"
+                if (v !in a.vaults) errors += "agent '${a.agentId}' has a role for vault '$v' it is not granted"
+            }
         }
         if (syncRemotes.isNotEmpty() && hostId.isBlank()) errors += "hostId must be set when syncRemotes is configured"
         if (mcp.sessionIdleMinutes < 1) errors += "mcp.sessionIdleMinutes must be >= 1, was ${mcp.sessionIdleMinutes}"
@@ -536,14 +566,18 @@ data class SvodConfig(
 
     fun toAgentSpecs(): List<AgentRegistry.AgentSpec> = agents.map { a ->
         val role = if (a.role.equals("WRITE", ignoreCase = true)) AgentRole.WRITE else AgentRole.READ_ONLY
+        // A user-bound agent writes as the person (ADR-0020); an unbound one exactly as before.
+        val person = a.user?.let { uid -> users.firstOrNull { it.userId == uid } }
         AgentRegistry.AgentSpec(
             token = dev.svod.engine.security.Secrets.resolve(a.token), // supports env:/file: refs
             agentId = a.agentId,
             role = role,
-            name = a.name ?: a.agentId,
-            email = a.email ?: "${a.agentId}@agents.svod.local",
+            name = person?.name ?: a.name ?: a.agentId,
+            email = person?.let { it.email ?: "${it.userId}@users.svod.local" } ?: a.email ?: "${a.agentId}@agents.svod.local",
             vaults = a.vaults.ifEmpty { listOf(defaultVaultId()) },
             requireReview = a.requireReview,
+            userId = person?.userId,
+            grantRoles = a.vaultRoles.mapNotNull { (v, r) -> GrantRole.parse(r)?.let { v to it } }.toMap(),
         )
     }
 
@@ -621,5 +655,43 @@ data class SvodConfig(
         fun default(vaultPath: Path): SvodConfig = SvodConfig(vaultPath = vaultPath.toString())
 
         fun toJson(config: SvodConfig): String = json.encodeToString(serializer(), config)
+    }
+}
+
+/**
+ * `agents[].vaults` accepts a bare vault id or `{vault, role}` (ADR-0020). On read, objects become
+ * their id in `vaults` plus an entry in `vaultRoles` (a missing role means `writer`). On write, a
+ * vault with a role goes back out as `{vault, role}` and `vaultRoles` disappears, so a config that
+ * never used roles is written exactly as before.
+ */
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+object AgentSettingsSerializer : JsonTransformingSerializer<SvodConfig.AgentSettings>(SvodConfig.AgentSettings.generatedSerializer()) {
+    override fun transformDeserialize(element: JsonElement): JsonElement {
+        val obj = element as? JsonObject ?: return element
+        val vaults = obj["vaults"] as? JsonArray ?: return element
+        if (vaults.none { it is JsonObject }) return element
+        val ids = mutableListOf<JsonElement>()
+        val roles = linkedMapOf<String, JsonElement>()
+        (obj["vaultRoles"] as? JsonObject)?.let { roles.putAll(it) }
+        for (entry in vaults) {
+            if (entry is JsonObject) {
+                val id = (entry["vault"] as? JsonPrimitive)?.contentOrNull
+                    ?: throw SerializationException("agents[].vaults entry must be a vault id or {\"vault\": id, \"role\": role}, was $entry")
+                ids += JsonPrimitive(id)
+                roles[id] = entry["role"]?.jsonPrimitive ?: JsonPrimitive(GrantRole.WRITER.label)
+            } else ids += entry
+        }
+        return JsonObject(obj + mapOf("vaults" to JsonArray(ids), "vaultRoles" to JsonObject(roles)))
+    }
+
+    override fun transformSerialize(element: JsonElement): JsonElement {
+        val obj = element as? JsonObject ?: return element
+        val roles = obj["vaultRoles"] as? JsonObject ?: return element
+        val vaults = (obj["vaults"] as? JsonArray).orEmpty().map { v ->
+            val id = (v as? JsonPrimitive)?.contentOrNull
+            val role = id?.let { roles[it] }
+            if (role == null) v else JsonObject(mapOf("vault" to v, "role" to role))
+        }
+        return JsonObject(obj - "vaultRoles" + ("vaults" to JsonArray(vaults)))
     }
 }
