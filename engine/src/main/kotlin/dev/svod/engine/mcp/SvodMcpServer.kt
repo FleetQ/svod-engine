@@ -283,11 +283,21 @@ class SvodMcpServer(
 
     /**
      * A session's tools are bound to the identity it was opened with. When the registry no longer
-     * holds that exact identity (role, grants, person or token changed, or the agent was deleted),
-     * the session is closed and the client gets 404 and re-initializes with what is current
-     * (ADR-0020). Without this an open session kept a revoked role until it went idle.
+     * holds that exact identity (role, grants, person, or the agent was deleted), the session is
+     * closed and the client gets 404 and re-initializes with what is current (ADR-0020). Without this
+     * an open session kept a revoked role until it went idle. A rotated token needs no check here:
+     * bearer auth already refuses the old one.
+     *
+     * A session also belongs to the agent that opened it: a request authenticated as a different
+     * agent gets 404 for that session id (and the session stays), so a leaked id cannot be used with
+     * another agent's token to act with the owner's tools.
      */
     private suspend fun dropIfStale(id: String, s: Session, call: ApplicationCall): Boolean {
+        if (call.principal<UserIdPrincipal>()?.name != s.agent.agentId) {
+            log.info("MCP session {} refused: request is not from its agent → 404", id)
+            call.respond(HttpStatusCode.NotFound, "Session not found")
+            return true
+        }
         if (registry.byAgentId(s.agent.agentId) == s.agent) return false
         if (sessions.remove(id, s)) runCatching { s.transport.close() }
         log.info("MCP session {} dropped: agent '{}' changed since it opened → 404", id, s.agent.agentId)
