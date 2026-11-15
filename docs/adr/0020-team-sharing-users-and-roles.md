@@ -165,3 +165,10 @@ Conflicts on that path are surfaced exactly as before. Nothing in sync changes.
   `buildTools`). A tool missing from the table requires `maintainer` (fail closed); a test asserts the
   table keys equal the registered tool names. A denial names the effective role after the ceiling
   (a READ_ONLY agent with a maintainer grant is told "role reader").
+- S3 (attribution): `author` = latest commit that ADDED the path (`git log --diff-filter=A -n 1`), so a
+  note deleted and re-added reports the re-add; `lastModifiedBy` = newest commit touching the path;
+  renames are not followed (same as `history`). Both are read through the write-actor like `history`,
+  so an MCP `read` now holds the queue for two `git log -n 1` calls (whole read measured 3.5–4.3 ms on
+  a 500-commit vault). Content and attribution are two actor turns, so a write landing between them can
+  make `lastModifiedBy` newer than the returned content — harmless, never older. History `message`
+  still contains the trailer line; the parsed value is in `agent`.
