@@ -536,42 +536,71 @@ reachable remote and was not run in the gate.
 Not covered by vault backup, back these up separately: `/srv/svod/config/` (config, user keys, agent
 tokens, TLS). Without it a lost server means new keys for everybody.
 
-## 12. fleetq-01 appendix (to be confirmed by the first deployment)
+## 12. fleetq-01 appendix — first real deployment (2026-11-15, engine 1.31.0)
 
-Derived from the read-only recon of 2026-11-15 (`recon-fleetq-01.md`). **Nothing here was executed.** The
-DevOps engineer corrects this appendix after the first real deployment.
+Executed by the DevOps stage (S6). The files used are in `dist/central-docker/` (no secrets in them):
+`Dockerfile`, `svod.service`, `svod.fleetq.net.conf`, `config.example.json`, `deploy.sh`, `verify.sh`.
 
-Facts that shape it: the proxy is the container `nginx-proxy` (`nginx:stable-alpine`, owns host :80/:443,
-config in `/var/docker/nginx/conf.d/*.conf`, certificates in `/var/docker/nginx/certs`); backends are
-containers on docker networks; ufw drops everything not opened, so a host-native engine is unreachable
-from the container; `*.fleetq.net` uses one Cloudflare Origin CA certificate.
+Host facts: the proxy is the container `nginx-proxy` (`nginx:stable-alpine`, owns host :80/:443, vhosts
+in `/var/docker/nginx/conf.d/*.conf`, certificates in `/var/docker/nginx/certs`). Backends are
+containers on docker networks. ufw drops everything not opened, so a host-native engine would not be
+reachable from the proxy container without a firewall change. `*.fleetq.net` uses one Cloudflare Origin
+CA certificate (`fleetq.net.crt/.key`).
 
-Smallest additive path:
+What was done (all additive):
 
-1. System user `svod`, directories `/srv/svod/{config,vaults,…}` as in section 2.
-2. Engine in a container `svod-engine` on a **new** network `svod_edge`, running as the `svod` uid,
-   mounting `/srv/svod/config` and `/srv/svod/vaults`, started by a new systemd unit `svod.service`
-   (`docker run --rm …`). The image is built from the release tarball's bundled runtime. Inside a
-   container the engine listens on a non-loopback address, so config follows 6B: both TLS blocks
-   (self-signed PKCS12, refs via `file:`), `users[]`, `localAdmin:false`.
-3. `docker network connect svod_edge nginx-proxy` (adds an interface, no restart; the host already does
-   this for 23 networks).
-4. New file `/var/docker/nginx/conf.d/svod.fleetq.net.conf`, patterned on the existing vhosts:
-   `resolver 127.0.0.11; set $up https://svod-engine:7518;` for `/mcp`, `…:7517` for the rest,
-   `proxy_ssl_verify off`, the `*.fleetq.net` origin certificate and key, and the WebSocket and
-   `proxy_buffering off` lines of section 6.
-5. `docker exec nginx-proxy nginx -t`, then `docker exec nginx-proxy nginx -s reload` (graceful).
-   Nothing existing is restarted.
-6. DNS: `svod.fleetq.net` must be a **proxied** (orange cloud) Cloudflare record; the origin certificate
-   is only trusted through Cloudflare. DNS is not changeable from the host, so flag it.
-7. Local check before DNS exists:
-   `curl --resolve svod.fleetq.net:443:127.0.0.1 -k https://svod.fleetq.net/ready` (`-k` because the
-   Cloudflare Origin CA is not a public CA).
+1. Build `gradlew installDist` from the release commit on a machine with JDK 20, copy
+   `build/install/svod-engine/` plus the files above to the host (`/tmp/svod-s6/`).
+2. `deploy.sh` (idempotent; aborts if the vhost, container or unit already exist):
+   - system user `svod` (nologin, home `/srv/svod`), dirs `/srv/svod/{config,vaults,home}` (750) and
+     `/srv/svod/config/{secrets,tls}` (700), all owned by `svod`;
+   - secrets generated on the host with `openssl rand`, written by the `svod` user with umask 077
+     (`user-nikola.key`, `agent-nikola-claude.token`, `keystore.pass`); never printed;
+   - image `svod-engine:1.31.0` (`eclipse-temurin:21-jre-jammy` + `git` + the installDist tree; the
+     engine needs a `git` binary for history);
+   - self-signed PKCS12 keystore made with the image's `keytool` (`-storepass:file`), SAN `svod-engine`;
+   - `config.json` (600, owned by `svod`): `host 0.0.0.0` inside the container, both TLS blocks,
+     `localAdmin:false`, one vault `team`, person `nikola` (admin, EDITOR on `team`), agent
+     `nikola-claude` bound to `nikola` with `{vault: team, role: maintainer}`, `embedder: none`;
+   - new docker network `svod_edge`; new unit `svod.service` running
+     `docker run --rm --name svod-engine --network svod_edge --user <svod uid> -e HOME=/srv/svod/home
+     -v /srv/svod:/srv/svod svod-engine:1.31.0 /srv/svod/config/config.json` (`/srv/svod` is mounted
+     read-write: the engine rewrites `config.json` and writes `secrets/`; `HOME` on the mount keeps
+     `~/.svod/logs` across `--rm`);
+   - `docker network connect svod_edge nginx-proxy` (adds an interface; no restart);
+   - new `conf.d/svod.fleetq.net.conf`; `docker exec nginx-proxy nginx -t`, and only if that passes
+     `nginx -s reload` (graceful). If `nginx -t` fails the file is removed and nothing is reloaded.
+     `/api/v1/update` is answered 404 by the vhost (updates are done by replacing the image).
+3. `verify.sh` takes a before/after snapshot of container start times, running units and five existing
+   vhosts, and checks the gate through the real proxy with
+   `curl --resolve svod.fleetq.net:443:127.0.0.1 --cacert <Cloudflare origin_ca_rsa_root.pem>` —
+   verified TLS against the Cloudflare Origin CA, not `-k`.
 
-Open questions for that deployment: the Java version on the host (the tarball avoids it), whether the
-engine image should run as the `svod` uid with the config directory mounted read-write (the engine
-rewrites `config.json` and writes `secrets/`), and where the container's `user.home` points (mount it, or
-logs and the model cache are lost on each `--rm`).
+Observed (2026-11-15 ~21:00 UTC): `/ready` 200 (`ssl_verify_result=0`); MCP `initialize` with the agent
+token 200, without a token 401, with a wrong token 401; App API without a key 401; the same after
+`systemctl restart svod`; no existing container restarted, only `svod.service` added to the running
+units, existing vhosts returned the same codes before and after; neither token appears in `config.json`,
+`~/.svod/logs` or the journal. A write through the proxy was committed with author
+`Nikola Katsarov <katsarov@gmail.com>`, committer `fleetq-01` and trailer `Svod-Agent: nikola-claude`.
+
+Corrections against the plan above: the image is not built from the release tarball (installDist +
+a JRE base image was simpler and the host's own `java` is not used at all); keytool runs from the image.
+
+**Still open: DNS.** `svod.fleetq.net` does not resolve. It needs a **proxied** (orange cloud) Cloudflare
+record pointing at fleetq-01 (`195.201.195.167`); the origin certificate is trusted only through
+Cloudflare, so a grey-cloud record would show a certificate error. Until then the instance is reachable
+only with `--resolve` on the host.
+
+Handing a token to its owner: the values live only in `/srv/svod/config/secrets/` on the host. Read one
+over ssh straight into a password manager, e.g.
+`ssh fleetq-01 sudo cat /srv/svod/config/secrets/agent-nikola-claude.token | op item create …` — never
+into a chat or a log.
+
+Rollback (removes only what was added): `systemctl disable --now svod`, `rm /etc/systemd/system/svod.service`,
+`systemctl daemon-reload`, `rm /var/docker/nginx/conf.d/svod.fleetq.net.conf`,
+`docker exec nginx-proxy nginx -t && docker exec nginx-proxy nginx -s reload`,
+`docker network disconnect svod_edge nginx-proxy`, `docker network rm svod_edge`,
+`docker image rm svod-engine:1.31.0`; `/srv/svod` holds the vault (a git repo) — keep or archive it.
 
 ## 13. What was verified, and the corrections to the old runbook
 

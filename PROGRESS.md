@@ -11,7 +11,7 @@ Vault read OK (svod MCP reachable) at 2026-11-15 19:30 UTC. Host: friday. JDK 20
 | S3 attribution | **green** | 2026-11-15 21:35 | merged 004ebf8 (Dev A); CTO run on merge: 629 tests, 605 passed, 24 skipped, 0 failed. MCP read latency 3.5–4.3 ms on 500 commits |
 | S4 multi-user test | **green** | 2026-11-15 21:50 | merged 9f1d23d (QA); CTO ran core test 3× without cache: 3/3 green, 121 writes = 121 commits, 50–56 conflicts surfaced, queue drained. Heavy (-Dsvod.perf=true, QA run): 2401 writes = 2401 commits, 214 conflicts, 132 s |
 | S5 runbook | **green (writer run)** | 2026-11-15 21:12 | merged ef981f6; fresh clone → /ready 200, two people's keys + agent tokens OK, no-token 401. nginx part unverified until S6 |
-| S6 deploy svod.fleetq.net | pending | | DevOps, after S1–S5 gates |
+| S6 deploy svod.fleetq.net | **green locally, DNS missing** | 2026-11-15 22:10 | deployed on fleetq-01 (container + svod.service + vhost). Through the real proxy: /ready 200 with TLS verified vs Cloudflare Origin CA, MCP 200 with token / 401 without, survives `systemctl restart`, no existing service changed. `svod.fleetq.net` has no DNS record → public check impossible until a proxied Cloudflare record exists |
 
 Notes
 - Friday quirk: `/etc/hosts` maps 127.0.0.1 → `localhost.localdomain`, so `McpTlsTest` and `AppApiTlsTest` fail on this host on clean `main` too (cert names `localhost`). Local runs use `JAVA_TOOL_OPTIONS=-Djdk.net.hosts.file=.tools/hosts`; CI (macOS) is unaffected.

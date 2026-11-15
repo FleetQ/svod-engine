@@ -202,3 +202,11 @@ Conflicts on that path are surfaced exactly as before. Nothing in sync changes.
   - Agent and user admin calls check, then update the config without a common lock; two admins acting
     at the same instant could leave an agent bound to a just-deleted person. The next start refuses
     that config with a clear error. Admin-only, rare; left as is.
+- S6 (deploy, svod.fleetq.net on fleetq-01): the engine runs as a container on its own docker network
+  because the host firewall drops traffic from the proxy container to host services; reaching a
+  host-native engine would have meant a ufw change. The proxy got a new network interface
+  (`docker network connect`, the host's existing pattern) and a new vhost with a graceful
+  `nginx -s reload`; no existing container, unit or vhost was restarted or edited (verified by a
+  before/after snapshot). First deploy uses `embedder: none` (BM25 only) so production does not download
+  models on first start; switching to `onnx-local` is a config change. Public DNS for `svod.fleetq.net`
+  does not exist yet and cannot be created from the host (plan: flag it).

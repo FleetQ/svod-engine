@@ -1,0 +1,24 @@
+{
+  "host": "0.0.0.0",
+  "appApiPort": 7517,
+  "mcpPort": 7518,
+  "hostId": "fleetq-01",
+  "vaults": [{ "id": "team", "path": "/srv/svod/vaults/team" }],
+  "defaultVault": "team",
+  "embedder": { "provider": "none" },
+  "localAdmin": false,
+  "secretScanning": true,
+  "users": [
+    { "userId": "nikola", "name": "Nikola Katsarov", "email": "katsarov@gmail.com",
+      "keyRef": "file:/srv/svod/config/secrets/user-nikola.key", "admin": true,
+      "grants": [{ "vault": "team", "role": "EDITOR" }] }
+  ],
+  "agents": [
+    { "token": "file:/srv/svod/config/secrets/agent-nikola-claude.token", "agentId": "nikola-claude",
+      "role": "WRITE", "user": "nikola", "vaults": [{ "vault": "team", "role": "maintainer" }] }
+  ],
+  "mcpTls": { "keystorePath": "/srv/svod/config/tls/engine.p12", "keystorePassword": "file:/srv/svod/config/secrets/keystore.pass",
+              "keyAlias": "svod", "keyPassword": "file:/srv/svod/config/secrets/keystore.pass" },
+  "appApiTls": { "keystorePath": "/srv/svod/config/tls/engine.p12", "keystorePassword": "file:/srv/svod/config/secrets/keystore.pass",
+                 "keyAlias": "svod", "keyPassword": "file:/srv/svod/config/secrets/keystore.pass" }
+}
