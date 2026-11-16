@@ -318,9 +318,10 @@ class SyncBranchTest {
         val bad = listOf(
             "", "..", "a..b", "-x", "--force", "HEAD", "a b", " main", "main ", "a\tb", "a\nb", "a\u0000b", "a\u007fb",
             "x@{1}", "feature/", "x.lock", "a/x.lock", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b", "/a", "a//b", "a.", ".a",
+            "@", "+main", "+refs/heads/x", "refs/heads/main", "refs/svod/sync/v", "заметки", "café", "a\u00a0b", "main\u200b",
         )
         for (name in bad) assertNotNull(SvodConfig.syncBranchError(name), "should reject ${name.replace("\n", "\\n").replace("\t", "\\t")}")
-        for (name in listOf("main", "master", "svod-sync", "team/notes", "release-1.2", "a.b", "x_y")) {
+        for (name in listOf("main", "master", "svod-sync", "team/notes", "release-1.2", "a.b", "x_y", "user@host", "a+b", "my-refs/x")) {
             assertNull(SvodConfig.syncBranchError(name), "should accept $name")
         }
     }

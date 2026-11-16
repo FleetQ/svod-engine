@@ -660,13 +660,18 @@ data class SvodConfig(
 
         /**
          * Why [name] cannot be a sync branch, or null when it is fine. Stricter than "valid for git" where
-         * a name would be dangerous on a command line or in a refspec: empty, a leading `-`, `HEAD`,
-         * whitespace/control characters, `..`, `@{`, a trailing `/` or `.lock`, plus git's own ref-name rules.
+         * a name would be dangerous on a command line or in a refspec, or mangled by a git host: empty, a leading
+         * `-` or `+`, `HEAD`, `@`, a `refs/` prefix, non-ASCII, whitespace/control characters, `..`, `@{`, a
+         * trailing `/` or `.lock`, plus git's own ref-name rules (`Repository.isValidRefName("refs/heads/<name>")`).
          */
         fun syncBranchError(name: String): String? = when {
             name.isEmpty() -> "must not be empty"
             name.startsWith("-") -> "must not start with '-'"
+            name.startsWith("+") -> "must not start with '+'"
             name == "HEAD" -> "must not be HEAD"
+            name == "@" -> "must not be '@'"
+            name.startsWith("refs/") -> "must be a branch name, not a ref (drop 'refs/heads/')"
+            name.any { it.code > 0x7e } -> "must be ASCII"
             name.any { it.isWhitespace() || it.isISOControl() } -> "must not contain whitespace or control characters"
             ".." in name -> "must not contain '..'"
             "@{" in name -> "must not contain '@{'"
