@@ -26,7 +26,12 @@ import java.nio.file.Path
  * that accepts the connection but never answers parks the thread in a blocking socket read that
  * coroutine cancellation cannot interrupt — the cycle, and every sync queued behind it, never ends.
  */
-open class SyncGit(root: Path, private val timeoutSeconds: Int = TRANSPORT_TIMEOUT_SECONDS) : AutoCloseable {
+open class SyncGit(
+    root: Path,
+    private val timeoutSeconds: Int = TRANSPORT_TIMEOUT_SECONDS,
+    /** False under `denyPrivateRemotes`: an HTTP redirect could lead past the host check. */
+    followRedirects: Boolean = true,
+) : AutoCloseable {
 
     companion object {
         /** Connect and per-read timeout for fetch/push (jgit applies it to both for HTTP). */
@@ -50,7 +55,26 @@ open class SyncGit(root: Path, private val timeoutSeconds: Int = TRANSPORT_TIMEO
         .build()
     private val git = Git(repo)
 
+    init {
+        // Persisted in the vault's .git/config, so turning the flag off again must take it back out.
+        val pinned = repo.config.getString("http", null, "followRedirects") == "false"
+        if (!followRedirects && !pinned) repo.config.apply { setString("http", null, "followRedirects", "false"); save() }
+        if (followRedirects && pinned) repo.config.apply { unset("http", null, "followRedirects"); save() }
+    }
+
     val branch: String get() = repo.branch
+
+    /**
+     * The plain branch sync runs through, or null for the default canonical ref `refs/svod/sync/<vaultId>`.
+     * Set by [SyncEngine] at the start of each cycle (the vault's setting can change at runtime); every
+     * fetch/push/[syncRef] below follows it. With a branch, the push is still non-force.
+     */
+    @Volatile
+    var syncBranch: String? = null
+
+    private fun canonicalRemoteRef(vaultId: String): String = syncBranch?.let { "refs/heads/$it" } ?: "refs/svod/sync/$vaultId"
+
+    private fun trackingRef(vaultId: String): String = syncBranch?.let { "refs/svodremote/syncbranch/$it" } ?: "refs/svodremote/sync/$vaultId"
 
     fun fetch(remote: String) {
         git.fetch()
@@ -67,6 +91,7 @@ open class SyncGit(root: Path, private val timeoutSeconds: Int = TRANSPORT_TIMEO
      * absent and [syncRef] returns null.
      */
     open fun fetchSync(remote: String, vaultId: String) {
+        syncBranch?.let { return fetchBranch(remote, it) }
         // A wildcard refspec matches zero refs without error when no machine has pushed the
         // canonical ref yet (first machine bootstrapping); a real transport failure still throws.
         git.fetch()
@@ -76,8 +101,26 @@ open class SyncGit(root: Path, private val timeoutSeconds: Int = TRANSPORT_TIMEO
             .call()
     }
 
+    /**
+     * Fetch `refs/heads/[name]` into `refs/svodremote/syncbranch/[name]`. An explicit refspec fails when the
+     * remote has no such branch (new or empty remote), which here means "nobody has pushed yet": the stale
+     * tracking ref, if any, is dropped so [syncRef] returns null and the first push creates the branch.
+     */
+    private fun fetchBranch(remote: String, name: String) {
+        try {
+            git.fetch().setRemote(remote).setTimeout(timeoutSeconds)
+                .setRefSpecs(RefSpec("+refs/heads/$name:refs/svodremote/syncbranch/$name"))
+                .call()
+        } catch (e: org.eclipse.jgit.api.errors.TransportException) {
+            if (e.message?.contains("Remote does not have") != true) throw e
+            repo.refDatabase.getRefsByPrefix("refs/svodremote/syncbranch/$name").firstOrNull { it.name == "refs/svodremote/syncbranch/$name" }?.let {
+                repo.updateRef(it.name).apply { isForceUpdate = true }.delete()
+            }
+        }
+    }
+
     /** The canonical sync head for [vaultId] as last fetched (null until a peer has pushed it). */
-    fun syncRef(vaultId: String): String? = repo.resolve("refs/svodremote/sync/$vaultId")?.name
+    fun syncRef(vaultId: String): String? = repo.resolve(trackingRef(vaultId))?.name
 
     /** Outcome of a canonical-ref push: pushed cleanly, rejected (a peer advanced it first), or a transport error. */
     enum class PushResult { OK, REJECTED, ERROR }
@@ -96,7 +139,7 @@ open class SyncGit(root: Path, private val timeoutSeconds: Int = TRANSPORT_TIMEO
      */
     open fun pushSync(remote: String, source: String, vaultId: String): PushResult = try {
         val results = git.push().setRemote(remote).setTimeout(timeoutSeconds)
-            .setRefSpecs(RefSpec("$source:refs/svod/sync/$vaultId"))
+            .setRefSpecs(RefSpec("$source:${canonicalRemoteRef(vaultId)}"))
             .call()
         var ok = true
         for (result in results) for (update in result.remoteUpdates) {

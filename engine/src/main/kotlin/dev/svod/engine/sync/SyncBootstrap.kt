@@ -1,5 +1,6 @@
 package dev.svod.engine.sync
 
+import dev.svod.engine.lifecycle.SvodConfig
 import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.api.ResetCommand
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
@@ -24,7 +25,12 @@ object SyncBootstrap {
     fun clone(
         remote: String, dest: Path, vaultId: String, branch: String = "master",
         timeoutSeconds: Int = SyncGit.TRANSPORT_TIMEOUT_SECONDS,
+        /** Clone the plain remote branch `refs/heads/<syncBranch>` instead of `refs/svod/sync/<vaultId>`. */
+        syncBranch: String? = null,
     ) {
+        syncBranch?.let { b -> require(SvodConfig.syncBranchError(b) == null) { "invalid --branch '$b': ${SvodConfig.syncBranchError(b)}" } }
+        val remoteRef = syncBranch?.let { "refs/heads/$it" } ?: "refs/svod/sync/$vaultId"
+
         require(!Files.exists(dest) || isEmptyDir(dest)) { "destination must be empty or not exist: $dest" }
         Files.createDirectories(dest)
 
@@ -41,10 +47,10 @@ object SyncBootstrap {
         Git(repo).use { git ->
             // Fetch the canonical ref straight onto the local branch, then materialize the working tree.
             val fetched = git.fetch().setRemote(remote).setTimeout(timeoutSeconds)
-                .setRefSpecs(RefSpec("refs/svod/sync/$vaultId:refs/heads/$branch"))
+                .setRefSpecs(RefSpec("$remoteRef:refs/heads/$branch"))
                 .call()
-            require(fetched.advertisedRefs.any { it.name == "refs/svod/sync/$vaultId" }) {
-                "remote has no canonical sync ref refs/svod/sync/$vaultId — has a machine synced this vault yet?"
+            require(fetched.advertisedRefs.any { it.name == remoteRef }) {
+                "remote has no canonical sync ref $remoteRef — has a machine synced this vault yet?"
             }
             git.reset().setMode(ResetCommand.ResetType.HARD).setRef(branch).call()
         }

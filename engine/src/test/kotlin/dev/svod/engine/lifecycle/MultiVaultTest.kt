@@ -164,6 +164,10 @@ class MultiVaultTest {
             // ssh with key auth (no inline password) is accepted; an http(s) userinfo would be rejected
             val r = put(node.appApiPort, "/api/v1/settings/backup", """{"remote":"ssh://git@example.com/svod-backup.git","enabled":true}""")
             assertEquals(200, r.statusCode())
+            assertTrue("\"syncBranch\":null" in r.body(), "the PUT echo always carries syncBranch: ${r.body()}")
+            val b = put(node.appApiPort, "/api/v1/settings/backup", """{"remote":"ssh://git@example.com/svod-backup.git","enabled":true,"syncBranch":"team/notes"}""")
+            assertEquals(200, b.statusCode(), b.body())
+            assertTrue("\"syncBranch\":\"team/notes\"" in b.body(), "the PUT echo matches the stored branch: ${b.body()}")
         } finally { node.shutdown() }
 
         // a fresh node on the same vaults loads the persisted backup remote (redacted in the view)
@@ -171,6 +175,9 @@ class MultiVaultTest {
         try {
             val syncCfg = get(node2.appApiPort, "/api/v1/sync/config").body()
             assertTrue(syncCfg.contains("svod-backup.git"), "persisted backup remote must load on restart: $syncCfg")
+            assertTrue("\"syncBranch\":\"team/notes\"" in syncCfg, "the persisted sync branch must load on restart: $syncCfg")
+            val cleared = put(node2.appApiPort, "/api/v1/settings/backup", """{"remote":"ssh://git@example.com/svod-backup.git","enabled":true}""")
+            assertTrue("\"syncBranch\":null" in cleared.body(), "omitting syncBranch clears it: ${cleared.body()}")
         } finally { node2.shutdown() }
     }
 

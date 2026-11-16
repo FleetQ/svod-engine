@@ -30,7 +30,8 @@ import java.time.Instant
  * branch points at by then; commits that land after the snapshot are left for the next cycle
  * (the scheduler's trailing cycle). Cycles are serialized per vault by [mutex]:
  *  1. commit any pending local changes (the engine already auto-commits writes),
- *  2. fetch `refs/svod/sync/<vaultId>`,
+ *  2. fetch `refs/svod/sync/<vaultId>` (or the plain branch `refs/heads/<syncBranch>` when the vault sets one:
+ *     same cycle, non-force, and never the force mirror to `main`),
  *  3. up-to-date → done; remote ahead → fast-forward; local ahead → push;
  *     diverged → 3-way merge (clean → merge commit; real conflict → surface, leave local untouched),
  *  4. push `HEAD:refs/svod/sync/<vaultId>` (non-force; reject → re-fetch/merge, bounded retry).
@@ -55,6 +56,7 @@ class SyncEngine(
     private val hostId: String,
     /** Wall clock for the hold/out-of-sync ages and the log rate limit; injectable for tests. */
     private val clock: () -> Instant = Instant::now,
+    private val guard: RemoteGuard = RemoteGuard.OFF,
 ) {
     private val branch = engine.branch()
     private val log = LoggerFactory.getLogger(SyncEngine::class.java)
@@ -70,6 +72,24 @@ class SyncEngine(
     var lastResult: Result? = null
         private set
 
+    /**
+     * The last transport failure (`fetch failed: ConnectException: …`), credentials removed; cleared by a
+     * cycle that ends in sync. Null when the last failure is resolved or none happened.
+     */
+    @Volatile
+    var lastError: String? = null
+        private set
+
+    /** The remote of the running cycle, so its userinfo can be scrubbed out of any failure text. */
+    @Volatile private var cycleRemote: String? = null
+
+    private fun scrub(text: String): String {
+        var out = text
+        val userinfo = cycleRemote?.let { USERINFO.find(it)?.groupValues?.get(1) }?.takeIf { it.isNotEmpty() }
+        if (userinfo != null) for (part in (listOf(userinfo) + userinfo.split(':')).filter { it.length >= 3 }.sortedByDescending { it.length }) out = out.replace(part, "***")
+        return out.replace(Regex("://[^/@\\s]*@"), "://").take(500)
+    }
+
     /** Step of the cycle in progress (`commit`, `fetch`, `merge`, `push`), null when idle. */
     @Volatile
     var phase: String? = null
@@ -81,7 +101,7 @@ class SyncEngine(
     }
 
     private fun record(status: Status, head: String?, syncedAt: String? = lastResult?.lastSyncedAt): Result {
-        if (status == Status.inSync) conflicts.retainOnly(emptySet()) // reconciled → nothing is open any more
+        if (status == Status.inSync) { conflicts.retainOnly(emptySet()); lastError = null } // reconciled → nothing is open any more
         val now = clock()
         val open = conflicts.all()
         if (status == Status.inSync) {
@@ -129,6 +149,7 @@ class SyncEngine(
     /** WARN for a failed fetch/push: the first failure at once, then at most once per [LOG_EVERY] while it keeps failing. */
     private fun remoteFailed(what: String, cause: String) {
         remoteFailures++
+        lastError = scrub("$what failed: $cause")
         val now = clock()
         if (lastRemoteFailureLog.isDue(now)) {
             lastRemoteFailureLog = now
@@ -156,17 +177,26 @@ class SyncEngine(
      * simply retried next cycle; the canonical sync ref remains the source of truth.
      */
     private fun mirror(remote: String, head: String?) {
+        // A plain sync branch is the person's own: a force-push to main could destroy their commits.
+        if (git.syncBranch != null) return
         if (head == null || head == lastMirroredHead) return
         if (git.mirrorToBrowsableBranch(remote, branch)) lastMirroredHead = head
     }
 
     /** Run one reconcile cycle against [remote] (a URL or a Secrets ref). Never throws. */
-    suspend fun sync(remote: String): Result = mutex.withLock {
+    suspend fun sync(remote: String, syncBranch: String? = null): Result = mutex.withLock {
+        git.syncBranch = syncBranch
         try { runCycle(remote) } finally { phase = null }
     }
 
     private suspend fun runCycle(remote: String): Result {
         val resolved = try { Secrets.resolve(remote) } catch (_: Exception) { remote }
+        cycleRemote = resolved
+        // Every cycle, before any network call: the host's addresses can change between cycles (DNS rebinding).
+        try { guard.check(resolved) } catch (e: RemoteGuard.Refused) {
+            remoteFailed("remote check", e.message ?: "remote not allowed")
+            return record(Status.offline, engine.head())
+        }
         // 1. Fold any out-of-band working-tree edits into history first (engine writes already commit).
         phase("commit")
         runCatching { engine.ingestExternalChanges(author) }
@@ -351,5 +381,6 @@ class SyncEngine(
     companion object {
         /** How often a held sync and a still-failing remote are repeated at WARN. */
         val LOG_EVERY: Duration = Duration.ofHours(1)
+        private val USERINFO = Regex("""://([^/@\s]*)@""")
     }
 }

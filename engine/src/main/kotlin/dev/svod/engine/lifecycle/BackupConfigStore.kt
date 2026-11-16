@@ -31,6 +31,7 @@ data class BackupConfig(
     val lastBackupHead: String? = null,
     val syncEnabled: Boolean = false,
     val syncIntervalMinutes: Int? = null,
+    val syncBranch: String? = null,
     val lastSyncedAt: String? = null,
     val lastSyncedHead: String? = null,
 )

@@ -55,6 +55,11 @@ data class SvodConfig(
     val mcpTls: TlsSettings? = null,
     /** Externally reachable MCP URL (behind a proxy); `GET /agents` reports it as `mcpUrl` instead of the bind address. */
     val publicMcpUrl: String? = null,
+    /**
+     * Hosted engines set this: a sync/backup remote must then be an http(s) URL naming a public DNS host
+     * (see [dev.svod.engine.sync.RemoteGuard]); redirects are not followed. Default off: a LAN Gitea is legitimate.
+     */
+    val denyPrivateRemotes: Boolean = false,
     /** Auto-sync interval in seconds; 0 disables the background loop (manual sync only). */
     val syncIntervalSeconds: Int = 0,
     /** Optional off-site backup of every vault's canonical branch (disaster recovery). */
@@ -208,6 +213,11 @@ data class SvodConfig(
      * retired — the canonical sync ref IS the off-site copy. [syncIntervalMinutes] (default 3 when
      * null) is the background poll cadence; sync also runs on POST /api/v1/sync/now and debounced
      * after local writes settle.
+     *
+     * **[syncBranch]** (null = unchanged default). When set, the two-way sync uses the plain branch
+     * `refs/heads/<syncBranch>` on the remote as its canonical ref instead of `refs/svod/sync/<vaultId>`:
+     * the push stays non-force, commits a person pushes there with plain git are merged like a peer's,
+     * and the force "mirror" to `main` is never done (it would destroy their commits).
      */
     @Serializable
     data class BackupSettings(
@@ -218,6 +228,7 @@ data class SvodConfig(
         val backupOnChange: Boolean = false,
         val syncEnabled: Boolean = false,
         val syncIntervalMinutes: Int? = null,
+        val syncBranch: String? = null,
     ) {
         /** This vault replicates two-way (sync subsumes one-way backup) — needs an enabled remote. */
         fun isSynced(): Boolean = syncEnabled && enabled && remote.isNotBlank()
@@ -495,6 +506,7 @@ data class SvodConfig(
             }
             b.backupIntervalMinutes?.let { if (it < 0) errors += "backup.backupIntervalMinutes must be >= 0, was $it" }
             b.syncIntervalMinutes?.let { if (it < 0) errors += "backup.syncIntervalMinutes must be >= 0, was $it" }
+            b.syncBranch?.let { name -> syncBranchError(name)?.let { errors += "backup.syncBranch $it" } }
         }
         return errors
     }
@@ -643,6 +655,24 @@ data class SvodConfig(
             if (remote.startsWith("env:") || remote.startsWith("file:") || remote.startsWith("keychain:")) return false
             val userinfo = URL_SCHEME_REMOTE.find(remote)?.groupValues?.get(1) ?: return false
             return ':' in userinfo // password present (user:pass@)
+        }
+
+        /**
+         * Why [name] cannot be a sync branch, or null when it is fine. Stricter than "valid for git" where
+         * a name would be dangerous on a command line or in a refspec: empty, a leading `-`, `HEAD`,
+         * whitespace/control characters, `..`, `@{`, a trailing `/` or `.lock`, plus git's own ref-name rules.
+         */
+        fun syncBranchError(name: String): String? = when {
+            name.isEmpty() -> "must not be empty"
+            name.startsWith("-") -> "must not start with '-'"
+            name == "HEAD" -> "must not be HEAD"
+            name.any { it.isWhitespace() || it.isISOControl() } -> "must not contain whitespace or control characters"
+            ".." in name -> "must not contain '..'"
+            "@{" in name -> "must not contain '@{'"
+            name.endsWith("/") -> "must not end with '/'"
+            name.endsWith(".lock") -> "must not end with '.lock'"
+            !org.eclipse.jgit.lib.Repository.isValidRefName("refs/heads/$name") -> "is not a valid git branch name"
+            else -> null
         }
 
         // Strips a `user:password@` (or `user@`) authority from a URL-style remote, leaving

@@ -48,7 +48,7 @@ class VaultContext private constructor(
     }
 
     /** Run one reconcile cycle against [remote] (caller resolves it from the vault's sync config). */
-    suspend fun sync(remote: String): SyncEngine.Result = syncEngine.sync(remote)
+    suspend fun sync(remote: String, syncBranch: String? = null): SyncEngine.Result = syncEngine.sync(remote, syncBranch)
 
     /** Graceful, ordered close: stop watching, close the index, then drain the engine. */
     override fun close() {
@@ -112,8 +112,8 @@ class VaultContext private constructor(
                 // The sync engine is always assembled (cheap — just handles); whether a vault actually
                 // reconciles is decided at runtime by its sync config (driven by the SyncScheduler /
                 // POST /sync/now), so toggling sync needs no restart and no vault re-open.
-                val syncGit = SyncGit(vault)
-                val syncEngine = SyncEngine(engine, syncGit, conflicts, eventBus, vs.id, hostId)
+                val syncGit = SyncGit(vault, followRedirects = !config.denyPrivateRemotes)
+                val syncEngine = SyncEngine(engine, syncGit, conflicts, eventBus, vs.id, hostId, guard = dev.svod.engine.sync.RemoteGuard(config.denyPrivateRemotes))
 
                 // The suspect: methvin's DirectoryWatcher hashes the whole tree when it is built.
                 val watcher = phase(vs.id, "file watcher start") { FileWatcher(vault, engine, index, eventBus, vaultId = vs.id).start() }

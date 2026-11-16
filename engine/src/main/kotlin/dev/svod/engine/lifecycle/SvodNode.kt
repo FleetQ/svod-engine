@@ -84,7 +84,7 @@ class SvodNode private constructor(
         ): dev.svod.engine.sync.SyncEngine.Result? {
             val remote = backup.syncRemote(id) ?: return null
             val vc = vaults.context(id) ?: return null
-            val res = vc.sync(remote)
+            val res = vc.sync(remote, backup.syncBranch(id))
             if (res.status == dev.svod.engine.sync.SyncEngine.Status.inSync) {
                 backup.recordSyncSuccess(id, res.head, res.lastSyncedAt ?: java.time.Instant.now().toString())
             }
@@ -127,14 +127,14 @@ class SvodNode private constructor(
                     val persisted = store.load()
                     // A persisted runtime config (incl. backup schedule + sync toggle) wins over startup.
                     val effective = persisted?.let {
-                        SvodConfig.BackupSettings(it.remote, it.enabled, it.backupOnStartup, it.backupIntervalMinutes, it.backupOnChange, it.syncEnabled, it.syncIntervalMinutes)
+                        SvodConfig.BackupSettings(it.remote, it.enabled, it.backupOnStartup, it.backupIntervalMinutes, it.backupOnChange, it.syncEnabled, it.syncIntervalMinutes, it.syncBranch)
                     } ?: config.backupFor(vc.id)
                     return dev.svod.engine.sync.BackupService.Binding(
                         vc.id, vc.engine.root, effective, store,
                         persisted?.lastBackupAt, persisted?.lastBackupHead, persisted?.lastSyncedAt, persisted?.lastSyncedHead,
                     )
                 }
-                val backup = dev.svod.engine.sync.BackupService(vaults.contexts().map { backupBindingFor(it) })
+                val backup = dev.svod.engine.sync.BackupService(vaults.contexts().map { backupBindingFor(it) }, dev.svod.engine.sync.RemoteGuard(config.denyPrivateRemotes))
                 // Per-source filesystem auto-sync: a watcher re-syncs each autoSync source shortly after
                 // its files change. Built before the API so the API can query "is it watching?" and ask
                 // it to reconcile after a register/PATCH/remove.
@@ -193,7 +193,7 @@ class SvodNode private constructor(
                         dev.svod.engine.security.Secrets.resolve(t.keyPassword).toCharArray())
                 }
                 val updateService = UpdateService(
-                    currentAppVersion = "1.31.0",
+                    currentAppVersion = "1.32.0",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 // Two-way sync driver: startup + interval poll + on-change debounce, per synced vault.
@@ -253,6 +253,8 @@ class SvodNode private constructor(
                             hostId = hostId,
                             syncEnabled = synced,
                             syncIntervalMinutes = b?.syncIntervalMinutes,
+                            syncBranch = b?.syncBranch,
+                            lastError = (vc as? VaultContext)?.syncEngine?.lastError,
                             syncStatus = st?.syncStatus,
                             lastSyncedAt = backup.lastSyncedAt(vc.id),
                         )
@@ -288,6 +290,7 @@ class SvodNode private constructor(
                             syncStatus = if (live) "syncing" else last?.lastResult?.status?.name,
                             head = last?.lastResult?.head,
                             conflicts = last?.lastResult?.conflicts ?: 0,
+                            lastError = last?.lastError,
                             lastSyncedAt = backup.lastSyncedAt(vc.id),
                         )
                     },

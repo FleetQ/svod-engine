@@ -46,7 +46,13 @@ data class MoveResultDto(val path: String, val revision: String, val commit: Str
 data class RestoreRequestDto(val trashPath: String, val to: String? = null)
 
 @Serializable
-data class TreeNodeDto(val name: String, val path: String, val type: String, val children: List<TreeNodeDto>? = null)
+data class TreeNodeDto(
+    val name: String, val path: String, val type: String, val children: List<TreeNodeDto>? = null,
+    /** `GET /trash` file nodes only: the path the note had before it was deleted, when history records it. */
+    val originalPath: String? = null,
+    /** `GET /trash` file nodes only: when the note was deleted (ISO-8601), when history records it. */
+    val deletedAt: String? = null,
+)
 
 @Serializable
 data class CommitInfoDto(val commit: String, val author: String, val email: String, val epochSeconds: Long, val message: String, val agent: String? = null)
@@ -400,6 +406,8 @@ data class BackupConfigRequestDto(
     val syncEnabled: Boolean = false,
     /** Background sync poll cadence in minutes; null ⇒ engine default (3). */
     val syncIntervalMinutes: Int? = null,
+    /** Sync through the plain branch `refs/heads/<syncBranch>` (non-force, no mirror to main); null ⇒ the default sync ref. */
+    val syncBranch: String? = null,
 )
 
 /** A vault's sync + backup configuration (GET /sync/config; also the body PUT /settings/backup returns). */
@@ -420,6 +428,10 @@ data class SyncConfigDto(
     /** Two-way sync (subsumes one-way backup when on); same remote as [backupRemote]. */
     val syncEnabled: Boolean = false,
     val syncIntervalMinutes: Int? = null,
+    /** The plain branch sync runs through; null ⇒ the default `refs/svod/sync/<vaultId>` ref. The API always sends the key (even null), see AppApiServer.withSyncBranchKey. */
+    val syncBranch: String? = null,
+    /** The last sync transport failure, credentials removed; null once a cycle succeeds. */
+    val lastError: String? = null,
     /** Live sync state: inSync | syncing | conflicts | offline | error (null until first sync). */
     val syncStatus: String? = null,
     val lastSyncedAt: String? = null,
@@ -464,6 +476,8 @@ data class SyncRunStatusDto(
     val head: String? = null,
     val conflicts: Int = 0,
     val lastSyncedAt: String? = null,
+    /** The last sync transport failure, credentials removed; null once a cycle succeeds. */
+    val lastError: String? = null,
 )
 
 // ---- Agent management (GET/POST/PUT/DELETE /api/v1/agents) ----
