@@ -30,6 +30,12 @@ import java.util.concurrent.TimeUnit
  * Not thread-safe by design: every method is invoked exclusively from the single
  * write-actor thread, which serializes all access.
  */
+/** Commit trailer naming the agent that acted for a person (ADR-0020). */
+private const val AGENT_TRAILER = "Svod-Agent:"
+
+/** Every line ending a caller could use; the trailer filter must see at least what any reader splits on. */
+private val LINE_BREAK = Regex("\r\n|\r|\n")
+
 class GitRepo private constructor(
     private val repo: Repository,
     private val git: Git,
@@ -40,6 +46,21 @@ class GitRepo private constructor(
      */
     private val committer: Author? = null,
 ) : AutoCloseable {
+
+    private fun agentTrailer(message: String): String? =
+        message.trim().substringAfterLast("\n\n").split('\n')
+            .firstOrNull { it.startsWith(AGENT_TRAILER) }?.substringAfter(':')?.trim()?.takeIf { it.isNotEmpty() }
+
+    /**
+     * The `Svod-Agent` trailer is engine-owned: a line with that key arriving inside caller-built text
+     * (a path with a newline ends up in "write: <path>") is dropped, so a client cannot fake whose
+     * agent made a commit (ADR-0020). Messages without such a line are untouched byte for byte.
+     */
+    private fun withAgentTrailer(message: String, author: Author): String {
+        val clean = if (!message.contains(AGENT_TRAILER, ignoreCase = true)) message
+        else message.split(LINE_BREAK).filterNot { it.trimStart().startsWith(AGENT_TRAILER, ignoreCase = true) }.joinToString("\n")
+        return if (author.agent == null) clean else "$clean\n\n$AGENT_TRAILER ${author.agent}"
+    }
 
     private fun committerIdent(author: Author): PersonIdent =
         committer?.let { PersonIdent(it.name, it.email) } ?: PersonIdent(author.name, author.email)
@@ -70,7 +91,7 @@ class GitRepo private constructor(
         val commit = git.commit()
             .setAuthor(PersonIdent(author.name, author.email))
             .setCommitter(committerIdent(author))
-            .setMessage(message)
+            .setMessage(withAgentTrailer(message, author))
             .setSign(false)
             .call()
         return commit.name
@@ -128,7 +149,7 @@ class GitRepo private constructor(
                     if (head != null) setParentId(head)
                     setAuthor(PersonIdent(author.name, author.email))
                     setCommitter(committerIdent(author))
-                    setMessage(message)
+                    setMessage(withAgentTrailer(message, author))
                 }
                 inserter.insert(cb).also { inserter.flush() }
             }
@@ -189,7 +210,7 @@ class GitRepo private constructor(
                 setParentIds(ours, ObjectId.fromString(theirs))
                 setAuthor(PersonIdent(author.name, author.email))
                 setCommitter(committerIdent(author))
-                setMessage(message)
+                setMessage(withAgentTrailer(message, author))
             }
             inserter.insert(cb).also { inserter.flush() }
         }
@@ -214,6 +235,27 @@ class GitRepo private constructor(
      * Renames are NOT followed (no `--follow`), matching the previous jgit behaviour.
      * Falls back to the jgit walk if the git subprocess can't be run.
      */
+    /**
+     * The commit that ADDED [path] (`git log --diff-filter=A -n 1`). A path deleted and re-added
+     * reports the latest add. Renames are not followed. Null when the path was never added.
+     */
+    fun added(path: String): CommitInfo? {
+        if (headId() == null) return null
+        return try {
+            nativeLog(path, 1, listOf("--diff-filter=A")).firstOrNull()
+        } catch (_: Exception) {
+            jgitAdded(path)
+        }
+    }
+
+    private fun jgitAdded(path: String): CommitInfo? =
+        RevWalk(repo).use { rw ->
+            jgitLog(path, Int.MAX_VALUE).firstOrNull { ci ->
+                val c = rw.parseCommit(ObjectId.fromString(ci.commit))
+                c.parentCount == 0 || TreeWalk.forPath(repo, path, rw.parseCommit(c.getParent(0)).tree) == null
+            }
+        }
+
     fun log(path: String?, max: Int): List<CommitInfo> {
         if (headId() == null) return emptyList()
         return try {
@@ -245,13 +287,13 @@ class GitRepo private constructor(
         false
     }
 
-    private fun nativeLog(path: String?, max: Int): List<CommitInfo> {
+    private fun nativeLog(path: String?, max: Int, extra: List<String> = emptyList()): List<CommitInfo> {
         // %x1f (unit sep) between fields, %x1e (record sep) between commits — bytes that
         // never occur in commit metadata, so parsing survives multi-line messages.
-        val args = mutableListOf(
+        val args = mutableListOf<String>(
             GIT_BIN, "log", "-n", max.toString(),
             "--format=%H%x1f%an%x1f%ae%x1f%at%x1f%B%x1e",
-        )
+        ) .also { it.addAll(extra) }
         if (path != null) { args += "--"; args += path }
         val proc = ProcessBuilder(args)
             .directory(repo.workTree)
@@ -267,7 +309,7 @@ class GitRepo private constructor(
             .filter { it.isNotEmpty() }
             .map { rec ->
                 val f = rec.split('')
-                CommitInfo(f[0], f[1], f[2], f[3].toLong(), f[4].trim())
+                CommitInfo(f[0], f[1], f[2], f[3].toLong(), f[4].trim(), agentTrailer(f[4]))
             }
             .toList()
     }
@@ -282,6 +324,7 @@ class GitRepo private constructor(
                 authorEmail = c.authorIdent.emailAddress,
                 epochSeconds = c.authorIdent.whenAsInstant.epochSecond,
                 message = c.fullMessage.trim(),
+                agent = agentTrailer(c.fullMessage),
             )
         }
     }

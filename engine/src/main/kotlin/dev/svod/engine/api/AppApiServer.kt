@@ -1,5 +1,6 @@
 package dev.svod.engine.api
 
+import dev.svod.engine.core.Attribution
 import dev.svod.engine.core.Author
 import dev.svod.engine.core.SvodEngine
 import dev.svod.engine.core.WriteOutcome
@@ -147,6 +148,8 @@ class AppApiServer(
         val tls: Tls? = null,
         /** `memory.requireReview`, for the read-only settings view. */
         val memoryRequireReview: Boolean = true,
+        /** Externally reachable MCP URL for `GET /agents`; null = derive it from the bind address. */
+        val publicMcpUrl: String? = null,
     )
 
     /** TLS material for serving the App API over HTTPS (same shape as the MCP server's). */
@@ -266,7 +269,7 @@ class AppApiServer(
                 val admin = agentAdmin ?: return@get call.notImplemented("agent management")
                 val view = admin.list()
                 val effectiveHost = if (config.host == "0.0.0.0") "127.0.0.1" else config.host
-                val mcpUrl = "http://$effectiveHost:${view.mcpPort}"
+                val mcpUrl = config.publicMcpUrl ?: "http://$effectiveHost:${view.mcpPort}"
                 call.respond(AgentsDto(view.agents.map { it.toDto() }, view.mcpPort, mcpUrl))
             }
             post("/api/v1/agents") {
@@ -395,7 +398,9 @@ class AppApiServer(
                 val vc = vault() ?: return@get call.notFound("vault")
                 val path = call.path() ?: return@get call.badRequest("missing path")
                 val f = vc.engine.read(path) ?: return@get call.notFound(path)
-                call.respond(FileContentDto(f.path, f.revision, f.text))
+                val (created, modified) = vc.engine.attribution(path)
+                fun Attribution.dto() = AttributionDto(name, email, agent)
+                call.respond(FileContentDto(f.path, f.revision, f.text, created?.dto(), modified?.dto()))
             }
             put("/api/v1/file") {
                 val vc = vault() ?: return@put call.notFound("vault")
@@ -440,7 +445,7 @@ class AppApiServer(
                 val vc = vault() ?: return@get call.notFound("vault")
                 val path = call.path() ?: return@get call.badRequest("missing path")
                 val max = call.request.queryParameters["max"]?.toIntOrNull() ?: 100
-                call.respond(HistoryDto(vc.engine.history(path, max).map { CommitInfoDto(it.commit, it.authorName, it.authorEmail, it.epochSeconds, it.message) }))
+                call.respond(HistoryDto(vc.engine.history(path, max).map { CommitInfoDto(it.commit, it.authorName, it.authorEmail, it.epochSeconds, it.message, it.agent) }))
             }
             get("/api/v1/file/diff") {
                 val vc = vault() ?: return@get call.notFound("vault")
@@ -1217,7 +1222,7 @@ class AppApiServer(
         )
     }
 
-    private fun AgentSpecView.toDto() = AgentDto(agentId, name, role, vaults, tokenRef, prompt, requireReview)
+    private fun AgentSpecView.toDto() = AgentDto(agentId, name, role, vaults, tokenRef, prompt, requireReview, user, vaultRoles)
     private fun UserSpecView.toDto() = UserDto(userId, name, email, admin, grants, keyRef, lastUsedAt = activity?.lastUsedIso(userId))
 
     /** All captured session notes' frontmatter for [vc] (bypasses the index — reads notes directly). */

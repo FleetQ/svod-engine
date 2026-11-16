@@ -7,6 +7,7 @@ import dev.svod.engine.api.UserAdmin
 import dev.svod.engine.api.UserRegistry
 import dev.svod.engine.api.UserSpecView
 import dev.svod.engine.api.VaultGrantDto
+import dev.svod.engine.mcp.AgentRegistry
 import dev.svod.engine.security.SecretFiles
 import java.nio.file.Files
 import java.nio.file.Path
@@ -27,6 +28,7 @@ class UserController(
     private val configStore: ConfigStore,
     private val registry: UserRegistry,
     private val secretsDir: Path,
+    private val agentRegistry: AgentRegistry? = null,
 ) : UserAdmin {
 
     override fun list(): List<UserSpecView> = configStore.config.users.map { it.toView() }
@@ -69,12 +71,15 @@ class UserController(
         guardLastAdmin(configStore.config.users.map { if (it.userId == id) updated else it })
         configStore.update { cfg -> cfg.copy(users = cfg.users.map { if (it.userId == id) updated else it }) }
         registry.reload(configStore.config.toUserSpecs())
+        agentRegistry?.reload(configStore.config.toAgentSpecs())
         return updated.toView()
     }
 
     override suspend fun delete(id: String) {
         val existing = configStore.config.users.firstOrNull { it.userId == id }
             ?: throw UserAdmin.UnknownUser("unknown user: $id")
+        val bound = configStore.config.agents.filter { it.user == id }.map { it.agentId }
+        if (bound.isNotEmpty()) throw UserAdmin.Conflict("user '$id' is bound to agent(s) $bound; unbind them first")
         guardLastAdmin(configStore.config.users.filterNot { u -> u.userId == id })
         configStore.update { it.copy(users = it.users.filterNot { u -> u.userId == id }) }
         registry.reload(configStore.config.toUserSpecs())

@@ -1,0 +1,17 @@
+[Unit]
+Description=Svod engine - team vault (svod.fleetq.net)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Restart=always
+RestartSec=5
+TimeoutStopSec=45
+ExecStartPre=-/usr/bin/docker rm -f svod-engine
+ExecStart=/usr/bin/docker run --rm --name svod-engine --network svod_edge \
+  --user __UID__:__GID__ -e HOME=/srv/svod/home -e JAVA_OPTS=-Xmx1g \
+  -v /srv/svod:/srv/svod svod-engine:1.31.0 /srv/svod/config/config.json
+ExecStop=/usr/bin/docker stop -t 30 svod-engine
+
+[Install]
+WantedBy=multi-user.target

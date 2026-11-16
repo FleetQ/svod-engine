@@ -33,6 +33,8 @@ class AgentController(
         if (configStore.config.agents.any { it.agentId == id }) {
             throw AgentAdmin.Conflict("agent id already exists: $id")
         }
+        req.user?.let { validateUser(it) }
+        validateVaultRoles(req.vaultRoles, req.vaults)
         val new = SvodConfig.AgentSettings(
             token = req.tokenRef,
             agentId = id,
@@ -41,6 +43,8 @@ class AgentController(
             vaults = req.vaults,
             prompt = req.prompt,
             requireReview = req.requireReview,
+            user = req.user,
+            vaultRoles = req.vaultRoles,
         )
         configStore.update { it.copy(agents = it.agents + new) }
         registry.reload(configStore.config.toAgentSpecs())
@@ -52,13 +56,21 @@ class AgentController(
             ?: throw AgentAdmin.UnknownAgent("unknown agent: $id")
         req.role?.let { validateRole(it) }
         req.tokenRef?.let { validateRef(it) }
+        req.user?.takeIf { it.isNotEmpty() }?.let { validateUser(it) }
+        val vaults = req.vaults ?: existing.vaults
+        // Roles follow their vaults: a vault dropped from the grant takes its role with it. An explicit
+        // vaultRoles in the request is taken as given (even {} — an explicit opt-out).
+        req.vaultRoles?.let { validateVaultRoles(it, vaults) }
+        val vaultRoles = req.vaultRoles ?: existing.narrowedTo(vaults).vaultRoles
         val updated = existing.copy(
             name = req.name ?: existing.name,
             role = req.role?.uppercase() ?: existing.role,
-            vaults = req.vaults ?: existing.vaults,
+            vaults = vaults,
             token = req.tokenRef ?: existing.token,
             prompt = req.prompt ?: existing.prompt,
             requireReview = req.requireReview ?: existing.requireReview,
+            user = when (req.user) { null -> existing.user; "" -> null; else -> req.user },
+            vaultRoles = vaultRoles,
         )
         configStore.update { cfg ->
             cfg.copy(agents = cfg.agents.map { if (it.agentId == id) updated else it })
@@ -81,6 +93,21 @@ class AgentController(
         }
     }
 
+    private fun validateUser(userId: String) {
+        if (configStore.config.users.none { it.userId == userId }) {
+            throw AgentAdmin.InvalidRequest("unknown user '$userId'")
+        }
+    }
+
+    private fun validateVaultRoles(roles: Map<String, String>, vaults: List<String>) {
+        for ((v, r) in roles) {
+            if (dev.svod.engine.mcp.GrantRole.parse(r) == null) {
+                throw AgentAdmin.InvalidRequest("role for vault '$v' must be one of ${dev.svod.engine.mcp.GrantRole.LABELS}, was '$r'")
+            }
+            if (v !in vaults) throw AgentAdmin.InvalidRequest("vault '$v' has a role but is not in vaults")
+        }
+    }
+
     private fun validateRef(ref: String) {
         if (!ref.startsWith("env:") && !ref.startsWith("file:") && !ref.startsWith("keychain:")) {
             throw AgentAdmin.NotARef("tokenRef must be a Secrets ref (env:/file:/keychain:), got '$ref'")
@@ -95,6 +122,8 @@ class AgentController(
         tokenRef = token,
         prompt = prompt,
         requireReview = requireReview,
+        user = user,
+        vaultRoles = vaultRoles,
     )
 
     companion object {

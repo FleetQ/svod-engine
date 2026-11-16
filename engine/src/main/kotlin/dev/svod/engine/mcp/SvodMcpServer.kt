@@ -87,7 +87,7 @@ class SvodMcpServer(
         : this({ _ -> tools }, "default", registry, host, requireReview)
 
     /** A live 2025-11-25 session. [inFlight] > 0 while a POST/DELETE is being served. */
-    private class Session(val transport: StreamableHttpServerTransport, @Volatile var lastSeen: Long) {
+    private class Session(val transport: StreamableHttpServerTransport, @Volatile var lastSeen: Long, val agent: AgentIdentity) {
         val inFlight = java.util.concurrent.atomic.AtomicInteger()
     }
 
@@ -276,8 +276,33 @@ class SvodMcpServer(
         if (session == null) {
             log.info("unknown MCP session {} ({} {}) → 404; live sessions: {}", sessionId, call.request.local.method.value, call.request.local.uri, sessions.size)
             call.respond(HttpStatusCode.NotFound, "Session not found")
+            return null
         }
-        return session
+        return if (dropIfStale(sessionId, session, call)) null else session
+    }
+
+    /**
+     * A session's tools are bound to the identity it was opened with. When the registry no longer
+     * holds that exact identity (role, grants, person, or the agent was deleted), the session is
+     * closed and the client gets 404 and re-initializes with what is current (ADR-0020). Without this
+     * an open session kept a revoked role until it went idle. A rotated token needs no check here:
+     * bearer auth already refuses the old one.
+     *
+     * A session also belongs to the agent that opened it: a request authenticated as a different
+     * agent gets 404 for that session id (and the session stays), so a leaked id cannot be used with
+     * another agent's token to act with the owner's tools.
+     */
+    private suspend fun dropIfStale(id: String, s: Session, call: ApplicationCall): Boolean {
+        if (call.principal<UserIdPrincipal>()?.name != s.agent.agentId) {
+            log.info("MCP session {} refused: request is not from its agent → 404", id)
+            call.respond(HttpStatusCode.NotFound, "Session not found")
+            return true
+        }
+        if (registry.byAgentId(s.agent.agentId) == s.agent) return false
+        if (sessions.remove(id, s)) runCatching { s.transport.close() }
+        log.info("MCP session {} dropped: agent '{}' changed since it opened → 404", id, s.agent.agentId)
+        call.respond(HttpStatusCode.NotFound, "Session not found")
+        return true
     }
 
     private suspend fun getOrCreateSession(call: ApplicationCall): Session? {
@@ -290,8 +315,9 @@ class SvodMcpServer(
                 // 2026-07-03 incident.
                 log.info("unknown MCP session {} (POST) → 404; live sessions: {}", sessionId, sessions.size)
                 call.respond(HttpStatusCode.NotFound, "Session not found")
+                return null
             }
-            return session
+            return if (dropIfStale(sessionId, session, call)) null else session
         }
 
         val agentId = call.principal<UserIdPrincipal>()?.name
@@ -303,7 +329,7 @@ class SvodMcpServer(
 
         val transport = StreamableHttpServerTransport(StreamableHttpServerTransport.Configuration(enableJsonResponse = true))
         // Not in [sessions] until the handshake hands out an id; [serve] keeps it busy meanwhile.
-        val session = Session(transport, clock())
+        val session = Session(transport, clock(), agent)
         transport.setOnSessionInitialized { id ->
             sessions[id] = session
             log.info("MCP session {} initialized for agent '{}'; live sessions: {}", id, agent.agentId, sessions.size)
@@ -356,40 +382,41 @@ class SvodMcpServer(
 
         // Resolve the SvodTools for this call's target vault, enforcing the agent's grant. Returns
         // a denial/not-found CallToolResult instead when the vault isn't granted or doesn't exist.
-        fun routed(req: io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest): Pair<SvodTools?, io.modelcontextprotocol.kotlin.sdk.types.CallToolResult?> {
+        fun routed(req: io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest, tool: String): Pair<SvodTools?, io.modelcontextprotocol.kotlin.sdk.types.CallToolResult?> {
             val target = req.str("vault") ?: agent.primaryVault(defaultVaultId)
             // Empty grants ⇒ no restriction (single-vault / back-compat); otherwise enforce the grant.
             if (agent.vaults.isNotEmpty() && target !in agent.vaults)
                 return null to ToolResult.denied("vault '$target' is not granted to agent '${agent.agentId}'").toCallToolResult()
+            GrantResolver.deny(agent, target, tool)?.let { return null to ToolResult.denied(it).toCallToolResult() }
             val t = toolsByVault(target) ?: return null to ToolResult.notFound("vault: $target").toCallToolResult()
             return t to null
         }
 
         tool("read", "Read a note's current content + revision.", mapOf("path" to "string"), listOf("path")) { req ->
-            val (t, d) = routed(req); d ?: t!!.read(agent, req.str("path")!!).toCallToolResult()
+            val (t, d) = routed(req, "read"); d ?: t!!.read(agent, req.str("path")!!).toCallToolResult()
         }
         tool("write", "Create or update a note (optimistic via expectedRevision).", mapOf("path" to "string", "content" to "string", "expectedRevision" to "string"), listOf("path", "content")) { req ->
-            val (t, d) = routed(req); d ?: t!!.write(agent, req.str("path")!!, req.str("content") ?: "", req.str("expectedRevision")).toCallToolResult()
+            val (t, d) = routed(req, "write"); d ?: t!!.write(agent, req.str("path")!!, req.str("content") ?: "", req.str("expectedRevision")).toCallToolResult()
         }
         tool("edit", "Partial edit: replace an exact substring in a note without resending the whole content. oldString must occur exactly once (add surrounding context to disambiguate) unless replaceAll=true.", mapOf("path" to "string", "oldString" to "string", "newString" to "string", "replaceAll" to "boolean", "expectedRevision" to "string"), listOf("path", "oldString", "newString")) { req ->
-            val (t, d) = routed(req); d ?: t!!.edit(agent, req.str("path")!!, req.str("oldString") ?: "", req.str("newString") ?: "", req.bool("replaceAll", false), req.str("expectedRevision")).toCallToolResult()
+            val (t, d) = routed(req, "edit"); d ?: t!!.edit(agent, req.str("path")!!, req.str("oldString") ?: "", req.str("newString") ?: "", req.bool("replaceAll", false), req.str("expectedRevision")).toCallToolResult()
         }
         tool("delete", "Soft-delete a note to .trash/.", mapOf("path" to "string", "expectedRevision" to "string"), listOf("path")) { req ->
-            val (t, d) = routed(req); d ?: t!!.delete(agent, req.str("path")!!, req.str("expectedRevision")).toCallToolResult()
+            val (t, d) = routed(req, "delete"); d ?: t!!.delete(agent, req.str("path")!!, req.str("expectedRevision")).toCallToolResult()
         }
         tool("move", "Move/rename a note.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
-            val (t, d) = routed(req); d ?: t!!.move(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
+            val (t, d) = routed(req, "move"); d ?: t!!.move(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
         tool("promote", "Move a draft note from messy/ into the curated vault (a file move, nothing else). It does NOT change a memory's 'status': a provisional " +
             (if (review) "fact or policy" else "memory (yours are stored active unless you pass a status)") +
             " stays provisional and hidden from recall until a person approves it in the Svod app. Do not use it on notes outside messy/.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
-            val (t, d) = routed(req); d ?: t!!.promote(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
+            val (t, d) = routed(req, "promote"); d ?: t!!.promote(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
         tool("search", "Hybrid search (keyword/semantic/hybrid) with filters: finds notes by meaning. For exact strings (versions, hosts, identifiers, error messages) use grep; for the folder structure use tree. Provisional, revoked, superseded and expired memories are hidden by default. A non-empty `degraded` (semantic, rerank) means a retrieval step failed: `semantic` = no semantic part, any hits are keyword-only, `rerank` = hits are not reranked. A miss is then weaker evidence than usual.", mapOf("query" to "string", "mode" to "string", "limit" to "integer"), listOf("query")) { req ->
-            val (t, d) = routed(req); d ?: t!!.search(agent, req.toSearchQuery()).toCallToolResult()
+            val (t, d) = routed(req, "search"); d ?: t!!.search(agent, req.toSearchQuery()).toCallToolResult()
         }
         tool("context_pack", "Assemble a cited context block. Default: token-budgeted hybrid recall. enumerate=true: return EVERY note matching the filters (type/tags) in full, unranked — the 'rule book' (all active policies/preferences) every turn. graphExpand=true: also pull the 1-hop wikilink neighbourhood of the top hits into any leftover budget (those blocks are marked viaGraph) — worth it when you need the CONTEXT around an answer (what a decision links to, what cites it), not when you just need the matching text. `degraded` has the same meaning as in search.", mapOf("query" to "string", "mode" to "string", "tokenBudget" to "integer", "type" to "string", "status" to "string", "enumerate" to "boolean", "graphExpand" to "boolean"), emptyList()) { req ->
-            val (t, d) = routed(req)
+            val (t, d) = routed(req, "context_pack")
             d ?: run {
                 // Pull a generous candidate pool, then trim to the token budget.
                 val base = req.toSearchQuery()
@@ -398,11 +425,11 @@ class SvodMcpServer(
             }
         }
         tool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Classifies the incoming memory against existing memory of the same type+subject and returns 'classification' (NEW|DUPLICATE|UPDATE|CONTRADICTION|UNCERTAIN) with 'relatedNote' and 'confidence': DUPLICATE is a no-op, UPDATE revokes+links its predecessor, CONTRADICTION keeps BOTH sides linked by 'contradicts' (never overwrites), UNCERTAIN is stored with 'needs-review: true'. " + rememberReviewText(review) + " Use 'supersedes' to declare a replacement explicitly. 'expiresAt' (ISO-8601 instant or date, must be in the future) stores 'expires_at'; recall hides the memory after it. Do not use it for scratch notes or drafts: write those under messy/.", mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string", "expiresAt" to "string"), listOf("content")) { req ->
-            val (t, d) = routed(req)
+            val (t, d) = routed(req, "remember")
             d ?: t!!.remember(agent, req.str("content") ?: "", req.str("type"), req.str("subject"), req.double("confidence"), req.str("source"), req.str("status"), req.str("into"), req.str("supersedes"), req.str("expiresAt")).toCallToolResult()
         }
         tool("list", "List every note path (optionally filtered by prefix). On a real vault that is thousands of paths: use tree to orient and search or grep to find a note.", mapOf("pathPrefix" to "string"), emptyList()) { req ->
-            val (t, d) = routed(req); d ?: t!!.list(agent, req.str("pathPrefix")).toCallToolResult()
+            val (t, d) = routed(req, "list"); d ?: t!!.list(agent, req.str("pathPrefix")).toCallToolResult()
         }
         tool(
             "tree",
@@ -412,7 +439,7 @@ class SvodMcpServer(
             mapOf("pathPrefix" to "string", "depth" to "integer"),
             emptyList(),
         ) { req ->
-            val (t, d) = routed(req); d ?: t!!.tree(agent, req.str("pathPrefix"), req.int("depth", 2)).toCallToolResult()
+            val (t, d) = routed(req, "tree"); d ?: t!!.tree(agent, req.str("pathPrefix"), req.int("depth", 2)).toCallToolResult()
         }
         tool(
             "grep",
@@ -424,23 +451,23 @@ class SvodMcpServer(
             mapOf("pattern" to "string", "pathPrefix" to "string", "literal" to "boolean", "ignoreCase" to "boolean", "limit" to "integer"),
             listOf("pattern"),
         ) { req ->
-            val (t, d) = routed(req)
+            val (t, d) = routed(req, "grep")
             d ?: t!!.grep(agent, req.str("pattern") ?: "", req.str("pathPrefix"), req.bool("literal", false), req.bool("ignoreCase", false), req.int("limit", 50)).toCallToolResult()
         }
         tool("history", "Commit history for a note.", mapOf("path" to "string", "max" to "integer"), listOf("path")) { req ->
-            val (t, d) = routed(req); d ?: t!!.history(agent, req.str("path")!!, req.int("max", 50)).toCallToolResult()
+            val (t, d) = routed(req, "history"); d ?: t!!.history(agent, req.str("path")!!, req.int("max", 50)).toCallToolResult()
         }
         tool("diff", "Unified diff of a note between two revisions.", mapOf("path" to "string", "from" to "string", "to" to "string"), listOf("path", "from", "to")) { req ->
-            val (t, d) = routed(req); d ?: t!!.diff(agent, req.str("path")!!, req.str("from")!!, req.str("to")!!).toCallToolResult()
+            val (t, d) = routed(req, "diff"); d ?: t!!.diff(agent, req.str("path")!!, req.str("from")!!, req.str("to")!!).toCallToolResult()
         }
         tool("get_revision", "Read a note's content at a specific revision.", mapOf("path" to "string", "revision" to "string"), listOf("path", "revision")) { req ->
-            val (t, d) = routed(req); d ?: t!!.getRevision(agent, req.str("path")!!, req.str("revision")!!).toCallToolResult()
+            val (t, d) = routed(req, "get_revision"); d ?: t!!.getRevision(agent, req.str("path")!!, req.str("revision")!!).toCallToolResult()
         }
         tool("link", "Outgoing wikilinks for a note (resolved + unresolved).", mapOf("path" to "string"), listOf("path")) { req ->
-            val (t, d) = routed(req); d ?: t!!.link(agent, req.str("path")!!).toCallToolResult()
+            val (t, d) = routed(req, "link"); d ?: t!!.link(agent, req.str("path")!!).toCallToolResult()
         }
         tool("graph_query", "1-hop link neighborhood (outlinks + backlinks).", mapOf("path" to "string"), listOf("path")) { req ->
-            val (t, d) = routed(req); d ?: t!!.graphQuery(agent, req.str("path")!!).toCallToolResult()
+            val (t, d) = routed(req, "graph_query"); d ?: t!!.graphQuery(agent, req.str("path")!!).toCallToolResult()
         }
         tool(
             "graph_communities",
@@ -458,7 +485,7 @@ class SvodMcpServer(
             mapOf("query" to "string", "level" to "integer", "limit" to "integer"),
             emptyList(),
         ) { req ->
-            val (t, d) = routed(req)
+            val (t, d) = routed(req, "graph_communities")
             d ?: t!!.graphCommunities(agent, req.str("query"), req.int("level", -1).takeIf { it >= 0 }, req.int("limit", 20)).toCallToolResult()
         }
         tool(
@@ -468,7 +495,7 @@ class SvodMcpServer(
             mapOf("id" to "string"),
             listOf("id"),
         ) { req ->
-            val (t, d) = routed(req); d ?: t!!.graphCommunity(agent, req.str("id")!!).toCallToolResult()
+            val (t, d) = routed(req, "graph_community"); d ?: t!!.graphCommunity(agent, req.str("id")!!).toCallToolResult()
         }
         tool(
             "graph_status",
@@ -478,7 +505,7 @@ class SvodMcpServer(
             emptyMap(),
             emptyList(),
         ) { req ->
-            val (t, d) = routed(req); d ?: t!!.graphStatus(agent).toCallToolResult()
+            val (t, d) = routed(req, "graph_status"); d ?: t!!.graphStatus(agent).toCallToolResult()
         }
         return tools
     }

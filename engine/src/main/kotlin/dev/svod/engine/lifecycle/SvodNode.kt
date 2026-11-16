@@ -181,7 +181,7 @@ class SvodNode private constructor(
                     registry.reload(cfg.toAgentSpecs())
                     userRegistry.reload(cfg.toUserSpecs())
                 }
-                val userController = UserController(configStore, userRegistry, secretsDir)
+                val userController = UserController(configStore, userRegistry, secretsDir, agentRegistry = registry)
                 val secretStore = SecretStore(secretsDir)
                 val appApiTls = config.appApiTls?.let { t ->
                     val ks = dev.svod.engine.security.Keystores.load(
@@ -193,7 +193,7 @@ class SvodNode private constructor(
                         dev.svod.engine.security.Secrets.resolve(t.keyPassword).toCharArray())
                 }
                 val updateService = UpdateService(
-                    currentAppVersion = "1.30.0",
+                    currentAppVersion = "1.31.0",
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 // Two-way sync driver: startup + interval poll + on-change debounce, per synced vault.
@@ -220,6 +220,7 @@ class SvodNode private constructor(
                         localAdmin = config.localAdmin,
                         tls = appApiTls,
                         memoryRequireReview = config.memory.requireReview,
+                        publicMcpUrl = config.publicMcpUrl,
                     ),
                     readiness = { ready.get() },
                     embedderControl = embedderControl,

@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.38.0
+  version: 0.39.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -1633,6 +1633,23 @@ components:
         path: { type: string }
         revision: { type: string }
         content: { type: string }
+        author:
+          allOf: [{ $ref: '#/components/schemas/Attribution' }]
+          description: >
+            Who created the note: the latest commit that ADDED the path. Absent when the path has
+            no commit. Since 0.39.0 (ADR-0020).
+        lastModifiedBy:
+          allOf: [{ $ref: '#/components/schemas/Attribution' }]
+          description: Who made the newest commit touching the path. Since 0.39.0 (ADR-0020).
+
+    Attribution:
+      type: object
+      required: [name, email]
+      description: A git author; `agent` is set when the commit carries a `Svod-Agent:` trailer. Since 0.39.0 (ADR-0020).
+      properties:
+        name: { type: string }
+        email: { type: string }
+        agent: { type: string }
 
     WriteRequest:
       type: object
@@ -1721,6 +1738,9 @@ components:
         email: { type: string }
         epochSeconds: { type: integer, format: int64 }
         message: { type: string }
+        agent:
+          type: string
+          description: Agent id from the commit's `Svod-Agent:` trailer; absent otherwise. Since 0.39.0 (ADR-0020).
 
     DiffResult:
       type: object
@@ -2215,6 +2235,18 @@ components:
           description: >
             Since 0.38.0. Whether this agent's fact/policy memories wait for a person's approval. Null or
             absent = the engine-wide `memory.requireReview` (GET /api/v1/settings).
+        user:
+          type: string
+          nullable: true
+          description: >
+            Since 0.39.0 (ADR-0020). The person (`users[].userId`) this agent acts for. Its writes are
+            authored by that person with a `Svod-Agent: <agentId>` commit trailer. Null or absent = unbound.
+        vaultRoles:
+          type: object
+          additionalProperties: { type: string, enum: [reader, writer, maintainer] }
+          description: >
+            Since 0.39.0 (ADR-0020). Explicit role per granted vault. A granted vault absent here is a bare
+            grant. In config.json the same thing is written as a `{vault, role}` entry in `vaults`.
 
     Agents:
       type: object
@@ -2253,6 +2285,18 @@ components:
           description: >
             Since 0.38.0. Whether this agent's fact/policy memories wait for a person's approval. Null or
             absent = the engine-wide `memory.requireReview` (GET /api/v1/settings).
+        user:
+          type: string
+          nullable: true
+          description: >
+            Since 0.39.0 (ADR-0020). The person (`users[].userId`) this agent acts for. Its writes are
+            authored by that person with a `Svod-Agent: <agentId>` commit trailer. Unknown user = 400.
+        vaultRoles:
+          type: object
+          additionalProperties: { type: string, enum: [reader, writer, maintainer] }
+          description: >
+            Since 0.39.0 (ADR-0020). Explicit role per granted vault. A granted vault absent here is a bare
+            grant. In config.json the same thing is written as a `{vault, role}` entry in `vaults`.
 
     UpdateAgentRequest:
       type: object
@@ -2275,6 +2319,15 @@ components:
           description: >
             Since 0.38.0. Omitted or null leaves it unchanged. An agent falls back to `memory.requireReview`
             again only when the field is removed from config.json.
+        user:
+          type: string
+          nullable: true
+          description: Since 0.39.0. Omitted or null leaves it unchanged; an empty string unbinds the agent.
+        vaultRoles:
+          type: object
+          nullable: true
+          additionalProperties: { type: string, enum: [reader, writer, maintainer] }
+          description: Since 0.39.0. Omitted or null leaves it unchanged; otherwise replaces the whole map.
 
     ImportRequest:
       type: object

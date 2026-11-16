@@ -3,6 +3,37 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.31.0 — unreleased (App API contract 0.39.0, additive)
+
+### Added — team sharing: people behind agents, roles on vault grants (ADR-0020)
+
+- `agents[].user` binds an agent to a person in `users[]` (the ADR-0019 list). Validation refuses a
+  binding to an unknown user.
+- `agents[].vaults` entries may be `{vault, role}` with role `reader` | `writer` | `maintainer`; a bare
+  vault id keeps working. A config that uses neither is read and written exactly as before.
+- App API: `Agent`, `CreateAgentRequest`, `UpdateAgentRequest` carry `user` and `vaultRoles`
+  (contract 0.39.0, additive). In an update, `user: ""` unbinds and dropping a vault drops its role.
+- A bound agent's commits are authored by the person (`name <email>`) with a `Svod-Agent: <agentId>`
+  trailer; unbound agents commit exactly as before. A person bound by an agent cannot be deleted;
+  renaming a person updates their agents' author.
+- Roles are enforced in the MCP grant resolver for agents that opt in (bound, or any `{vault, role}`):
+  `reader` reads, `writer` also writes/edits/moves/deletes/remembers, `maintainer` also promotes. A bare
+  vault id means `writer` for such an agent; global `READ_ONLY` caps every grant. Agents that do not opt
+  in keep today's behaviour, `promote` included.
+- MCP `read` and App API `GET /file` return `author` and `lastModifiedBy` (from git); history entries
+  carry `agent` (contract 0.39.0, additive).
+- `docs/runbook-central-instance.md` and `dist/central-docker/` (container + systemd + nginx vhost).
+- `publicMcpUrl` (config): the URL `GET /agents` reports as `mcpUrl` when the engine sits behind a proxy.
+- An admin user whose key file cannot be read is logged as `ADMIN user ... skipped`, so a provisioning mistake is visible.
+
+### Fixed
+
+- The `Svod-Agent` trailer is engine-owned: a path containing a line break can no longer put one in a
+  commit message.
+- An open MCP session is closed when its agent's identity changes (role, grant, person, deletion) and
+  answers only to the agent that opened it; before, a revoked role lasted until the session went idle,
+  and a leaked session id worked with another agent's token.
+
 ## v1.30.0 — 2026-11-10 (App API contract 0.38.0, additive)
 
 ### Changed — memory review is per agent and off by default
