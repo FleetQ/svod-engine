@@ -678,11 +678,29 @@ is already the person (observed above).
 ## 12. Hosted engines: `denyPrivateRemotes`
 
 On an engine where people name their own git remote, set `"denyPrivateRemotes": true` in the config. Sync and
-backup will then only talk to `http(s)` remotes whose DNS name resolves to public addresses: no `file:`, `ssh`
-or `git@host:path`, no IP literals, and nothing that resolves to loopback, RFC1918, link-local (169.254/16,
-fe80::/10), unique-local (fc00::/7), CGNAT (100.64/10), multicast or unspecified addresses, or the IPv6
-transition prefixes that can wrap one (NAT64, 6to4, Teredo). That covers the cloud metadata endpoints
-(169.254.169.254, fd00:ec2::254, 100.100.100.200). The check runs on every
-cycle, so a name that later starts resolving to a private address is refused, and HTTP redirects are not
-followed. A refused remote shows as an `offline` sync with `lastError` = `remote check failed: remote host
-not allowed`. Leave it off (the default) on a self-hosted engine that syncs to a LAN Gitea.
+backup will then only talk to `https` remotes whose DNS name resolves to public addresses:
+
+- No plain `http`, `file:`, `ssh` or `git@host:path`. No IP literal in any spelling (dotted, decimal such as
+  `2130706433`, octal such as `0177.0.0.1`, hex, bracketed IPv6), no trailing-dot host, no URL fragment, no
+  backslash, and no userinfo containing `@ ? # /`. The URL is parsed by JGit's `URIish` and must give the
+  same host to `java.net.URI` and `java.net.URL`.
+- Nothing that resolves to loopback, RFC1918, link-local (169.254/16, fe80::/10), unique-local (fc00::/7),
+  CGNAT (100.64/10), multicast or unspecified addresses, or the IPv6 transition prefixes that can wrap one
+  (NAT64, 6to4, Teredo). That covers the cloud metadata endpoints (169.254.169.254, fd00:ec2::254,
+  100.100.100.200).
+- The name is checked before every cycle and every backup. On top of that, every HTTPS connection JGit opens
+  checks the address it actually connected to, inside the TLS handshake and before any request or credential
+  is sent. A name that resolves to a public address at check time and to a private one a moment later
+  (DNS rebinding) is therefore refused too. Certificate and hostname checks stay on the name in the URL.
+- HTTP redirects are not followed.
+
+A refused remote shows as an `offline` sync with `lastError` = `remote check failed: remote host not allowed`
+(or `fetch failed: ... remote peer address not allowed` when the connect-time check caught it). Only an admin
+sees `lastError`; a member gets no `lastError` field.
+
+Residual risk: the connect-time check sees the proxy, not the git host, when the JVM is set to use a forward
+proxy. A proxy on a private address is refused; a public proxy is trusted to reach only public hosts. The
+check also covers JGit's HTTPS only. Sync and backup use nothing else, but a firewall that blocks the team
+engines' egress to private ranges and metadata addresses is still the right outer layer.
+
+Leave it off (the default) on a self-hosted engine that syncs to a LAN Gitea.

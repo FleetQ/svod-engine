@@ -56,8 +56,9 @@ data class SvodConfig(
     /** Externally reachable MCP URL (behind a proxy); `GET /agents` reports it as `mcpUrl` instead of the bind address. */
     val publicMcpUrl: String? = null,
     /**
-     * Hosted engines set this: a sync/backup remote must then be an http(s) URL naming a public DNS host
-     * (see [dev.svod.engine.sync.RemoteGuard]); redirects are not followed. Default off: a LAN Gitea is legitimate.
+     * Hosted engines set this: a sync/backup remote must then be an https URL naming a public DNS host
+     * (see [dev.svod.engine.sync.RemoteGuard]), every HTTPS connection checks the address it reached
+     * ([dev.svod.engine.sync.PinnedHttps]), and redirects are not followed. Default off: a LAN Gitea is legitimate.
      */
     val denyPrivateRemotes: Boolean = false,
     /** Auto-sync interval in seconds; 0 disables the background loop (manual sync only). */

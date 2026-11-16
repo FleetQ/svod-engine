@@ -134,6 +134,8 @@ class SvodNode private constructor(
                         persisted?.lastBackupAt, persisted?.lastBackupHead, persisted?.lastSyncedAt, persisted?.lastSyncedHead,
                     )
                 }
+                // denyPrivateRemotes also checks the address every HTTPS sync/backup connection really reached.
+                dev.svod.engine.sync.PinnedHttps.enable(config.denyPrivateRemotes)
                 val backup = dev.svod.engine.sync.BackupService(vaults.contexts().map { backupBindingFor(it) }, dev.svod.engine.sync.RemoteGuard(config.denyPrivateRemotes))
                 // Per-source filesystem auto-sync: a watcher re-syncs each autoSync source shortly after
                 // its files change. Built before the API so the API can query "is it watching?" and ask

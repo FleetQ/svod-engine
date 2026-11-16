@@ -47,7 +47,7 @@ class RemoteGuardTest {
     fun `public hosts are allowed, including the edges of the blocked ranges`() {
         for (a in listOf("93.184.216.34", "8.8.8.8", "100.63.255.255", "100.128.0.1", "172.15.255.255", "172.32.0.1", "192.169.0.1", "2606:4700::1111", "::ffff:8.8.8.8", "2001:db8::1", "2001:1::1", "64:ff9a::1")) {
             guard(a).check("https://git.example.com/r.git")
-            guard(a).check("http://git.example.com:3000/org/r.git")
+            guard(a).check("https://git.example.com:3000/org/r.git")
             guard(a).check("https://x-access-token:SECRET@git.example.com/r.git")
         }
     }
@@ -61,6 +61,67 @@ class RemoteGuardTest {
             "git://git.example.com/r.git", "ftp://git.example.com/r.git", "env:REMOTE",
         )) {
             assertFailsWith<RemoteGuard.Refused>("should refuse $r") { g.check(r) }
+        }
+    }
+
+    @Test
+    fun `remotes that parsers read differently, numeric hosts and plain http are refused before any lookup`() {
+        val g = RemoteGuard(true, resolver = { error("must not resolve $it") })
+        for (r in listOf(
+            "https://evil@127.0.0.1@github.com/x", "https://github.com#@127.0.0.1/x", "https://127.0.0.1\\@github.com/x",
+            "https://github.com\\@127.0.0.1/x", "https://user:p@ss@github.com/x", "https://a?b@github.com/x",
+            "http://2130706433/", "https://2130706433/", "http://0177.0.0.1/", "https://0177.0.0.1/", "https://0x7f.0.0.1/",
+            "https://0x7f000001/", "https://127.1/", "https://[::ffff:127.0.0.1]/x", "https://[::1]/x",
+            "https://github.com./x", "https://localhost./x", "https://github.com/x#frag", "https://git hub.com/x",
+            "http://git.example.com/r.git", "HTTP://git.example.com/r.git", "https:///r.git", "https://-bad.example.com/x",
+            "https://exa_mple.com/x", "https://git.example.123/x",
+        )) {
+            assertFailsWith<RemoteGuard.Refused>("should refuse $r") { g.check(r) }
+        }
+        assertEquals("github.com", RemoteGuard.hostOf("https://x-access-token:tok@GitHub.com/org/r.git"))
+        assertEquals("git.example.co", RemoteGuard.hostOf("https://git.example.co:8443/r.git?x=1"))
+    }
+
+    @Test
+    fun `the TLS peer check refuses a blocked address and leaves others to the normal trust manager`() {
+        java.net.ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { server ->
+            java.net.Socket(InetAddress.getLoopbackAddress(), server.localPort).use { sock ->
+                val inner = object : javax.net.ssl.X509TrustManager {
+                    var called = false
+                    override fun checkClientTrusted(c: Array<java.security.cert.X509Certificate>, a: String) {}
+                    override fun checkServerTrusted(c: Array<java.security.cert.X509Certificate>, a: String) { called = true }
+                    override fun getAcceptedIssuers() = arrayOf<java.security.cert.X509Certificate>()
+                }
+                val e = assertFailsWith<java.security.cert.CertificateException> { PinnedHttps.PeerCheck(inner).checkServerTrusted(arrayOf(), "RSA", sock) }
+                assertEquals("remote peer address not allowed", e.message)
+                assertFalse(inner.called, "nothing is trusted for a blocked peer")
+            }
+        }
+    }
+
+    @Test
+    fun `with the pin on a JGit https fetch to a loopback server fails in the handshake`() {
+        val ks = io.ktor.network.tls.certificates.buildKeyStore {
+            certificate("t") { password = "changeit"; domains = listOf("localhost") }
+        }
+        val kmf = javax.net.ssl.KeyManagerFactory.getInstance(javax.net.ssl.KeyManagerFactory.getDefaultAlgorithm()).apply { init(ks, "changeit".toCharArray()) }
+        val ctx = javax.net.ssl.SSLContext.getInstance("TLS").apply { init(kmf.keyManagers, null, null) }
+        val server = ctx.serverSocketFactory.createServerSocket(0, 5, InetAddress.getLoopbackAddress()) as javax.net.ssl.SSLServerSocket
+        val acceptor = Thread {
+            while (!server.isClosed) try { (server.accept() as javax.net.ssl.SSLSocket).use { runCatching { it.startHandshake() } } } catch (_: Exception) {}
+        }.apply { isDaemon = true; start() }
+        val dir = Files.createTempDirectory("svod-pin-").also { Git.init().setDirectory(it.toFile()).call().close() }
+        fun messages(t: Throwable) = generateSequence(t) { it.cause }.mapNotNull { it.message }.joinToString(" | ")
+        try {
+            PinnedHttps.enable(true)
+            val on = assertFailsWith<Exception> { SyncGit(dir).use { it.fetchSync("https://localhost:${server.localPort}/r.git", "v") } }
+            assertTrue("remote peer address not allowed" in messages(on), messages(on))
+            PinnedHttps.enable(false)
+            val off = assertFailsWith<Exception> { SyncGit(dir).use { it.fetchSync("https://localhost:${server.localPort}/r.git", "v") } }
+            assertFalse("remote peer address not allowed" in messages(off), "off: the self-signed cert fails on its own: ${messages(off)}")
+        } finally {
+            PinnedHttps.enable(false)
+            server.close(); acceptor.join(2000)
         }
     }
 
@@ -142,6 +203,22 @@ class RemoteGuardTest {
             sync.sync("https://user:SECRETTOKEN@git.example.com/r.git")
             val err = sync.lastError!!
             assertFalse("SECRETTOKEN" in err, err)
+            assertFalse("https://" in err || "user" in err, "only host/path of the remote is kept: $err")
+            assertTrue("git.example.com/r.git" in err, err)
+        }
+    }
+
+    @Test
+    fun `a URL in the failure text is cut to host and path, without query or fragment`() = runBlocking {
+        class Echo(root: java.nio.file.Path) : SyncGit(root) {
+            override fun fetchSync(remote: String, vaultId: String) = throw RuntimeException("not found: $remote and http://other.example/p?access_token=QTOK#x")
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val dir = Files.createTempDirectory("svod-echo2-")
+        SvodEngine.open(dir, scope, dev.svod.engine.security.SecretScanner.OFF, Author("m", "m@svod.local")).use { engine ->
+            val sync = SyncEngine(engine, Echo(dir), ConflictStore(), EventBus(), "v", "machine")
+            sync.sync("https://git.example.com/org/r.git?token=QSECRET")
+            assertEquals("fetch failed: RuntimeException: not found: git.example.com/org/r.git and other.example/p", sync.lastError)
         }
     }
 }
