@@ -109,7 +109,9 @@ sudo -u svod git -C /srv/svod/vaults/socialscore remote remove origin   # engine
 бележки са минути, не секунди. Не копирай `.svod/` от Mac-а: векторите са от друг embedder.
 
 `svod-engine clone <remote> <dest> <vaultId>` е **за sync remote-а** (`refs/svod/sync/<id>`), не
-за backup репото. Ползвай го само ако vault-ът е бил в multi-machine sync.
+за backup репото. Ползвай го само ако vault-ът е бил в multi-machine sync. Ако vault-ът синхронизира
+през обикновен branch (`syncBranch`, от 1.32.0), добави `--branch <име>`: тогава се клонира
+`refs/heads/<име>`.
 
 Преди да спреш локалния SocialScore: спри backup-а му от app-а (иначе два engine-а push-ват към
 едно репо), после махни vault-а от локалния конфиг или го остави read-only архив.

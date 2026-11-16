@@ -1,6 +1,6 @@
 # Runbook: a central Svod instance for a team
 
-Status: written for engine 1.31.0 / contract 0.39.0 (ADR-0020). Sections 1(b), 2-5, 7, 9 and 11 were
+Status: written for engine 1.31.0 / contract 0.39.0 (ADR-0020); the `syncBranch` part and section 12 for 1.32.0 / 0.40.0. Sections 1(b), 2-5, 7, 9 and 11 were
 executed end to end on a fresh checkout (see "What was verified" at the end). Everything marked
 **[not run]** was derived from code or docs and has not been executed. It replaces
 `deploy-central-engine-debian.md`, which was written before any installation; the corrections are
@@ -503,6 +503,32 @@ by a runtime mode. ADR-0009's authority/proposal-branch text does not describe t
 4. Conflicts are never auto-resolved: they appear at `GET /api/v1/conflicts` and resolve with
    `POST /conflicts/resolve`. Both versions stay in history.
 
+### Sync through a plain branch (`syncBranch`)
+
+By default the sync ref is `refs/svod/sync/<vaultId>`, which GitHub and desktop git clients do not list;
+the engine force-pushes a read-only mirror to `main` so the vault looks non-empty. That mirror would
+overwrite commits a person makes on `main`. To let people work in the repository with plain git, set a
+branch:
+
+```bash
+curl -s -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' \
+  -X PUT "https://svod.example.com/api/v1/settings/backup?vault=team" \
+  -d '{"remote":"<repo>","enabled":true,"syncEnabled":true,"syncBranch":"main"}'
+```
+
+- The engine fetches `refs/heads/main`, merges with the usual 3-way merge (same files changed on both
+  sides become a conflict, never an overwrite) and pushes **without force**. No `refs/svod/sync/*` ref
+  and no mirror are written. A branch that does not exist yet is created by the first push.
+- An existing repository with its own history can be connected to a vault with other files: the histories
+  are unrelated, so the result is the union of the files, and a path that differs on both sides is a conflict.
+- Names with `..`, a leading `-`, whitespace, `HEAD`, `@{`, or a trailing `/` or `.lock` are refused (422).
+- A new machine: `svod-engine clone <remote> <dest-dir> <vaultId> --branch main`.
+- `GET /api/v1/sync/status` and `/sync/config` carry `lastError` (for example `fetch failed: ...`) while
+  the last cycle failed on the network or the credentials; it is empty after a good cycle. Credentials are
+  never in it.
+- Changing `syncBranch` on a vault that already synced starts from the new ref. The first cycle merges it
+  with local history like any other peer.
+
 Replicas hold the whole vault; give a person a replica only if they may read all of it. Access control
 on the central engine does not apply to a git remote.
 
@@ -648,3 +674,15 @@ is already the person (observed above).
 9. "Merge authority" (also ADR-0020 §5 and the plan): see section 10, the shipped sync is symmetric.
 10. Tokens in the app ("Settings → LLM Access") are replaced by the explicit API and file steps, so the
     runbook works without the macOS app.
+
+## 12. Hosted engines: `denyPrivateRemotes`
+
+On an engine where people name their own git remote, set `"denyPrivateRemotes": true` in the config. Sync and
+backup will then only talk to `http(s)` remotes whose DNS name resolves to public addresses: no `file:`, `ssh`
+or `git@host:path`, no IP literals, and nothing that resolves to loopback, RFC1918, link-local (169.254/16,
+fe80::/10), unique-local (fc00::/7), CGNAT (100.64/10), multicast or unspecified addresses, or the IPv6
+transition prefixes that can wrap one (NAT64, 6to4, Teredo). That covers the cloud metadata endpoints
+(169.254.169.254, fd00:ec2::254, 100.100.100.200). The check runs on every
+cycle, so a name that later starts resolving to a private address is refused, and HTTP redirects are not
+followed. A refused remote shows as an `offline` sync with `lastError` = `remote check failed: remote host
+not allowed`. Leave it off (the default) on a self-hosted engine that syncs to a LAN Gitea.

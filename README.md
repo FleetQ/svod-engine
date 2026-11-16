@@ -470,7 +470,7 @@ indexing + pluggable embedders (local-onnx / local-ollama / remote-openai) → r
 (stale-lock self-heal, observable resume), Prometheus `/metrics`, opt-in reranking, oversized-chunk
 fault tolerance → embedder model enumeration (`POST /embedder/models`) → embedding ETA, incremental
 link/tag index, `context_pack` agent-memory recall, reranker in `/settings`, filter-only tag browse →
-scheduled auto-backup → two-way multi-machine sync (canonical `refs/svod/sync/<vault>`, 3-way merge,
+scheduled auto-backup → two-way multi-machine sync (canonical `refs/svod/sync/<vault>`, or a plain branch via `syncBranch`, 3-way merge,
 conflict surface/resolve, `clone` bootstrap) → per-source filesystem auto-sync (FSEvents watcher,
 debounced; `autoSync` toggle via PATCH).
 Full suite green;

@@ -3,6 +3,48 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.32.0 — unreleased (App API contract 0.40.0, additive)
+
+### Added — sync through a plain git branch (`syncBranch`)
+
+- Per-vault `syncBranch` (`PUT /api/v1/settings/backup`, returned by `GET /api/v1/sync/config`; also the
+  `backup.syncBranch` config field). When set, two-way sync uses `refs/heads/<syncBranch>` on the remote
+  as its canonical ref instead of `refs/svod/sync/<vaultId>`. Pushes are non-force; commits a person
+  pushes to that branch with plain git are fetched and merged by the normal 3-way merge. The branch is
+  created by the first push when the remote has none.
+- With `syncBranch` set the engine never force-pushes the browsable `main` mirror (which would destroy the
+  person's commits); the sync branch itself is the browsable branch. The one-way backup mirror is skipped too.
+- Validation (422 `invalid_sync_branch` on the API, an error at config load): empty, leading `-`, `HEAD`,
+  whitespace or control characters, `..`, `@{`, a trailing `/` or `.lock`, and anything git itself refuses.
+- `svod-engine clone <remote> <dest> <vaultId> [--branch <name>]` clones that branch instead of the sync ref.
+- Unset (the default) behaves exactly as before.
+
+### Added — trash listing and purge
+
+- `GET /api/v1/trash` lists everything under `.trash/` in the `/tree` shape, paths keep the `.trash/`
+  prefix (contract 0.40.0, additive). Same access as `/tree`. File nodes also carry `originalPath` and
+  `deletedAt` (ISO-8601), read from the soft-delete commit; both are omitted when history does not record them.
+- `DELETE /api/v1/file?path=.trash/…` permanently removes a trashed file in one attributed commit
+  (`purge: <path>`; history keeps it). Engine admins only (an editor gets 403); a path that leaves
+  `.trash/` is 400. `expectedRevision` is optional for a purge (checked when given). Any other path
+  soft-deletes exactly as before.
+
+### Added — why a sync fails, and an SSRF guard for hosted engines
+
+- `lastError` (nullable string) on `GET /api/v1/sync/status` and `GET /api/v1/sync/config` (contract 0.40.0):
+  the last sync transport failure as `<phase> failed: <cause>` (for example `fetch failed: ...`), so a client
+  can tell a rejected token from a missing repository. Credentials are removed (URL userinfo and any copy of
+  the remote's token in the text). A cycle that ends in sync clears it.
+- Config `denyPrivateRemotes` (default `false`). When `true`, before every sync cycle and every backup push the
+  remote (after `Secrets.resolve`) must be an `http(s)` URL with a DNS name that resolves only to public
+  addresses. Refused: other schemes (`file:`, `ssh`, `git`, `git@host:path`, plain paths), any IP literal, and
+  names resolving to loopback, private (RFC1918), link-local (169.254/16, fe80::/10), unique-local (fc00::/7),
+  CGNAT (100.64/10), multicast or unspecified addresses, and IPv6 transition prefixes that can carry one of
+  those (NAT64 64:ff9b::/96 and 64:ff9b:1::/48, 6to4 2002::/16, Teredo 2001::/32). Cloud metadata endpoints
+  fall in these ranges (169.254.169.254, fd00:ec2::254, 100.100.100.200). The check runs again on every cycle (DNS rebinding),
+  and HTTP redirects are switched off for the transport (`http.followRedirects=false`). A refusal is an ordinary
+  failed cycle: status `offline`, `lastError` = `remote check failed: remote host not allowed`.
+
 ## v1.31.0 — unreleased (App API contract 0.39.0, additive)
 
 ### Added — team sharing: people behind agents, roles on vault grants (ADR-0020)
