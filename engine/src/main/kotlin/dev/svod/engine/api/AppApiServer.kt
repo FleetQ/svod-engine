@@ -148,6 +148,8 @@ class AppApiServer(
         val tls: Tls? = null,
         /** `memory.requireReview`, for the read-only settings view. */
         val memoryRequireReview: Boolean = true,
+        /** Externally reachable MCP URL for `GET /agents`; null = derive it from the bind address. */
+        val publicMcpUrl: String? = null,
     )
 
     /** TLS material for serving the App API over HTTPS (same shape as the MCP server's). */
@@ -267,7 +269,7 @@ class AppApiServer(
                 val admin = agentAdmin ?: return@get call.notImplemented("agent management")
                 val view = admin.list()
                 val effectiveHost = if (config.host == "0.0.0.0") "127.0.0.1" else config.host
-                val mcpUrl = "http://$effectiveHost:${view.mcpPort}"
+                val mcpUrl = config.publicMcpUrl ?: "http://$effectiveHost:${view.mcpPort}"
                 call.respond(AgentsDto(view.agents.map { it.toDto() }, view.mcpPort, mcpUrl))
             }
             post("/api/v1/agents") {

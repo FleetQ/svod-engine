@@ -53,6 +53,8 @@ data class SvodConfig(
     val secretScanning: Boolean = false,
     /** Optional TLS for the MCP endpoint. */
     val mcpTls: TlsSettings? = null,
+    /** Externally reachable MCP URL (behind a proxy); `GET /agents` reports it as `mcpUrl` instead of the bind address. */
+    val publicMcpUrl: String? = null,
     /** Auto-sync interval in seconds; 0 disables the background loop (manual sync only). */
     val syncIntervalSeconds: Int = 0,
     /** Optional off-site backup of every vault's canonical branch (disaster recovery). */
@@ -602,8 +604,12 @@ data class SvodConfig(
      */
     fun toUserSpecs(): List<dev.svod.engine.api.UserRegistry.UserSpec> = users.mapNotNull { u ->
         val key = runCatching { dev.svod.engine.security.Secrets.resolve(u.keyRef) }.getOrElse { e ->
-            org.slf4j.LoggerFactory.getLogger(SvodConfig::class.java)
-                .warn("user '{}' skipped: keyRef '{}' cannot be resolved ({})", u.userId, u.keyRef, e.message)
+            val log = org.slf4j.LoggerFactory.getLogger(SvodConfig::class.java)
+            if (u.admin) {
+                log.warn("ADMIN user '{}' skipped: keyRef '{}' cannot be resolved ({}). Nobody can administer this engine through that account until the key file exists.", u.userId, u.keyRef, e.message)
+            } else {
+                log.warn("user '{}' skipped: keyRef '{}' cannot be resolved ({})", u.userId, u.keyRef, e.message)
+            }
             return@mapNotNull null
         }
         dev.svod.engine.api.UserRegistry.UserSpec(
