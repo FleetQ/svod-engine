@@ -23,6 +23,8 @@ independently of the engine; each entry notes the contract version it ships.
 - MCP `read` and App API `GET /file` return `author` and `lastModifiedBy` (from git); history entries
   carry `agent` (contract 0.39.0, additive).
 - `docs/runbook-central-instance.md` and `dist/central-docker/` (container + systemd + nginx vhost).
+- `publicMcpUrl` (config): the URL `GET /agents` reports as `mcpUrl` when the engine sits behind a proxy.
+- An admin user whose key file cannot be read is logged as `ADMIN user ... skipped`, so a provisioning mistake is visible.
 
 ### Fixed
 
