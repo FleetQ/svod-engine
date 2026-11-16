@@ -169,7 +169,7 @@ class SvodNode private constructor(
                 // One shared, mutable config holder so the runtime controllers (embedder, vault
                 // creation) persist edits onto each other's state instead of clobbering.
                 val configStore = ConfigStore(config, configPath)
-                val embedderControl = EmbedderController(vaults, configStore)
+                val embedderControl = EmbedderController(vaults, configStore, dev.svod.engine.sync.RemoteGuard(config.denyPrivateRemotes))
                 val agentController = AgentController(configStore, registry, config.host)
                 // People (ADR-0019): personal keys → principals with per-vault roles. Key files live
                 // next to the config (a config-less embed falls back to ~/.svod/secrets).

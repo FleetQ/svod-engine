@@ -634,7 +634,7 @@ class AppApiServer(
                     call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("invalid_embedder", e.message ?: "invalid embedder spec"))
                 } catch (e: Exception) {
                     // building a remote embedder probes the endpoint; an unreachable endpoint is a 409.
-                    call.respond(HttpStatusCode.Conflict, ErrorDto("embedder_unavailable", (e.cause ?: e).message ?: "could not initialize embedder"))
+                    call.respond(HttpStatusCode.Conflict, ErrorDto("embedder_unavailable", dev.svod.engine.lifecycle.EmbedderController.describe(e)))
                 }
             }
             post("/api/v1/embedder/test") {
@@ -642,7 +642,7 @@ class AppApiServer(
                 val control = embedderControl ?: return@post call.notImplemented("embedder control")
                 val req = call.receive<EmbedderRequestDto>()
                 val r = control.test(vc.id, req.toSpec())
-                call.respond(EmbedderTestResultDto(r.ok, r.dimension, r.latencyMs, r.error))
+                call.respond(EmbedderTestResultDto(r.ok, r.dimension, r.latencyMs, r.error?.let { dev.svod.engine.sync.RemoteGuard.scrubText(it) }))
             }
             post("/api/v1/embedder/models") {
                 val vc = vault() ?: return@post call.notFound("vault")

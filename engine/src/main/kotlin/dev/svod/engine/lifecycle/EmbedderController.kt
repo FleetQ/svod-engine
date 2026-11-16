@@ -23,6 +23,13 @@ import java.time.Duration
 class EmbedderController(
     private val vaults: VaultManager,
     private val configStore: ConfigStore,
+    /**
+     * `denyPrivateRemotes`: an endpoint a request supplies must pass [dev.svod.engine.sync.RemoteGuard] (https,
+     * public DNS name) before anything is sent to it. The configured endpoint (operator-set) is not re-checked.
+     * java.net.http has no hook for the connected peer address, so this is a check-time guard only; a host
+     * egress firewall covers rebinding.
+     */
+    private val guard: dev.svod.engine.sync.RemoteGuard = dev.svod.engine.sync.RemoteGuard.OFF,
 ) : EmbedderControl {
 
     private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
@@ -65,7 +72,7 @@ class EmbedderController(
         } catch (e: EmbedderControl.InvalidSpec) {
             EmbedderControl.ProbeResult(ok = false, dimension = null, latencyMs = null, error = e.message)
         } catch (e: Throwable) {
-            EmbedderControl.ProbeResult(ok = false, dimension = null, latencyMs = null, error = (e.cause ?: e).message)
+            EmbedderControl.ProbeResult(ok = false, dimension = null, latencyMs = null, error = describe(e))
         }
     }
 
@@ -125,6 +132,18 @@ class EmbedderController(
             }
         }
         val isOnnx = spec.provider.lowercase() in listOf("onnx-local", "local-onnx")
+        spec.endpoint?.takeIf { it.isNotBlank() }?.let { ep ->
+            // The endpoint is stored and shown in /settings and the PUT answer: no secret may ride in it.
+            val u = try { URI(ep.trim()) } catch (_: Exception) { throw EmbedderControl.InvalidSpec("endpoint is not a valid URL") }
+            if (u.rawUserInfo != null || u.rawQuery != null || u.rawFragment != null || '@' in ep) {
+                throw EmbedderControl.InvalidSpec("endpoint must not carry credentials, a query or a fragment; reference the key with apiKeyRef")
+            }
+        }
+        spec.endpoint?.takeIf { it.isNotBlank() && !isOnnx && !spec.provider.equals("none", ignoreCase = true) }?.let { ep ->
+            try { guard.check(ep) } catch (e: dev.svod.engine.sync.RemoteGuard.Refused) {
+                throw EmbedderControl.InvalidSpec("endpoint ${e.message}")
+            }
+        }
         return current.copy(
             provider = spec.provider,
             onnxModelId = if (isOnnx && spec.model != null) spec.model else current.onnxModelId,
@@ -133,6 +152,14 @@ class EmbedderController(
             apiKeyRef = spec.apiKeyRef ?: current.apiKeyRef,
             maxThreads = spec.maxThreads ?: current.maxThreads,
         )
+    }
+
+    companion object {
+        /** A probe failure fit to show an admin: the exception type and its message, URLs cut to host/path and tokens masked. */
+        fun describe(e: Throwable): String {
+            val root = e.cause ?: e
+            return dev.svod.engine.sync.RemoteGuard.scrubText("${root.javaClass.simpleName}: ${root.message ?: "no detail"}")
+        }
     }
 
     private fun isSecretRef(ref: String) =
