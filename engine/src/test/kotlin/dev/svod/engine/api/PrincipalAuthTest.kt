@@ -160,6 +160,67 @@ class PrincipalAuthTest {
     }
 
     @Test
+    fun `trash lists a soft-deleted note, restore works, and only an admin can purge`(): Unit = runBlocking {
+        Fixture().use { fx ->
+            fun trashPaths(key: String): List<String> =
+                Regex("\"path\":\"([^\"]*)\",\"type\":\"file\"").findAll(fx.get("/api/v1/trash?vault=a", key).body()).map { it.groupValues[1] }.toList()
+            fun revOf(path: String) = Regex("\"revision\":\"([0-9a-f]+)\"").find(fx.get("/api/v1/file?vault=a&path=$path", "k-admin").body())!!.groupValues[1]
+
+            assertEquals(emptyList(), trashPaths("k-reader"), "an empty trash lists nothing")
+            fx.write("a", "gone.md", "# gone", key = "k-editor")
+            fx.write("a", "other.md", "# other", key = "k-editor")
+            assertEquals(200, fx.req("DELETE", "/api/v1/file?vault=a&path=gone.md&expectedRevision=${revOf("gone.md")}", "k-editor").statusCode())
+
+            assertEquals(listOf(".trash/gone.md"), trashPaths("k-reader"), "a reader sees the trash, with the .trash/ prefix")
+            val listed = fx.get("/api/v1/trash?vault=a", "k-reader").body()
+            assertTrue("\"originalPath\":\"gone.md\"" in listed, "the original path comes from the delete commit: $listed")
+            assertTrue(Regex("\"deletedAt\":\"\\d{4}-\\d\\d-\\d\\dT[^\"]+Z\"").containsMatchIn(listed), "deletedAt is an ISO instant: $listed")
+            assertEquals(404, fx.get("/api/v1/trash?vault=b", "k-editor").statusCode(), "no grant on vault b")
+
+            // restore still works and empties the trash
+            val back = fx.req("POST", "/api/v1/file/restore?vault=a", "k-editor", """{"trashPath":".trash/gone.md"}""")
+            assertEquals(200, back.statusCode(), back.body())
+            assertEquals(emptyList(), trashPaths("k-admin"))
+            assertEquals(200, fx.get("/api/v1/file?vault=a&path=gone.md", "k-admin").statusCode())
+
+            // delete again, then purge: an editor and a reader are refused and nothing moves
+            assertEquals(200, fx.req("DELETE", "/api/v1/file?vault=a&path=gone.md&expectedRevision=${revOf("gone.md")}", "k-editor").statusCode())
+            val head = fx.a.engine.head()
+            val blob = fx.a.engine.blobId("# gone".toByteArray())
+            assertEquals(403, fx.req("DELETE", "/api/v1/file?vault=a&path=.trash/gone.md&expectedRevision=$blob", "k-editor").statusCode())
+            assertEquals(403, fx.req("DELETE", "/api/v1/file?vault=a&path=.trash/gone.md&expectedRevision=$blob", "k-reader").statusCode())
+            assertEquals(head, fx.a.engine.head(), "a refused purge must not move HEAD")
+            assertEquals(listOf(".trash/gone.md"), trashPaths("k-admin"))
+
+            // traversal out of .trash is refused for the admin too
+            assertEquals(400, fx.req("DELETE", "/api/v1/file?vault=a&path=.trash/../other.md&expectedRevision=${revOf("other.md")}", "k-admin").statusCode())
+            assertEquals(200, fx.get("/api/v1/file?vault=a&path=other.md", "k-admin").statusCode(), "other.md untouched")
+
+            // a stale revision conflicts; the right one purges in one attributed commit
+            assertEquals(409, fx.req("DELETE", "/api/v1/file?vault=a&path=.trash/gone.md&expectedRevision=deadbeef", "k-admin").statusCode())
+            val purged = fx.req("DELETE", "/api/v1/file?vault=a&path=.trash/gone.md&expectedRevision=$blob", "k-admin")
+            assertEquals(200, purged.statusCode(), purged.body())
+            assertEquals(emptyList(), trashPaths("k-admin"), "the trash is empty again")
+            assertEquals(404, fx.req("DELETE", "/api/v1/file?vault=a&path=.trash/gone.md&expectedRevision=$blob", "k-admin").statusCode())
+
+            // no expectedRevision at all: the web client never reads .trash paths first
+            fx.write("a", "bare.md", "# bare", key = "k-editor")
+            assertEquals(200, fx.req("DELETE", "/api/v1/file?vault=a&path=bare.md&expectedRevision=${revOf("bare.md")}", "k-editor").statusCode())
+            assertEquals(403, fx.req("DELETE", "/api/v1/file?vault=a&path=.trash/bare.md", "k-editor").statusCode())
+            assertEquals(listOf(".trash/bare.md"), trashPaths("k-admin"))
+            assertEquals(200, fx.req("DELETE", "/api/v1/file?vault=a&path=.trash/bare.md", "k-admin").statusCode())
+            assertEquals(emptyList(), trashPaths("k-admin"))
+            val last = org.eclipse.jgit.api.Git.open(fx.a.root.toFile()).use { it.log().addPath(".trash/gone.md").call().first() }
+            assertEquals("Boss", last.authorIdent.name, "the purge commit names the admin")
+            assertTrue(last.shortMessage.startsWith("purge: .trash/gone.md"), last.shortMessage)
+
+            // a non-trash path still soft-deletes, for an editor, exactly as before
+            assertEquals(200, fx.req("DELETE", "/api/v1/file?vault=a&path=other.md&expectedRevision=${revOf("other.md")}", "k-editor").statusCode())
+            assertEquals(listOf(".trash/other.md"), trashPaths("k-admin"))
+        }
+    }
+
+    @Test
     fun `reader can read but a write is 403 and leaves HEAD alone`(): Unit = runBlocking {
         Fixture().use { fx ->
             fx.write("a", "seed.md", "# seed", key = "k-admin")

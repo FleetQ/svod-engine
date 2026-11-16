@@ -38,8 +38,8 @@ class GraphRagUnitTest {
 
     @Test
     fun `contract version was bumped for the additive graph routes`() {
-        // Bumped deliberately in v1.31.0: Agent.user + Agent.vaultRoles (team sharing, ADR-0020).
-        assertEquals("0.39.0", ApiCompatibility.CURRENT_CONTRACT_VERSION)
+        // Bumped deliberately in v1.32.0: syncBranch, lastError, GET /trash, purge via DELETE /file.
+        assertEquals("0.40.0", ApiCompatibility.CURRENT_CONTRACT_VERSION)
     }
 
     // ---- B4/B5: edge canonicalisation ----

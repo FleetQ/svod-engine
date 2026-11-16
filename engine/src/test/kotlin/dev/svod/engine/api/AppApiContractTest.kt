@@ -195,6 +195,7 @@ class AppApiContractTest {
             val cfg = fx.get("$ap/sync/config")
             assertEquals(200, cfg.statusCode())
             validate("$ap/sync/config", Request.Method.GET, 200, cfg.body())
+            assertTrue("\"syncBranch\":null" in cfg.body().replace(" ", ""), "syncBranch is present even when unset: ${cfg.body()}")
 
             // sync/now: no peers ⇒ 200 SyncAck with ok=false (a no-op, not an error).
             val syncNow = fx.post("$ap/sync/now", "")
@@ -225,6 +226,16 @@ class AppApiContractTest {
             val setBad = fx.put("$ap/settings/backup", """{"remote":"https://user:secret@git.example.com/backup.git","enabled":true}""")
             assertEquals(422, setBad.statusCode())
             validate("$ap/settings/backup", Request.Method.PUT, 422, setBad.body())
+
+            // settings/backup: syncBranch is stored and echoed; an unsafe name is a 422 (conforms).
+            val setBranch = fx.put("$ap/settings/backup", """{"remote":"https://git.example.com/backup.git","enabled":true,"syncEnabled":true,"syncBranch":"main"}""")
+            assertEquals(200, setBranch.statusCode())
+            validate("$ap/settings/backup", Request.Method.PUT, 200, setBranch.body())
+            for (bad in listOf("a..b", "-x", "a b", "HEAD", "")) {
+                val r = fx.put("$ap/settings/backup", """{"remote":"https://git.example.com/backup.git","enabled":true,"syncBranch":"$bad"}""")
+                assertEquals(422, r.statusCode(), "syncBranch '$bad'")
+                validate("$ap/settings/backup", Request.Method.PUT, 422, r.body())
+            }
 
             // maintenance/reindex: full HEAD reconcile ack (conforms).
             val reindex = fx.post("$ap/maintenance/reindex", "")
@@ -412,7 +423,7 @@ class AppApiContractTest {
         val openApi = OpenAPIV3Parser().read(specPath.toString())
         val declared = openApi.paths.keys.toSet()
         val implemented = setOf(
-            "/health", "/ready", "/api/v1/tree", "/api/v1/file", "/api/v1/file/move", "/api/v1/file/restore",
+            "/health", "/ready", "/api/v1/tree", "/api/v1/trash", "/api/v1/file", "/api/v1/file/move", "/api/v1/file/restore",
             "/api/v1/file/history", "/api/v1/file/diff", "/api/v1/file/revision", "/api/v1/file/links",
             "/api/v1/search", "/api/v1/graph",
             "/api/v1/graph/communities", "/api/v1/graph/community", "/api/v1/graph/status", "/api/v1/graph/rebuild",
