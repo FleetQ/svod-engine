@@ -36,9 +36,10 @@ import javax.net.ssl.X509TrustManager
  * octal, hex, bracketed IPv6), a trailing-dot host. The last label of the host must start with a letter.
  *
  * Addresses refused: loopback, private (RFC1918), link-local (169.254/16, fe80::/10), unique-local
- * (fc00::/7), CGNAT (100.64/10), multicast, unspecified, and IPv6 transition prefixes that can carry one
- * (NAT64 64:ff9b::/96 and 64:ff9b:1::/48, 6to4 2002::/16, Teredo 2001::/32). IPv4-mapped `::ffff:a.b.c.d`
- * is judged as the IPv4 address it carries. That covers the cloud metadata endpoints.
+ * (fc00::/7), CGNAT (100.64/10), benchmarking (198.18/15), reserved (240/4, incl. 255.255.255.255),
+ * multicast, unspecified, and IPv6 transition prefixes that can carry one (NAT64 64:ff9b::/96 and
+ * 64:ff9b:1::/48, 6to4 2002::/16, Teredo 2001::/32). IPv4-mapped `::ffff:a.b.c.d` and IPv4-compatible
+ * `::a.b.c.d` are judged as the IPv4 address they carry. That covers the cloud metadata endpoints.
  *
  * DNS rebinding between [check] and the transport's own lookup is closed by [PinnedHttps]: with the guard
  * on, every JGit HTTPS connection verifies the address it actually connected to, inside the TLS handshake
@@ -88,16 +89,36 @@ class RemoteGuard(
             return host
         }
 
+        private val URL_IN_TEXT = Regex("""\b[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^/@\s'"]*@)?([^\s?#'"]*)(?:[?#][^\s'"]*)?""")
+        private val TOKEN_AFTER_WORD = Regex("""(?i)\b(bearer|token|access_token|api[_-]?key|authorization|password)(["']?\s*[=:]?\s*["']?)(?:bearer\s+)?[^\s"',;&)\]}]+""")
+        private val TOKEN_SHAPED = Regex("""\b(sk|svk|ghp|gho|ghs|ghu|glpat|xox[abpr])[-_][A-Za-z0-9_-]{6,}""")
+
+        /**
+         * [text] safe to show: every URL is cut to host/path (no scheme, userinfo, query or fragment), and
+         * values after `bearer`/`token`/`api_key`/`password`… or shaped like a known key are masked. Capped at 500 chars.
+         */
+        fun scrubText(text: String): String = text
+            .replace(URL_IN_TEXT) { it.groupValues[1] }
+            .replace(TOKEN_AFTER_WORD) { it.groupValues[1] + it.groupValues[2] + "***" }
+            .replace(TOKEN_SHAPED, "***")
+            .take(500)
+
         internal fun blocked(a: InetAddress): Boolean {
             if (a.isLoopbackAddress || a.isAnyLocalAddress || a.isLinkLocalAddress || a.isSiteLocalAddress || a.isMulticastAddress) return true
             val b = a.address
             return when (a) {
                 is Inet4Address -> {
                     val b0 = b[0].toInt() and 0xff; val b1 = b[1].toInt() and 0xff
-                    b0 == 0 || (b0 == 100 && b1 in 64..127)                       // 0.0.0.0/8, CGNAT 100.64.0.0/10
+                    b0 == 0 || (b0 == 100 && b1 in 64..127) ||                    // 0.0.0.0/8, CGNAT 100.64.0.0/10
+                        (b0 == 198 && (b1 == 18 || b1 == 19)) ||                   // benchmarking 198.18.0.0/15
+                        b0 >= 240                                                  // reserved 240.0.0.0/4 + broadcast 255.255.255.255
                 }
                 is Inet6Address -> {
                     fun u(i: Int) = b[i].toInt() and 0xff
+                    // IPv4-compatible ::a.b.c.d (deprecated, but some stacks still route it): judge the IPv4 inside.
+                    if (b.slice(0..11).all { it == 0.toByte() } && (u(12) or u(13) or u(14) or u(15)) != 0) {
+                        return blocked(InetAddress.getByAddress(b.copyOfRange(12, 16)))
+                    }
                     (u(0) and 0xfe) == 0xfc ||                                     // unique-local fc00::/7
                         (u(0) == 0x00 && u(1) == 0x64 && u(2) == 0xff && u(3) == 0x9b &&
                             (b.slice(4..11).all { it == 0.toByte() } || (u(4) == 0 && u(5) == 1))) || // NAT64 64:ff9b::/96, 64:ff9b:1::/48

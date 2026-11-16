@@ -88,7 +88,7 @@ class SyncEngine(
         val userinfo = cycleRemote?.let { USERINFO.find(it)?.groupValues?.get(1) }?.takeIf { it.isNotEmpty() }
         if (userinfo != null) for (part in (listOf(userinfo) + userinfo.split(':')).filter { it.length >= 3 }.sortedByDescending { it.length }) out = out.replace(part, "***")
         // Any URL is cut down to host/path: no scheme, userinfo, query or fragment (a token can sit in any of them).
-        return out.replace(URL_IN_TEXT) { it.groupValues[1] }.take(500)
+        return RemoteGuard.scrubText(out)
     }
 
     /** Step of the cycle in progress (`commit`, `fetch`, `merge`, `push`), null when idle. */
@@ -383,6 +383,5 @@ class SyncEngine(
         /** How often a held sync and a still-failing remote are repeated at WARN. */
         val LOG_EVERY: Duration = Duration.ofHours(1)
         private val USERINFO = Regex("""://([^/@\s]*)@""")
-        private val URL_IN_TEXT = Regex("""\b[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^/@\s'"]*@)?([^\s?#'"]*)(?:[?#][^\s'"]*)?""")
     }
 }

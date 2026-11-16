@@ -31,6 +31,8 @@ class RemoteGuardTest {
             "0.0.0.0", "0.1.2.3", "::", "::ffff:10.0.0.1", "::ffff:127.0.0.1", "::ffff:192.168.0.1", "224.0.0.1",
             "64:ff9b::a00:1", "64:ff9b::8.8.8.8", "64:ff9b:1::1", "64:ff9b:1:ffff::1", "2002:a00:1::1", "2002:808:808::1",
             "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+            "::127.0.0.1", "::10.0.0.1", "::169.254.169.254", "::192.168.1.1",
+            "198.18.0.1", "198.19.255.254", "240.0.0.1", "250.1.2.3", "255.255.255.254", "255.255.255.255",
         )
         for (a in blocked) {
             val e = assertFailsWith<RemoteGuard.Refused>("should refuse $a") { guard(a).check("https://git.example.com/r.git") }
@@ -45,7 +47,8 @@ class RemoteGuardTest {
 
     @Test
     fun `public hosts are allowed, including the edges of the blocked ranges`() {
-        for (a in listOf("93.184.216.34", "8.8.8.8", "100.63.255.255", "100.128.0.1", "172.15.255.255", "172.32.0.1", "192.169.0.1", "2606:4700::1111", "::ffff:8.8.8.8", "2001:db8::1", "2001:1::1", "64:ff9a::1")) {
+        for (a in listOf("93.184.216.34", "8.8.8.8", "100.63.255.255", "100.128.0.1", "172.15.255.255", "172.32.0.1", "192.169.0.1", "2606:4700::1111", "::ffff:8.8.8.8", "2001:db8::1", "2001:1::1", "64:ff9a::1",
+            "::8.8.8.8", "198.17.255.255", "198.20.0.1", "223.255.255.254")) {
             guard(a).check("https://git.example.com/r.git")
             guard(a).check("https://git.example.com:3000/org/r.git")
             guard(a).check("https://x-access-token:SECRET@git.example.com/r.git")
@@ -122,6 +125,62 @@ class RemoteGuardTest {
         } finally {
             PinnedHttps.enable(false)
             server.close(); acceptor.join(2000)
+        }
+    }
+
+    @Test
+    fun `scrubText cuts URLs to host and path and masks tokens`() {
+        assertEquals(
+            "fetch failed: git.example.com/r.git and h.example/p (token ***, Authorization: ***, api_key=***) ***",
+            RemoteGuard.scrubText(
+                "fetch failed: https://u:pw@git.example.com/r.git?access_token=QTOK#frag and http://h.example/p?x=1 " +
+                    "(token abc123def, Authorization: Bearer eyJhbGciOi, api_key=k-123456) ghp_ABCDEFGHIJKLmnop",
+            ),
+        )
+        assertEquals("send Bearer *** now", RemoteGuard.scrubText("send Bearer abcdef123 now"))
+    }
+
+    @Test
+    fun `with redirects off (denyPrivateRemotes) a real HTTPS fetch does not follow a 302 to another host`() {
+        val ks = io.ktor.network.tls.certificates.buildKeyStore {
+            certificate("t") { password = "changeit"; domains = listOf("localhost", "127.0.0.1") }
+        }
+        val kmf = javax.net.ssl.KeyManagerFactory.getInstance(javax.net.ssl.KeyManagerFactory.getDefaultAlgorithm()).apply { init(ks, "changeit".toCharArray()) }
+        val ctx = javax.net.ssl.SSLContext.getInstance("TLS").apply { init(kmf.keyManagers, null, null) }
+        val target = java.util.concurrent.atomic.AtomicInteger()
+        // A minimal HTTPS server: reads the request head, answers [reply], closes.
+        fun serve(reply: (Int) -> String, onRequest: () -> Unit = {}): javax.net.ssl.SSLServerSocket {
+            val server = ctx.serverSocketFactory.createServerSocket(0, 10, InetAddress.getLoopbackAddress()) as javax.net.ssl.SSLServerSocket
+            Thread {
+                while (!server.isClosed) try {
+                    server.accept().use { sock ->
+                        val input = sock.getInputStream().bufferedReader()
+                        while (true) { val line = input.readLine() ?: break; if (line.isEmpty()) break }
+                        onRequest()
+                        sock.getOutputStream().apply { write(reply(server.localPort).toByteArray()); flush() }
+                    }
+                } catch (_: Exception) {}
+            }.apply { isDaemon = true; start() }
+            return server
+        }
+        val elsewhere = serve({ "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" }) { target.incrementAndGet() }
+        val origin = serve({
+            "HTTP/1.1 302 Found\r\nLocation: https://127.0.0.1:${elsewhere.localPort}/r.git/info/refs?service=git-upload-pack\r\n" +
+                "Content-Length: 0\r\nConnection: close\r\n\r\n"
+        })
+        // The peer check would refuse loopback before any redirect; this test isolates the redirect setting.
+        PinnedHttps.enable(false)
+        fun repo(): java.nio.file.Path = Files.createTempDirectory("svod-redir-").also { d ->
+            Git.init().setDirectory(d.toFile()).call().use { g -> g.repository.config.apply { setBoolean("http", null, "sslVerify", false); save() } }
+        }
+        try {
+            assertFailsWith<Exception> { SyncGit(repo(), followRedirects = false).use { it.fetchSync("https://localhost:${origin.localPort}/r.git", "v") } }
+            assertEquals(0, target.get(), "the redirect target must never be contacted")
+            // Control: with redirects on (the default mode) the same fetch does reach the other host.
+            runCatching { SyncGit(repo()).use { it.fetchSync("https://localhost:${origin.localPort}/r.git", "v") } }
+            assertTrue(target.get() > 0, "control: JGit follows the 302 when redirects are allowed")
+        } finally {
+            origin.close(); elsewhere.close()
         }
     }
 
