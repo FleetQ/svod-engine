@@ -64,3 +64,30 @@ class SvodConfigTest {
         assertEquals(cfg, SvodConfig.loadOrThrowValidated(file))
     }
 }
+
+class AdminKeyWarningTest {
+
+    private fun warningsFor(users: List<SvodConfig.UserSettings>): List<String> {
+        val logger = org.slf4j.LoggerFactory.getLogger(SvodConfig::class.java) as ch.qos.logback.classic.Logger
+        val appender = ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>().apply { start() }
+        logger.addAppender(appender)
+        try {
+            SvodConfig(vaultPath = "/tmp/vault", users = users).toUserSpecs()
+        } finally { logger.detachAppender(appender) }
+        return appender.list.filter { it.level == ch.qos.logback.classic.Level.WARN }.map { it.formattedMessage }
+    }
+
+    @Test
+    fun `an admin whose key file is missing gets a loud warning, a plain user a normal one`() {
+        val missing = "file:/nonexistent/svod-test/user.key"
+        val warnings = warningsFor(
+            listOf(
+                SvodConfig.UserSettings("boss", "Boss", keyRef = missing, admin = true),
+                SvodConfig.UserSettings("pleb", "Pleb", keyRef = missing),
+            ),
+        )
+        assertEquals(2, warnings.size, warnings.toString())
+        assertTrue(warnings.single { "'boss'" in it }.startsWith("ADMIN user 'boss' skipped"), warnings.toString())
+        assertTrue(warnings.single { "'pleb'" in it }.startsWith("user 'pleb' skipped"), warnings.toString())
+    }
+}

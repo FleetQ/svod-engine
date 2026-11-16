@@ -220,6 +220,7 @@ class SvodNode private constructor(
                         localAdmin = config.localAdmin,
                         tls = appApiTls,
                         memoryRequireReview = config.memory.requireReview,
+                        publicMcpUrl = config.publicMcpUrl,
                     ),
                     readiness = { ready.get() },
                     embedderControl = embedderControl,
