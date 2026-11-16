@@ -256,6 +256,33 @@ class GitRepo private constructor(
             }
         }
 
+    /**
+     * For each of [trashPaths], the original path and the commit time (ISO-8601) of the soft delete that put it
+     * there, read from the `delete: <orig> -> <trashRel>` message [SvodEngine] writes. One walk from HEAD,
+     * newest first, stopping once every path is found; a path with no such commit (moved in by hand, or a
+     * shallow history) is simply absent.
+     */
+    fun trashOrigins(trashPaths: Set<String>): Map<String, Pair<String, String>> {
+        val head = repo.resolve(Constants.HEAD) ?: return emptyMap()
+        val out = HashMap<String, Pair<String, String>>()
+        if (trashPaths.isEmpty()) return out
+        RevWalk(repo).use { rw ->
+            rw.markStart(rw.parseCommit(head))
+            for (c in rw) {
+                val msg = c.shortMessage
+                if (!msg.startsWith("delete: ")) continue
+                val arrow = msg.lastIndexOf(" -> ")
+                if (arrow < 0) continue
+                val trashRel = msg.substring(arrow + 4)
+                if (trashRel in trashPaths && trashRel !in out) {
+                    out[trashRel] = msg.substring("delete: ".length, arrow) to java.time.Instant.ofEpochSecond(c.commitTime.toLong()).toString()
+                    if (out.size == trashPaths.size) break
+                }
+            }
+        }
+        return out
+    }
+
     fun log(path: String?, max: Int): List<CommitInfo> {
         if (headId() == null) return emptyList()
         return try {

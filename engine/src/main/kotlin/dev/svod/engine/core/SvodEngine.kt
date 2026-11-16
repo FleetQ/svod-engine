@@ -158,6 +158,29 @@ class SvodEngine private constructor(
     suspend fun restore(trashRelPath: String, to: String? = null, author: Author): WriteOutcome =
         actor.submit { doRestore(trashRelPath, to, author) }.also(::notifyCommit)
 
+    /**
+     * Permanently remove a trashed file ([trashRelPath] under `.trash/`) in one attributed commit. The file
+     * stays in git history. A path outside `.trash/` (or `.trash/` itself) is refused with
+     * [IllegalArgumentException]; the caller decides who may purge.
+     */
+    suspend fun purge(trashRelPath: String, expectedRevision: Revision?, author: Author): WriteOutcome =
+        timed { actor.submit { doPurge(trashRelPath, expectedRevision, author) } }.also(::notifyCommit)
+
+    /** A trashed file: its `.trash/` path, plus where it came from and when it was deleted when history says so. */
+    data class TrashEntry(val path: String, val originalPath: String?, val deletedAt: String?)
+
+    /** Files under `.trash/` (paths keep the `.trash/` prefix), sorted by path. Engine placeholders are hidden. */
+    suspend fun listTrash(): List<TrashEntry> = actor.submit {
+        val trash = root.resolve(".trash")
+        val paths = ArrayList<String>()
+        if (Files.isDirectory(trash)) Files.walk(trash).use { s ->
+            s.filter { Files.isRegularFile(it) && it.fileName.toString() != ".gitkeep" }
+                .forEach { paths.add(root.relativize(it).toString().replace('\\', '/')) }
+        }
+        val origins = git.trashOrigins(paths.toSet())
+        paths.sorted().map { p -> origins[p].let { TrashEntry(p, it?.first, it?.second) } }
+    }
+
     /** Most-recent-first commits touching [path], capped at [max] (default 100). Renames are not followed. */
     suspend fun history(path: String, max: Int = 100): List<CommitInfo> =
         actor.submit { git.log(VaultPath.of(path).value, max) }
@@ -430,6 +453,22 @@ class SvodEngine private constructor(
         val trashRel = root.relativize(trashTarget).toString().replace('\\', '/')
         val commit = git.commitPaths(listOf(vp.value, trashRel), "delete: ${vp.value} -> $trashRel", author) ?: git.headId()!!
         return WriteOutcome.Success(trashRel, current, commit)
+    }
+
+    private fun doPurge(trashRelPath: String, expected: Revision?, author: Author): WriteOutcome {
+        val vp = VaultPath.ofHistory(trashRelPath)
+        require(vp.value.startsWith(".trash/")) { "not a .trash path: $trashRelPath" }
+        val target = vp.resolveAgainst(root)
+        require(target.startsWith(root.resolve(".trash").normalize())) { "not a .trash path: $trashRelPath" }
+        if (!Files.isRegularFile(target)) return WriteOutcome.NotFound(vp.value)
+        val bytes = Files.readAllBytes(target)
+        val current = git.blobId(bytes)
+        // A purge needs no revision (a client lists the trash, it does not read it); one that is given is honoured.
+        if (expected != null && current != expected) return WriteOutcome.Conflict(vp.value, expected, current, String(bytes, UTF_8))
+        Files.delete(target)
+        cleanupEmptyParents(target.parent)
+        val commit = git.commitPaths(listOf(vp.value), "purge: ${vp.value}", author) ?: git.headId()!!
+        return WriteOutcome.Success(vp.value, current, commit)
     }
 
     private fun doMove(fromP: VaultPath, toP: VaultPath, expected: Revision?, author: Author): WriteOutcome {
