@@ -36,7 +36,7 @@ independently of the engine; each entry notes the contract version it ships.
   can tell a rejected token from a missing repository. Credentials are removed (URL userinfo and any copy of
   the remote's token in the text). A cycle that ends in sync clears it.
 - Config `denyPrivateRemotes` (default `false`). When `true`, before every sync cycle and every backup push the
-  remote (after `Secrets.resolve`) must be an `http(s)` URL with a DNS name that resolves only to public
+  remote (after `Secrets.resolve`) must be an `https` URL with a DNS name that resolves only to public
   addresses. Refused: other schemes (`file:`, `ssh`, `git`, `git@host:path`, plain paths), any IP literal, and
   names resolving to loopback, private (RFC1918), link-local (169.254/16, fe80::/10), unique-local (fc00::/7),
   CGNAT (100.64/10), multicast or unspecified addresses, and IPv6 transition prefixes that can carry one of
@@ -44,6 +44,12 @@ independently of the engine; each entry notes the contract version it ships.
   fall in these ranges (169.254.169.254, fd00:ec2::254, 100.100.100.200). The check runs again on every cycle (DNS rebinding),
   and HTTP redirects are switched off for the transport (`http.followRedirects=false`). A refusal is an ordinary
   failed cycle: status `offline`, `lastError` = `remote check failed: remote host not allowed`.
+  The URL is parsed with JGit's `URIish` and must give the same host to `java.net.URI` and `java.net.URL`;
+  IP literals in any spelling (decimal, octal, hex, bracketed), trailing-dot hosts, fragments, backslashes and
+  userinfo holding `@ ? # /` are refused. Every JGit HTTPS connection also checks the address it actually
+  reached inside the TLS handshake (closes DNS rebinding between the check and the connect), which is why the
+  guarded mode accepts `https` only.
+- `lastError` is shown to admins only (members get no field), and any URL in it is cut to host/path.
 
 ## v1.31.0 — unreleased (App API contract 0.39.0, additive)
 

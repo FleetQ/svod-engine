@@ -765,12 +765,14 @@ class AppApiServer(
                 // syncConfig redacts any credentials embedded in peer/backup remote URLs; a member
                 // additionally gets no remote, no peers and no host identity — only the schedule.
                 val cfg = syncConfig(vc)
-                call.respond(withSyncBranchKey(if (principal().admin) cfg else cfg.copy(backupRemote = null, syncPeers = emptyList(), hostId = null)))
+                call.respond(withSyncBranchKey(if (principal().admin) cfg else cfg.copy(backupRemote = null, syncPeers = emptyList(), hostId = null, lastError = null)))
             }
 
             get("/api/v1/sync/status") {
                 val vc = vault() ?: return@get call.notFound("vault")
-                call.respond(syncRunStatus(vc))
+                // lastError describes the remote (host, path, transport detail): admins only, like backupRemote.
+                val st = syncRunStatus(vc)
+                call.respond(if (principal().admin) st else st.copy(lastError = null))
             }
 
             post("/api/v1/sync/now") {
@@ -782,7 +784,8 @@ class AppApiServer(
                     call.request.headers["Prefer"]?.contains("respond-async", ignoreCase = true) == true
                 if (async) {
                     if (!syncStart(vc)) return@post call.respond(SyncAckDto(ok = false, head = vc.engine.head(), conflicts = 0))
-                    return@post call.respond(HttpStatusCode.Accepted, syncRunStatus(vc))
+                    val st = syncRunStatus(vc)
+                    return@post call.respond(HttpStatusCode.Accepted, if (principal().admin) st else st.copy(lastError = null))
                 }
                 // Not a synced vault ⇒ nothing to reconcile: a successful no-op (ok=false), not an error.
                 val r = syncNow(vc)

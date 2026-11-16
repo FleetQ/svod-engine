@@ -100,6 +100,8 @@ class PrincipalAuthTest {
             config = AppApiServer.Config(localAdmin = localAdmin),
             users = registry, userAdmin = users, secrets = SecretStore(secretsDir),
             activity = activity, audit = audit,
+            syncConfig = { SyncConfigDto(role = "solo", lastError = LAST_ERROR) },
+            syncRunStatus = { SyncRunStatusDto(vault = it.id, lastError = LAST_ERROR) },
         ).start(0)
         val port get() = running.port
         private val http = JHttpClient.newHttpClient()
@@ -456,6 +458,21 @@ class PrincipalAuthTest {
     }
 
     @Test
+    fun `only an admin sees lastError on sync config and sync status`(): Unit = runBlocking {
+        Fixture().use { fx ->
+            for (path in listOf("/api/v1/sync/config?vault=a", "/api/v1/sync/status?vault=a")) {
+                for (key in listOf("k-reader", "k-editor")) {
+                    val r = fx.get(path, key = key)
+                    assertEquals(200, r.statusCode(), "$path as $key")
+                    assertFalse("lastError" in r.body() || "git.example.com" in r.body(), "$path as $key: ${r.body()}")
+                }
+                val admin = fx.get(path, key = "k-admin").body()
+                assertTrue("\"lastError\":\"$LAST_ERROR\"" in admin, "$path as admin: $admin")
+            }
+        }
+    }
+
+    @Test
     fun `a refused request is logged with its origin and reason but never the key`(): Unit = runBlocking {
         Fixture(localAdmin = false).use { fx ->
             val logger = org.slf4j.LoggerFactory.getLogger(AppApiAuth::class.java) as ch.qos.logback.classic.Logger
@@ -636,5 +653,9 @@ class PrincipalAuthTest {
             assertEquals("Мария", fm["reviewed_by"], text)
             assertEquals("Мария", fx.a.engine.history(path).first().authorName)
         }
+    }
+
+    private companion object {
+        const val LAST_ERROR = "fetch failed: TransportException: git.example.com/r.git: not authorized"
     }
 }

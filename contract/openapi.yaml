@@ -2611,7 +2611,7 @@ components:
         syncEnabled: { type: boolean, description: Two-way sync on (same remote as backupRemote; one-way backup retired). }
         syncIntervalMinutes: { type: integer, nullable: true, description: Background sync poll cadence in minutes (default 3). }
         syncBranch: { type: string, nullable: true, description: "Since 0.40.0. The plain branch sync runs through; null ⇒ refs/svod/sync/<vault>." }
-        lastError: { type: string, nullable: true, description: "Since 0.40.0. The last sync transport failure, credentials removed; null once a cycle succeeds." }
+        lastError: { type: string, nullable: true, description: "Since 0.40.0. The last sync transport failure, any URL cut to host/path; null once a cycle succeeds. Admins only (absent for members)." }
         syncStatus: { type: string, nullable: true, description: "inSync | syncing | conflicts | offline | error (null until first sync)" }
         lastSyncedAt: { type: string, nullable: true, description: ISO-8601 instant of the last successful sync. }
 
@@ -2654,7 +2654,7 @@ components:
         head: { type: string, nullable: true, description: "Commit the last finished cycle reconciled (and pushed)." }
         conflicts: { type: integer }
         lastSyncedAt: { type: string, format: date-time, nullable: true }
-        lastError: { type: string, nullable: true, description: "Since 0.40.0. The last sync transport failure (phase + cause, e.g. `fetch failed: ...`), credentials removed; null once a cycle succeeds." }
+        lastError: { type: string, nullable: true, description: "Since 0.40.0. The last sync transport failure (phase + cause, e.g. `fetch failed: ...`), any URL cut to host/path; null once a cycle succeeds. Admins only (absent for members)." }
 
     UpdateCheck:
       type: object
