@@ -2579,7 +2579,8 @@ components:
             canonical ref refs/svod/sync/<vault>. Pushes stay non-force, commits made on that branch with plain
             git are fetched and merged, and the force mirror to `main` is never done. A branch that does not
             exist yet is created by the first push. null ⇒ the default ref. Rejected (422) when empty, starting
-            with `-`, `HEAD`, containing whitespace/control characters, `..`, `@{`, or ending in `/` or `.lock`.
+            with `-` or `+` or `refs/`, `HEAD` or `@`, non-ASCII, containing whitespace/control characters, `..`,
+            `@{`, ending in `/` or `.lock`, or otherwise not a valid git branch name.
 
     SyncConfig:
       type: object

@@ -521,7 +521,12 @@ curl -s -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' \
   and no mirror are written. A branch that does not exist yet is created by the first push.
 - An existing repository with its own history can be connected to a vault with other files: the histories
   are unrelated, so the result is the union of the files, and a path that differs on both sides is a conflict.
-- Names with `..`, a leading `-`, whitespace, `HEAD`, `@{`, or a trailing `/` or `.lock` are refused (422).
+- Names with `..`, a leading `-` or `+`, whitespace, non-ASCII, `HEAD`, `@`, `@{`, a `refs/` prefix, or a
+  trailing `/` or `.lock` are refused (422).
+- **Rollback to an engine older than 1.32.0:** first turn sync off on every vault that has `syncBranch` set, or
+  clear `syncBranch` (PUT `/settings/backup` without it). An older engine ignores the field, syncs through
+  `refs/svod/sync/<vault>` again and force-pushes its mirror to `main`, which overwrites the commits people
+  made there. Check with `GET /api/v1/sync/config?vault=<id>` that `syncBranch` is `null` before downgrading.
 - A new machine: `svod-engine clone <remote> <dest-dir> <vaultId> --branch main`.
 - `GET /api/v1/sync/status` and `/sync/config` carry `lastError` (for example `fetch failed: ...`) while
   the last cycle failed on the network or the credentials; it is empty after a good cycle. Credentials are
@@ -685,13 +690,16 @@ backup will then only talk to `https` remotes whose DNS name resolves to public 
   backslash, and no userinfo containing `@ ? # /`. The URL is parsed by JGit's `URIish` and must give the
   same host to `java.net.URI` and `java.net.URL`.
 - Nothing that resolves to loopback, RFC1918, link-local (169.254/16, fe80::/10), unique-local (fc00::/7),
-  CGNAT (100.64/10), multicast or unspecified addresses, or the IPv6 transition prefixes that can wrap one
-  (NAT64, 6to4, Teredo). That covers the cloud metadata endpoints (169.254.169.254, fd00:ec2::254,
+  CGNAT (100.64/10), benchmarking (198.18/15), reserved (240/4, 255.255.255.255), multicast or unspecified
+  addresses, or IPv6 forms that can wrap one (IPv4-mapped, IPv4-compatible, NAT64, 6to4, Teredo). That covers the cloud metadata endpoints (169.254.169.254, fd00:ec2::254,
   100.100.100.200).
-- The name is checked before every cycle and every backup. On top of that, every HTTPS connection JGit opens
-  checks the address it actually connected to, inside the TLS handshake and before any request or credential
-  is sent. A name that resolves to a public address at check time and to a private one a moment later
-  (DNS rebinding) is therefore refused too. Certificate and hostname checks stay on the name in the URL.
+- The name is checked before every cycle and every backup. That check and JGit resolve the name separately,
+  so the answer can change in between (DNS rebinding). Every HTTPS connection JGit opens therefore also checks
+  the peer address it actually connected to, inside the TLS handshake and before any request or credential is
+  sent. Certificate and hostname checks stay on the name in the URL.
+- The embedder endpoints (`PUT /embedder`, `POST /embedder/test`, `POST /embedder/models`, admin only) apply the
+  same rules to an endpoint the request names (422 when refused). Their HTTP client has no hook for the
+  connected address, so for them only the request-time check applies.
 - HTTP redirects are not followed.
 
 A refused remote shows as an `offline` sync with `lastError` = `remote check failed: remote host not allowed`
@@ -700,7 +708,8 @@ sees `lastError`; a member gets no `lastError` field.
 
 Residual risk: the connect-time check sees the proxy, not the git host, when the JVM is set to use a forward
 proxy. A proxy on a private address is refused; a public proxy is trusted to reach only public hosts. The
-check also covers JGit's HTTPS only. Sync and backup use nothing else, but a firewall that blocks the team
-engines' egress to private ranges and metadata addresses is still the right outer layer.
+connect-time check covers JGit's HTTPS only (sync and backup); the embedder probes are checked at request
+time only. A firewall that blocks the team engines' egress to private ranges and metadata addresses is the
+outer layer for both.
 
 Leave it off (the default) on a self-hosted engine that syncs to a LAN Gitea.

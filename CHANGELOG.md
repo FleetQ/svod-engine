@@ -14,8 +14,9 @@ independently of the engine; each entry notes the contract version it ships.
   created by the first push when the remote has none.
 - With `syncBranch` set the engine never force-pushes the browsable `main` mirror (which would destroy the
   person's commits); the sync branch itself is the browsable branch. The one-way backup mirror is skipped too.
-- Validation (422 `invalid_sync_branch` on the API, an error at config load): empty, leading `-`, `HEAD`,
-  whitespace or control characters, `..`, `@{`, a trailing `/` or `.lock`, and anything git itself refuses.
+- Validation (422 `invalid_sync_branch` on the API, an error at config load): empty, a leading `-` or `+`,
+  `HEAD`, `@`, a `refs/` prefix, non-ASCII, whitespace or control characters, `..`, `@{`, a trailing `/` or
+  `.lock`, and anything `Repository.isValidRefName("refs/heads/<name>")` refuses.
 - `svod-engine clone <remote> <dest> <vaultId> [--branch <name>]` clones that branch instead of the sync ref.
 - Unset (the default) behaves exactly as before.
 
@@ -32,24 +33,39 @@ independently of the engine; each entry notes the contract version it ships.
 ### Added — why a sync fails, and an SSRF guard for hosted engines
 
 - `lastError` (nullable string) on `GET /api/v1/sync/status` and `GET /api/v1/sync/config` (contract 0.40.0):
-  the last sync transport failure as `<phase> failed: <cause>` (for example `fetch failed: ...`), so a client
-  can tell a rejected token from a missing repository. Credentials are removed (URL userinfo and any copy of
-  the remote's token in the text). A cycle that ends in sync clears it.
-- Config `denyPrivateRemotes` (default `false`). When `true`, before every sync cycle and every backup push the
-  remote (after `Secrets.resolve`) must be an `https` URL with a DNS name that resolves only to public
-  addresses. Refused: other schemes (`file:`, `ssh`, `git`, `git@host:path`, plain paths), any IP literal, and
-  names resolving to loopback, private (RFC1918), link-local (169.254/16, fe80::/10), unique-local (fc00::/7),
-  CGNAT (100.64/10), multicast or unspecified addresses, and IPv6 transition prefixes that can carry one of
-  those (NAT64 64:ff9b::/96 and 64:ff9b:1::/48, 6to4 2002::/16, Teredo 2001::/32). Cloud metadata endpoints
-  fall in these ranges (169.254.169.254, fd00:ec2::254, 100.100.100.200). The check runs again on every cycle (DNS rebinding),
-  and HTTP redirects are switched off for the transport (`http.followRedirects=false`). A refusal is an ordinary
-  failed cycle: status `offline`, `lastError` = `remote check failed: remote host not allowed`.
-  The URL is parsed with JGit's `URIish` and must give the same host to `java.net.URI` and `java.net.URL`;
-  IP literals in any spelling (decimal, octal, hex, bracketed), trailing-dot hosts, fragments, backslashes and
-  userinfo holding `@ ? # /` are refused. Every JGit HTTPS connection also checks the address it actually
-  reached inside the TLS handshake (closes DNS rebinding between the check and the connect), which is why the
-  guarded mode accepts `https` only.
-- `lastError` is shown to admins only (members get no field), and any URL in it is cut to host/path.
+  the last sync transport failure as `<phase> failed: <cause>` (for example `fetch failed: ...`), so an admin
+  can tell a rejected token from a missing repository. Admins only (members get no field). Any URL in it is
+  cut to host/path (no scheme, userinfo, query or fragment) and token-shaped values are masked. A cycle that
+  ends in sync clears it.
+- Config `denyPrivateRemotes` (default `false`), for hosted engines. When `true`:
+  - A sync/backup remote (after `Secrets.resolve`) must be an `https` URL naming a DNS host. It is parsed with
+    JGit's `URIish` and must give the same scheme and host to `java.net.URI` and `java.net.URL`. Refused: other
+    schemes (`http`, `file:`, `ssh`, `git`, `git@host:path`, plain paths), IP literals in any spelling (dotted,
+    decimal, octal, hex, bracketed), trailing-dot hosts, fragments, backslashes, userinfo holding `@ ? # /`.
+  - The name must resolve only to public addresses. Refused: loopback, private (RFC1918), link-local
+    (169.254/16, fe80::/10), unique-local (fc00::/7), CGNAT (100.64/10), benchmarking (198.18/15), reserved
+    (240/4, incl. 255.255.255.255), multicast, unspecified, and IPv6 forms that carry an IPv4 address or one of
+    these (IPv4-mapped, IPv4-compatible `::a.b.c.d`, NAT64, 6to4, Teredo). Cloud metadata endpoints fall in
+    these ranges. The name is checked before every sync cycle and backup push.
+  - The check above and the transport resolve the name separately, so a name can change answer in between
+    (DNS rebinding). To close that, every HTTPS connection JGit opens checks the peer address it actually
+    connected to, inside the TLS handshake and before any request or credential is sent. Plain http has no
+    such hook, which is why `https` is required. Residual risk: with a JVM forward proxy the checked peer is the
+    proxy, not the git host.
+  - HTTP redirects are not followed (`http.followRedirects=false`).
+  - The embedder endpoints (`PUT /embedder`, `POST /embedder/test`, `POST /embedder/models`, admin only) check
+    an endpoint the request supplies with the same rules (422 when refused). Their HTTP client gives no hook
+    for the connected address, so for embedders the check is at request time only.
+  - A refused remote is an ordinary failed cycle: status `offline`, `lastError` = `remote check failed: remote
+    host not allowed` (or `fetch failed: ... remote peer address not allowed` from the connect-time check).
+- Embedder probe errors (the 409 of `PUT /embedder`, `error` of `POST /embedder/test`) carry the exception type
+  and message with URLs cut to host/path and tokens masked, never the raw text.
+
+### Upgrade and rollback
+
+- Before rolling a vault that has `syncBranch` set back to an engine older than 1.32.0: turn sync off for that
+  vault or clear `syncBranch` first. An older engine ignores the field, syncs through `refs/svod/sync/<vault>`
+  and force-pushes its mirror to `main`, which overwrites commits people made on that branch.
 
 ## v1.31.0 — unreleased (App API contract 0.39.0, additive)
 
