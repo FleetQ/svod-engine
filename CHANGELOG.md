@@ -3,6 +3,18 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.33.0 — unreleased (App API contract 0.41.0, additive)
+
+### Added — `GET /api/v1/stats`
+
+- Engine-admin-only, read-only counters for the platform owner (contract 0.41.0, additive): engine `version`,
+  `contract`, `startedAt`, per vault `{id, notes, bytes, lastCommitAt}`, the number of configured `agents`, and
+  `lastAgentRequestAt` (newest authenticated MCP request by any agent since process start, in memory; omitted
+  until the first one). Counters and timestamps only: never note content, paths, titles, author names, emails or
+  agent names/ids. A non-admin key is 403, no key on a shared engine is 401, the keyless loopback UI is allowed.
+  `bytes` is the vault working tree without `.git/` and `.svod/`; `notes` counts `.md` files outside
+  dot-directories (so `.trash/` is excluded). The walk does not go through the write actor.
+
 ## v1.32.0 — unreleased (App API contract 0.40.0, additive)
 
 ### Added — Memory review pane in the reference web viewer
