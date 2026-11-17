@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.39.0
+  version: 0.40.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -67,6 +67,23 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/TreeNode" }
 
+  /api/v1/trash:
+    get:
+      tags: [files]
+      summary: List soft-deleted files
+      description: >
+        Since 0.40.0. Everything under `.trash/`, in the same shape as `/tree`; every path keeps the
+        `.trash/` prefix, so it can be passed to `POST /file/restore` (`trashPath`) or to
+        `DELETE /file` (purge). File nodes also carry `originalPath` and `deletedAt` when the soft-delete
+        commit records them. Needs read access to the vault.
+      operationId: listTrash
+      responses:
+        "200":
+          description: Hierarchical tree of trashed files (empty root when the trash is empty)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TreeNode" }
+
   /api/v1/file:
     get:
       tags: [files]
@@ -101,17 +118,24 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
     delete:
       tags: [files]
-      summary: Soft-delete a note to .trash/
+      summary: Soft-delete a note to .trash/, or (path under .trash/) permanently purge a trashed file
+      description: >
+        A normal path moves the note to `.trash/` as before. Since 0.40.0 a path under `.trash/` is a hard
+        purge: the trashed file is removed in one attributed commit (it stays in git history). Purging needs
+        an engine admin (an editor gets 403); a path that tries to leave `.trash/` is 400. `expectedRevision`
+        is required for the soft delete; for a purge it is optional and checked when given.
       operationId: deleteFile
       parameters:
         - $ref: "#/components/parameters/PathQuery"
         - { name: expectedRevision, in: query, required: false, schema: { type: string } }
       responses:
         "200":
-          description: Deleted
+          description: Deleted (or purged)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WriteResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
@@ -973,7 +997,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
         "422":
-          description: Remote is blank or embeds inline credentials (use a Secrets ref).
+          description: Remote is blank or embeds inline credentials (use a Secrets ref), or `syncBranch` is not a safe branch name.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -1728,6 +1752,13 @@ components:
         children:
           type: array
           items: { $ref: "#/components/schemas/TreeNode" }
+        originalPath:
+          type: string
+          description: "Since 0.40.0, `GET /trash` file nodes only: the path before the soft delete. Omitted when history does not record it."
+        deletedAt:
+          type: string
+          format: date-time
+          description: "Since 0.40.0, `GET /trash` file nodes only: when the soft delete was committed. Omitted when unknown."
 
     CommitInfo:
       type: object
@@ -2540,6 +2571,16 @@ components:
           type: integer
           nullable: true
           description: Background sync poll cadence in minutes; null ⇒ engine default (3).
+        syncBranch:
+          type: string
+          nullable: true
+          description: >
+            Since 0.40.0. Sync through the plain branch `refs/heads/<syncBranch>` on the remote instead of the
+            canonical ref refs/svod/sync/<vault>. Pushes stay non-force, commits made on that branch with plain
+            git are fetched and merged, and the force mirror to `main` is never done. A branch that does not
+            exist yet is created by the first push. null ⇒ the default ref. Rejected (422) when empty, starting
+            with `-` or `+` or `refs/`, `HEAD` or `@`, non-ASCII, containing whitespace/control characters, `..`,
+            `@{`, ending in `/` or `.lock`, or otherwise not a valid git branch name.
 
     SyncConfig:
       type: object
@@ -2570,6 +2611,8 @@ components:
         hostId: { type: string, nullable: true, description: "This machine's stable, persistent host id." }
         syncEnabled: { type: boolean, description: Two-way sync on (same remote as backupRemote; one-way backup retired). }
         syncIntervalMinutes: { type: integer, nullable: true, description: Background sync poll cadence in minutes (default 3). }
+        syncBranch: { type: string, nullable: true, description: "Since 0.40.0. The plain branch sync runs through; null ⇒ refs/svod/sync/<vault>." }
+        lastError: { type: string, nullable: true, description: "Since 0.40.0. The last sync transport failure, any URL cut to host/path; null once a cycle succeeds. Admins only (absent for members)." }
         syncStatus: { type: string, nullable: true, description: "inSync | syncing | conflicts | offline | error (null until first sync)" }
         lastSyncedAt: { type: string, nullable: true, description: ISO-8601 instant of the last successful sync. }
 
@@ -2612,6 +2655,7 @@ components:
         head: { type: string, nullable: true, description: "Commit the last finished cycle reconciled (and pushed)." }
         conflicts: { type: integer }
         lastSyncedAt: { type: string, format: date-time, nullable: true }
+        lastError: { type: string, nullable: true, description: "Since 0.40.0. The last sync transport failure (phase + cause, e.g. `fetch failed: ...`), any URL cut to host/path; null once a cycle succeeds. Admins only (absent for members)." }
 
     UpdateCheck:
       type: object

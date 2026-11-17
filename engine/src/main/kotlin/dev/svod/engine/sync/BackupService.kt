@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * embeds a password is rejected upstream). A runtime change (PUT /api/v1/settings/backup) persists to
  * that vault's [BackupConfigStore] so it survives a restart. Disabled/unconfigured backup is a no-op.
  */
-class BackupService(bindings: List<Binding>) {
+class BackupService(bindings: List<Binding>, private val guard: RemoteGuard = RemoteGuard.OFF) {
 
     /** Per-vault backup binding: the vault's id + repo root, its current config, and its persistence. */
     class Binding(
@@ -93,6 +93,7 @@ class BackupService(bindings: List<Binding>) {
                 lastBackupHead = lastBackupHead,
                 syncEnabled = s.syncEnabled,
                 syncIntervalMinutes = s.syncIntervalMinutes,
+                syncBranch = s.syncBranch,
                 lastSyncedAt = lastSyncedAt,
                 lastSyncedHead = lastSyncedHead,
             ))
@@ -132,6 +133,9 @@ class BackupService(bindings: List<Binding>) {
 
     /** [vaultId]'s sync remote (URL or Secrets ref), null unless it is a synced vault. */
     fun syncRemote(vaultId: String): String? = byId[vaultId]?.config?.takeIf { it.isSynced() }?.remote
+
+    /** [vaultId]'s plain sync branch, null when it uses the default `refs/svod/sync/<vaultId>` ref. */
+    fun syncBranch(vaultId: String): String? = byId[vaultId]?.config?.syncBranch
 
     /** [vaultId]'s background sync poll cadence in minutes (default 3 when unset). */
     fun syncIntervalMinutes(vaultId: String): Int = byId[vaultId]?.config?.syncIntervalMinutes?.takeIf { it > 0 } ?: 3
@@ -179,7 +183,8 @@ class BackupService(bindings: List<Binding>) {
         if (!b.inFlight.compareAndSet(false, true)) return VaultBackup(vaultId, false, b.lastBackupHead, cfg.remote, "noop")
         try {
             val remote = Secrets.resolve(cfg.remote)
-            return SyncGit(b.root).use { git ->
+            try { guard.check(remote) } catch (_: RemoteGuard.Refused) { return VaultBackup(vaultId, false, null, cfg.remote, "error") }
+            return SyncGit(b.root, followRedirects = !guard.deny).use { git ->
                 val branch = git.branch
                 val head = git.resolve(branch)
                 when {
@@ -197,7 +202,8 @@ class BackupService(bindings: List<Binding>) {
                         }
                         // Also expose the head on a browsable `main` branch (GitHub/GitFox list only
                         // heads+tags, not refs/svod/*); best-effort, never turns a good backup into an error.
-                        if (ok) git.mirrorToBrowsableBranch(remote, branch)
+                        // Never when a plain sync branch is configured: the force-push would destroy a person's commits.
+                        if (ok && cfg.syncBranch == null) git.mirrorToBrowsableBranch(remote, branch)
                         if (ok) b.recordSuccess(head, Instant.now().toString())
                         VaultBackup(vaultId, ok, head, cfg.remote, if (ok) "ok" else "error")
                     }

@@ -49,15 +49,22 @@ fun main(args: Array<String>) {
 
 /**
  * Bootstrap a new machine into an existing synced vault:
- *   svod-engine clone <remote> <dest-dir> <vaultId> [branch]
+ *   svod-engine clone <remote> <dest-dir> <vaultId> [branch] [--branch <sync-branch>]
  * Clones the canonical `refs/svod/sync/<vaultId>` from the remote into <dest-dir>; then point the
  * engine config at <dest-dir> with sync enabled + the same remote. Run while the daemon is stopped.
  */
-private fun runClone(args: List<String>) {
-    require(args.size >= 3) { "usage: svod-engine clone <remote> <dest-dir> <vaultId> [branch]" }
+private fun runClone(argv: List<String>) {
+    // `--branch <name>`: the vault syncs through the plain remote branch refs/heads/<name> (syncBranch).
+    val flag = argv.indexOf("--branch")
+    require(flag < 0 || flag + 1 < argv.size) { "--branch needs a branch name" }
+    val syncBranch = if (flag >= 0) argv[flag + 1] else null
+    val args = if (flag >= 0) argv.filterIndexed { i, _ -> i != flag && i != flag + 1 } else argv
+    require(args.size >= 3) { "usage: svod-engine clone <remote> <dest-dir> <vaultId> [local-branch] [--branch <sync-branch>]" }
     val (remote, dest, vaultId) = args
-    dev.svod.engine.sync.SyncBootstrap.clone(remote, Paths.get(dest), vaultId, args.getOrNull(3) ?: "master")
-    println("clone: $vaultId ← $remote into $dest (sync ref refs/svod/sync/$vaultId)")
+    dev.svod.engine.sync.SyncBootstrap.clone(
+        remote, Paths.get(dest), vaultId, args.getOrNull(3) ?: "master", syncBranch = syncBranch,
+    )
+    println("clone: $vaultId ← $remote into $dest (sync ref ${syncBranch?.let { "refs/heads/$it" } ?: "refs/svod/sync/$vaultId"})")
     println("  next: add this dir to the engine config with sync enabled + the same remote, then start the engine")
 }
 

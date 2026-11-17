@@ -58,9 +58,10 @@ data class IndexMeta(
         fun load(file: Path): IndexMeta? =
             if (Files.isRegularFile(file)) json.decodeFromString(serializer(), Files.readString(file)) else null
 
+        // Atomic (temp file + rename): the background embedder swap rewrites this file while API requests read
+        // it (indexedDim), and a truncate-then-write let a reader see an empty file (JsonDecodingException).
         fun save(file: Path, meta: IndexMeta) {
-            Files.createDirectories(file.parent)
-            Files.writeString(file, json.encodeToString(serializer(), meta))
+            dev.svod.engine.core.AtomicFile.write(file, json.encodeToString(serializer(), meta).toByteArray(Charsets.UTF_8))
         }
     }
 }

@@ -37,4 +37,10 @@ data class CreatedUser(val user: UserSpecView, val key: String)
 interface SecretSink {
     class InvalidName(message: String) : Exception(message)
     fun store(name: String, value: String): String
+
+    /**
+     * True when [ref] is a `file:` ref to a secret this store created whose name starts with [namePrefix]
+     * (the prefix states its purpose, e.g. `embedder-`, `git-remote-`). Symlinks and `..` are resolved first.
+     */
+    fun owns(ref: String, namePrefix: String): Boolean = false
 }

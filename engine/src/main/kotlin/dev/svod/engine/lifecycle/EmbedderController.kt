@@ -23,6 +23,19 @@ import java.time.Duration
 class EmbedderController(
     private val vaults: VaultManager,
     private val configStore: ConfigStore,
+    /**
+     * `denyPrivateRemotes`: an endpoint a request supplies must pass [dev.svod.engine.sync.RemoteGuard] (https,
+     * public DNS name) before anything is sent to it. The configured endpoint (operator-set) is not re-checked.
+     * java.net.http has no hook for the connected peer address, so this is a check-time guard only; a host
+     * egress firewall covers rebinding.
+     */
+    private val guard: dev.svod.engine.sync.RemoteGuard = dev.svod.engine.sync.RemoteGuard.OFF,
+    /**
+     * With [guard] on: a request-supplied `apiKeyRef` must be a secret this engine stored under an `embedder-`
+     * name ([dev.svod.engine.api.SecretSink.owns]); `env:`, `keychain:` and other paths are refused, so the
+     * engine cannot be made to send an arbitrary file or variable as a Bearer token.
+     */
+    private val secrets: dev.svod.engine.api.SecretSink? = null,
 ) : EmbedderControl {
 
     private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
@@ -65,7 +78,7 @@ class EmbedderController(
         } catch (e: EmbedderControl.InvalidSpec) {
             EmbedderControl.ProbeResult(ok = false, dimension = null, latencyMs = null, error = e.message)
         } catch (e: Throwable) {
-            EmbedderControl.ProbeResult(ok = false, dimension = null, latencyMs = null, error = (e.cause ?: e).message)
+            EmbedderControl.ProbeResult(ok = false, dimension = null, latencyMs = null, error = describe(e))
         }
     }
 
@@ -123,16 +136,51 @@ class EmbedderController(
             if (ref.isNotBlank() && !isSecretRef(ref)) {
                 throw EmbedderControl.InvalidSpec("apiKeyRef must be a Secrets reference (env:/file:/keychain:), never a raw key")
             }
+            if (ref.isNotBlank() && guard.deny && secrets?.owns(ref, SecretStore.EMBEDDER_PREFIX) != true) {
+                throw EmbedderControl.InvalidSpec(
+                    "apiKeyRef must be a secret stored with POST /api/v1/secrets under a name starting with '${SecretStore.EMBEDDER_PREFIX}'",
+                )
+            }
         }
         val isOnnx = spec.provider.lowercase() in listOf("onnx-local", "local-onnx")
+        spec.endpoint?.takeIf { it.isNotBlank() }?.let { ep ->
+            // The endpoint is stored and shown in /settings and the PUT answer: no secret may ride in it.
+            val u = try { URI(ep.trim()) } catch (_: Exception) { throw EmbedderControl.InvalidSpec("endpoint is not a valid URL") }
+            if (u.rawUserInfo != null || u.rawQuery != null || u.rawFragment != null || '@' in ep) {
+                throw EmbedderControl.InvalidSpec("endpoint must not carry credentials, a query or a fragment; reference the key with apiKeyRef")
+            }
+        }
+        spec.endpoint?.takeIf { it.isNotBlank() && !isOnnx && !spec.provider.equals("none", ignoreCase = true) }?.let { ep ->
+            try { guard.check(ep) } catch (e: dev.svod.engine.sync.RemoteGuard.Refused) {
+                throw EmbedderControl.InvalidSpec("endpoint ${e.message}")
+            }
+        }
         return current.copy(
             provider = spec.provider,
             onnxModelId = if (isOnnx && spec.model != null) spec.model else current.onnxModelId,
             endpoint = spec.endpoint ?: current.endpoint,
             model = if (!isOnnx) (spec.model ?: current.model) else current.model,
-            apiKeyRef = spec.apiKeyRef ?: current.apiKeyRef,
+            // The stored key belongs to the stored endpoint: a request that names another endpoint gets no key
+            // unless it brings its own ref (otherwise it could aim the configured key at a host of its choice).
+            apiKeyRef = spec.apiKeyRef?.takeIf { it.isNotBlank() }
+                ?: current.apiKeyRef?.takeIf { sameEndpoint(spec.endpoint, current.endpoint) },
             maxThreads = spec.maxThreads ?: current.maxThreads,
         )
+    }
+
+    companion object {
+        /** A probe failure fit to show an admin: the exception type and its message, URLs cut to host/path and tokens masked. */
+        fun describe(e: Throwable): String {
+            val root = e.cause ?: e
+            return dev.svod.engine.sync.RemoteGuard.scrubText("${root.javaClass.simpleName}: ${root.message ?: "no detail"}")
+        }
+    }
+
+    /** True when [requested] (null = "keep the configured one") names the same endpoint as [configured]. */
+    private fun sameEndpoint(requested: String?, configured: String?): Boolean {
+        if (requested.isNullOrBlank()) return true
+        fun norm(s: String?) = s?.trim()?.trimEnd('/')?.lowercase()
+        return norm(requested) == norm(configured)
     }
 
     private fun isSecretRef(ref: String) =

@@ -101,6 +101,55 @@ class SvodNodeTest {
     }
 
     @Test
+    fun `with denyPrivateRemotes an embedder endpoint must pass the remote guard on all three endpoints`() {
+        val node = SvodNode.start(cfg(Files.createTempDirectory("svod-emb-deny-")).copy(denyPrivateRemotes = true))
+        val port = node.appApiPort
+        try {
+            for (ep in listOf("http://127.0.0.1:11434", "https://169.254.169.254/latest", "https://localhost:1", "http://2130706433/")) {
+                val put = put(port, "/api/v1/embedder", """{"provider":"local-ollama","endpoint":"$ep"}""")
+                assertEquals(422, put.statusCode(), "$ep: ${put.body()}")
+                assertTrue("endpoint remote" in put.body(), put.body())
+                val probe = post(port, "/api/v1/embedder/test", """{"provider":"remote-openai","endpoint":"$ep"}""")
+                assertTrue("\"ok\":false" in probe.body() && "endpoint remote" in probe.body(), probe.body())
+                val models = post(port, "/api/v1/embedder/models", """{"provider":"local-ollama","endpoint":"$ep"}""")
+                assertEquals(422, models.statusCode(), "$ep: ${models.body()}")
+            }
+            // no endpoint in the request: the configured embedder is untouched by the guard
+            assertEquals(200, post(port, "/api/v1/embedder/test", """{"provider":"none"}""").statusCode())
+        } finally {
+            node.shutdown()
+            dev.svod.engine.sync.PinnedHttps.enable(false)
+        }
+    }
+
+    @Test
+    fun `an embedder probe failure never echoes credentials, a query token or the full URL`() {
+        val node = SvodNode.start(cfg(Files.createTempDirectory("svod-emb-leak-")))
+        val port = node.appApiPort
+        try {
+            // An endpoint carrying a secret is refused outright (it would be stored and shown in /settings).
+            for (ep in listOf("http://user:SECRETPW@127.0.0.1:1/x", "http://127.0.0.1:1/x?api_key=QSECRET", "http://127.0.0.1:1/x#QSECRET")) {
+                for ((r, expect) in listOf(
+                    put(port, "/api/v1/embedder", """{"provider":"local-ollama","endpoint":"$ep"}""") to 422,
+                    post(port, "/api/v1/embedder/models", """{"provider":"local-ollama","endpoint":"$ep"}""") to 422,
+                    post(port, "/api/v1/embedder/test", """{"provider":"remote-openai","endpoint":"$ep"}""") to 200,
+                )) {
+                    assertEquals(expect, r.statusCode(), r.body())
+                    for (leak in listOf("SECRETPW", "QSECRET", "user:", "http://")) assertTrue(leak !in r.body(), "leaked $leak: ${r.body()}")
+                }
+            }
+            assertTrue("SECRETPW" !in get(port, "/api/v1/settings").body(), "nothing was stored")
+            // A probe that fails on the network reports type + message without the URL's scheme.
+            for (provider in listOf("local-ollama", "remote-openai")) {
+                val r = post(port, "/api/v1/embedder/test", """{"provider":"$provider","endpoint":"http://127.0.0.1:1/x"}""")
+                assertTrue("\"ok\":false" in r.body() && "http://" !in r.body(), r.body())
+            }
+        } finally {
+            node.shutdown()
+        }
+    }
+
+    @Test
     fun `node starts, serves, shuts down gracefully without losing data`() {
         val vault = Files.createTempDirectory("svod-node-")
         val node = SvodNode.start(cfg(vault))

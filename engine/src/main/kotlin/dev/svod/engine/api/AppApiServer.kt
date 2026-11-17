@@ -150,6 +150,8 @@ class AppApiServer(
         val memoryRequireReview: Boolean = true,
         /** Externally reachable MCP URL for `GET /agents`; null = derive it from the bind address. */
         val publicMcpUrl: String? = null,
+        /** Hosted engine: a backup remote given as a Secrets ref must be a `git-remote-…` secret from POST /secrets. */
+        val denyPrivateRemotes: Boolean = false,
     )
 
     /** TLS material for serving the App API over HTTPS (same shape as the MCP server's). */
@@ -394,6 +396,13 @@ class AppApiServer(
                 call.respond(buildTree(vc.engine.list()))
             }
 
+            // The soft-deleted files, as a tree rooted at the vault with the `.trash/` prefix kept on every path.
+            get("/api/v1/trash") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                val trash = vc.engine.listTrash()
+                call.respond(buildTree(trash.map { it.path }, trash.associateBy { it.path }))
+            }
+
             get("/api/v1/file") {
                 val vc = vault() ?: return@get call.notFound("vault")
                 val path = call.path() ?: return@get call.badRequest("missing path")
@@ -412,6 +421,14 @@ class AppApiServer(
                 val vc = vault() ?: return@delete call.notFound("vault")
                 val path = call.path() ?: return@delete call.badRequest("missing path")
                 val rev = call.request.queryParameters["expectedRevision"]
+                // A path under .trash/ is a hard purge, for vault admins only; anything else soft-deletes as before.
+                if (path.replace('\\', '/').trimStart('/').startsWith(".trash/")) {
+                    if (!principal().admin) return@delete call.respond(HttpStatusCode.Forbidden, ErrorDto("forbidden", "purging from the trash requires an admin"))
+                    val purged = try { vc.engine.purge(path, rev, principal().author) } catch (e: IllegalArgumentException) {
+                        return@delete call.badRequest(e.message ?: "invalid path")
+                    }
+                    return@delete respondOutcome(vc, purged, "purge")
+                }
                 respondOutcome(vc, vc.engine.delete(path, rev, principal().author), "delete")
             }
 
@@ -619,7 +636,7 @@ class AppApiServer(
                     call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("invalid_embedder", e.message ?: "invalid embedder spec"))
                 } catch (e: Exception) {
                     // building a remote embedder probes the endpoint; an unreachable endpoint is a 409.
-                    call.respond(HttpStatusCode.Conflict, ErrorDto("embedder_unavailable", (e.cause ?: e).message ?: "could not initialize embedder"))
+                    call.respond(HttpStatusCode.Conflict, ErrorDto("embedder_unavailable", dev.svod.engine.lifecycle.EmbedderController.describe(e)))
                 }
             }
             post("/api/v1/embedder/test") {
@@ -627,7 +644,7 @@ class AppApiServer(
                 val control = embedderControl ?: return@post call.notImplemented("embedder control")
                 val req = call.receive<EmbedderRequestDto>()
                 val r = control.test(vc.id, req.toSpec())
-                call.respond(EmbedderTestResultDto(r.ok, r.dimension, r.latencyMs, r.error))
+                call.respond(EmbedderTestResultDto(r.ok, r.dimension, r.latencyMs, r.error?.let { dev.svod.engine.sync.RemoteGuard.scrubText(it) }))
             }
             post("/api/v1/embedder/models") {
                 val vc = vault() ?: return@post call.notFound("vault")
@@ -750,12 +767,14 @@ class AppApiServer(
                 // syncConfig redacts any credentials embedded in peer/backup remote URLs; a member
                 // additionally gets no remote, no peers and no host identity — only the schedule.
                 val cfg = syncConfig(vc)
-                call.respond(if (principal().admin) cfg else cfg.copy(backupRemote = null, syncPeers = emptyList(), hostId = null))
+                call.respond(withSyncBranchKey(if (principal().admin) cfg else cfg.copy(backupRemote = null, syncPeers = emptyList(), hostId = null, lastError = null)))
             }
 
             get("/api/v1/sync/status") {
                 val vc = vault() ?: return@get call.notFound("vault")
-                call.respond(syncRunStatus(vc))
+                // lastError describes the remote (host, path, transport detail): admins only, like backupRemote.
+                val st = syncRunStatus(vc)
+                call.respond(if (principal().admin) st else st.copy(lastError = null))
             }
 
             post("/api/v1/sync/now") {
@@ -767,7 +786,8 @@ class AppApiServer(
                     call.request.headers["Prefer"]?.contains("respond-async", ignoreCase = true) == true
                 if (async) {
                     if (!syncStart(vc)) return@post call.respond(SyncAckDto(ok = false, head = vc.engine.head(), conflicts = 0))
-                    return@post call.respond(HttpStatusCode.Accepted, syncRunStatus(vc))
+                    val st = syncRunStatus(vc)
+                    return@post call.respond(HttpStatusCode.Accepted, if (principal().admin) st else st.copy(lastError = null))
                 }
                 // Not a synced vault ⇒ nothing to reconcile: a successful no-op (ok=false), not an error.
                 val r = syncNow(vc)
@@ -825,12 +845,25 @@ class AppApiServer(
                         "backup remote must not embed credentials inline; reference them as a Secrets ref (keychain:/env:/file:)",
                     ))
                 }
+                if (config.denyPrivateRemotes && isSecretsRef(req.remote) &&
+                    secrets?.owns(req.remote.trim(), dev.svod.engine.lifecycle.SecretStore.GIT_REMOTE_PREFIX) != true
+                ) {
+                    return@put call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto(
+                        "invalid_remote",
+                        "on this engine a remote given as a Secrets ref must be a secret stored with POST /api/v1/secrets under a name starting with '${dev.svod.engine.lifecycle.SecretStore.GIT_REMOTE_PREFIX}'",
+                    ))
+                }
+                req.syncBranch?.let { b ->
+                    dev.svod.engine.lifecycle.SvodConfig.syncBranchError(b)?.let { why ->
+                        return@put call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("invalid_sync_branch", "syncBranch $why"))
+                    }
+                }
                 // Set + persist THIS vault's backup remote + auto-backup schedule (survives restart via
                 // its BackupConfigStore), then return the vault's updated, redacted sync+backup config.
                 // null service = backup not wired at all (embeds/tests) — unchanged legacy behaviour.
                 val applied = backup?.configure(vc.id, dev.svod.engine.lifecycle.SvodConfig.BackupSettings(
                     req.remote, req.enabled, req.backupOnStartup, req.backupIntervalMinutes, req.backupOnChange,
-                    req.syncEnabled, req.syncIntervalMinutes,
+                    req.syncEnabled, req.syncIntervalMinutes, req.syncBranch,
                 ))
                 // A vault the service does not know must never be answered with 200 + an unchanged
                 // config: that reads as "saved" while the next /backup/now says no remote is configured.
@@ -838,7 +871,7 @@ class AppApiServer(
                     "vault_not_bound",
                     "vault '${vc.id}' has no backup binding — the config was NOT saved; restart the engine and retry",
                 ))
-                call.respond(syncConfig(vc))
+                call.respond(withSyncBranchKey(syncConfig(vc)))
             }
 
             post("/api/v1/maintenance/reindex") {
@@ -1346,7 +1379,20 @@ class AppApiServer(
         }
     }
 
-    private fun buildTree(paths: List<String>): TreeNodeDto {
+    /**
+     * [cfg] as JSON with `syncBranch` always present (null when unset). [jsonFormat] omits nulls, but a client
+     * tells a 1.32+ engine by this key and fails closed without it.
+     */
+    private fun withSyncBranchKey(cfg: SyncConfigDto): kotlinx.serialization.json.JsonObject {
+        val obj = jsonFormat.encodeToJsonElement(SyncConfigDto.serializer(), cfg) as kotlinx.serialization.json.JsonObject
+        return if ("syncBranch" in obj) obj else kotlinx.serialization.json.JsonObject(obj + ("syncBranch" to kotlinx.serialization.json.JsonNull))
+    }
+
+    private fun isSecretsRef(remote: String): Boolean = remote.trim().let { r ->
+        r.startsWith("file:") || r.startsWith("env:") || r.startsWith("keychain:")
+    }
+
+    private fun buildTree(paths: List<String>, trash: Map<String, SvodEngine.TrashEntry> = emptyMap()): TreeNodeDto {
         class M(val name: String, val path: String) {
             val children = LinkedHashMap<String, M>()
             var isFile = false
@@ -1363,7 +1409,7 @@ class AppApiServer(
             }
         }
         fun toDto(m: M): TreeNodeDto =
-            if (m.isFile && m.children.isEmpty()) TreeNodeDto(m.name, m.path, "file")
+            if (m.isFile && m.children.isEmpty()) TreeNodeDto(m.name, m.path, "file", originalPath = trash[m.path]?.originalPath, deletedAt = trash[m.path]?.deletedAt)
             else TreeNodeDto(m.name, m.path, "dir", m.children.values.map { toDto(it) })
         return toDto(root)
     }

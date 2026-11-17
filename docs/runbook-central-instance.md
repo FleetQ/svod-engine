@@ -1,6 +1,6 @@
 # Runbook: a central Svod instance for a team
 
-Status: written for engine 1.31.0 / contract 0.39.0 (ADR-0020). Sections 1(b), 2-5, 7, 9 and 11 were
+Status: written for engine 1.31.0 / contract 0.39.0 (ADR-0020); the `syncBranch` part and section 12 for 1.32.0 / 0.40.0. Sections 1(b), 2-5, 7, 9 and 11 were
 executed end to end on a fresh checkout (see "What was verified" at the end). Everything marked
 **[not run]** was derived from code or docs and has not been executed. It replaces
 `deploy-central-engine-debian.md`, which was written before any installation; the corrections are
@@ -503,6 +503,37 @@ by a runtime mode. ADR-0009's authority/proposal-branch text does not describe t
 4. Conflicts are never auto-resolved: they appear at `GET /api/v1/conflicts` and resolve with
    `POST /conflicts/resolve`. Both versions stay in history.
 
+### Sync through a plain branch (`syncBranch`)
+
+By default the sync ref is `refs/svod/sync/<vaultId>`, which GitHub and desktop git clients do not list;
+the engine force-pushes a read-only mirror to `main` so the vault looks non-empty. That mirror would
+overwrite commits a person makes on `main`. To let people work in the repository with plain git, set a
+branch:
+
+```bash
+curl -s -H "Authorization: Bearer $AK" -H 'Content-Type: application/json' \
+  -X PUT "https://svod.example.com/api/v1/settings/backup?vault=team" \
+  -d '{"remote":"<repo>","enabled":true,"syncEnabled":true,"syncBranch":"main"}'
+```
+
+- The engine fetches `refs/heads/main`, merges with the usual 3-way merge (same files changed on both
+  sides become a conflict, never an overwrite) and pushes **without force**. No `refs/svod/sync/*` ref
+  and no mirror are written. A branch that does not exist yet is created by the first push.
+- An existing repository with its own history can be connected to a vault with other files: the histories
+  are unrelated, so the result is the union of the files, and a path that differs on both sides is a conflict.
+- Names with `..`, a leading `-` or `+`, whitespace, non-ASCII, `HEAD`, `@`, `@{`, a `refs/` prefix, or a
+  trailing `/` or `.lock` are refused (422).
+- **Rollback to an engine older than 1.32.0:** first turn sync off on every vault that has `syncBranch` set, or
+  clear `syncBranch` (PUT `/settings/backup` without it). An older engine ignores the field, syncs through
+  `refs/svod/sync/<vault>` again and force-pushes its mirror to `main`, which overwrites the commits people
+  made there. Check with `GET /api/v1/sync/config?vault=<id>` that `syncBranch` is `null` before downgrading.
+- A new machine: `svod-engine clone <remote> <dest-dir> <vaultId> --branch main`.
+- `GET /api/v1/sync/status` and `/sync/config` carry `lastError` (for example `fetch failed: ...`) while
+  the last cycle failed on the network or the credentials; it is empty after a good cycle. Credentials are
+  never in it.
+- Changing `syncBranch` on a vault that already synced starts from the new ref. The first cycle merges it
+  with local history like any other peer.
+
 Replicas hold the whole vault; give a person a replica only if they may read all of it. Access control
 on the central engine does not apply to a git remote.
 
@@ -648,3 +679,41 @@ is already the person (observed above).
 9. "Merge authority" (also ADR-0020 §5 and the plan): see section 10, the shipped sync is symmetric.
 10. Tokens in the app ("Settings → LLM Access") are replaced by the explicit API and file steps, so the
     runbook works without the macOS app.
+
+## 12. Hosted engines: `denyPrivateRemotes`
+
+On an engine where people name their own git remote, set `"denyPrivateRemotes": true` in the config. Sync and
+backup will then only talk to `https` remotes whose DNS name resolves to public addresses:
+
+- No plain `http`, `file:`, `ssh` or `git@host:path`. No IP literal in any spelling (dotted, decimal such as
+  `2130706433`, octal such as `0177.0.0.1`, hex, bracketed IPv6), no trailing-dot host, no URL fragment, no
+  backslash, and no userinfo containing `@ ? # /`. The URL is parsed by JGit's `URIish` and must give the
+  same host to `java.net.URI` and `java.net.URL`.
+- Nothing that resolves to loopback, RFC1918, link-local (169.254/16, fe80::/10), unique-local (fc00::/7),
+  CGNAT (100.64/10), benchmarking (198.18/15), reserved (240/4, 255.255.255.255), multicast or unspecified
+  addresses, or IPv6 forms that can wrap one (IPv4-mapped, IPv4-compatible, NAT64, 6to4, Teredo). That covers the cloud metadata endpoints (169.254.169.254, fd00:ec2::254,
+  100.100.100.200).
+- The name is checked before every cycle and every backup. That check and JGit resolve the name separately,
+  so the answer can change in between (DNS rebinding). Every HTTPS connection JGit opens therefore also checks
+  the peer address it actually connected to, inside the TLS handshake and before any request or credential is
+  sent. Certificate and hostname checks stay on the name in the URL.
+- The embedder endpoints (`PUT /embedder`, `POST /embedder/test`, `POST /embedder/models`, admin only) apply the
+  same rules to an endpoint the request names (422 when refused). Their HTTP client has no hook for the
+  connected address, so for them only the request-time check applies.
+- HTTP redirects are not followed.
+- Secrets have a purpose by name. An embedder API key must be stored with `POST /api/v1/secrets` under a name
+  starting with `embedder-`, and a git remote secret under `git-remote-` (svod-web uses `git-remote-main`).
+  Any other ref (`env:`, `keychain:`, another file) is refused with 422 for both. An embedder request that
+  names a different endpoint never gets the stored key.
+
+A refused remote shows as an `offline` sync with `lastError` = `remote check failed: remote host not allowed`
+(or `fetch failed: ... remote peer address not allowed` when the connect-time check caught it). Only an admin
+sees `lastError`; a member gets no `lastError` field.
+
+Residual risk: the connect-time check sees the proxy, not the git host, when the JVM is set to use a forward
+proxy. A proxy on a private address is refused; a public proxy is trusted to reach only public hosts. The
+connect-time check covers JGit's HTTPS only (sync and backup); the embedder probes are checked at request
+time only. A firewall that blocks the team engines' egress to private ranges and metadata addresses is the
+outer layer for both.
+
+Leave it off (the default) on a self-hosted engine that syncs to a LAN Gitea.

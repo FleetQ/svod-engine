@@ -3,6 +3,82 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.32.0 — unreleased (App API contract 0.40.0, additive)
+
+### Added — sync through a plain git branch (`syncBranch`)
+
+- Per-vault `syncBranch` (`PUT /api/v1/settings/backup`, returned by `GET /api/v1/sync/config`; also the
+  `backup.syncBranch` config field). When set, two-way sync uses `refs/heads/<syncBranch>` on the remote
+  as its canonical ref instead of `refs/svod/sync/<vaultId>`. Pushes are non-force; commits a person
+  pushes to that branch with plain git are fetched and merged by the normal 3-way merge. The branch is
+  created by the first push when the remote has none.
+- With `syncBranch` set the engine never force-pushes the browsable `main` mirror (which would destroy the
+  person's commits); the sync branch itself is the browsable branch. The one-way backup mirror is skipped too.
+- Validation (422 `invalid_sync_branch` on the API, an error at config load): empty, a leading `-` or `+`,
+  `HEAD`, `@`, a `refs/` prefix, non-ASCII, whitespace or control characters, `..`, `@{`, a trailing `/` or
+  `.lock`, and anything `Repository.isValidRefName("refs/heads/<name>")` refuses.
+- `svod-engine clone <remote> <dest> <vaultId> [--branch <name>]` clones that branch instead of the sync ref.
+- Unset (the default) behaves exactly as before.
+
+### Added — trash listing and purge
+
+- `GET /api/v1/trash` lists everything under `.trash/` in the `/tree` shape, paths keep the `.trash/`
+  prefix (contract 0.40.0, additive). Same access as `/tree`. File nodes also carry `originalPath` and
+  `deletedAt` (ISO-8601), read from the soft-delete commit; both are omitted when history does not record them.
+- `DELETE /api/v1/file?path=.trash/…` permanently removes a trashed file in one attributed commit
+  (`purge: <path>`; history keeps it). Engine admins only (an editor gets 403); a path that leaves
+  `.trash/` is 400. `expectedRevision` is optional for a purge (checked when given). Any other path
+  soft-deletes exactly as before.
+
+### Added — why a sync fails, and an SSRF guard for hosted engines
+
+- `lastError` (nullable string) on `GET /api/v1/sync/status` and `GET /api/v1/sync/config` (contract 0.40.0):
+  the last sync transport failure as `<phase> failed: <cause>` (for example `fetch failed: ...`), so an admin
+  can tell a rejected token from a missing repository. Admins only (members get no field). Any URL in it is
+  cut to host/path (no scheme, userinfo, query or fragment) and token-shaped values are masked. A cycle that
+  ends in sync clears it.
+- Config `denyPrivateRemotes` (default `false`), for hosted engines. When `true`:
+  - A sync/backup remote (after `Secrets.resolve`) must be an `https` URL naming a DNS host. It is parsed with
+    JGit's `URIish` and must give the same scheme and host to `java.net.URI` and `java.net.URL`. Refused: other
+    schemes (`http`, `file:`, `ssh`, `git`, `git@host:path`, plain paths), IP literals in any spelling (dotted,
+    decimal, octal, hex, bracketed), trailing-dot hosts, fragments, backslashes, userinfo holding `@ ? # /`.
+  - The name must resolve only to public addresses. Refused: loopback, private (RFC1918), link-local
+    (169.254/16, fe80::/10), unique-local (fc00::/7), CGNAT (100.64/10), benchmarking (198.18/15), reserved
+    (240/4, incl. 255.255.255.255), multicast, unspecified, and IPv6 forms that carry an IPv4 address or one of
+    these (IPv4-mapped, IPv4-compatible `::a.b.c.d`, NAT64, 6to4, Teredo). Cloud metadata endpoints fall in
+    these ranges. The name is checked before every sync cycle and backup push.
+  - The check above and the transport resolve the name separately, so a name can change answer in between
+    (DNS rebinding). To close that, every HTTPS connection JGit opens checks the peer address it actually
+    connected to, inside the TLS handshake and before any request or credential is sent. Plain http has no
+    such hook, which is why `https` is required. Residual risk: with a JVM forward proxy the checked peer is the
+    proxy, not the git host.
+  - HTTP redirects are not followed (`http.followRedirects=false`).
+  - The embedder endpoints (`PUT /embedder`, `POST /embedder/test`, `POST /embedder/models`, admin only) check
+    an endpoint the request supplies with the same rules (422 when refused). Their HTTP client gives no hook
+    for the connected address, so for embedders the check is at request time only.
+  - A refused remote is an ordinary failed cycle: status `offline`, `lastError` = `remote check failed: remote
+    host not allowed` (or `fetch failed: ... remote peer address not allowed` from the connect-time check).
+- Embedder API keys: a request that names an endpoint other than the configured one never reuses the configured
+  `apiKeyRef`; it sends its own ref or no key. With `denyPrivateRemotes` on, a request-supplied `apiKeyRef` must be
+  a `file:` secret created by `POST /api/v1/secrets` under a name starting with `embedder-` (canonical path inside
+  the engine's secrets directory, symlinks resolved); `env:`, `keychain:` and other paths are 422. In the same
+  mode a sync/backup remote given as a Secrets ref must be a `git-remote-…` secret, so neither kind can stand in
+  for the other.
+- Embedder probe errors (the 409 of `PUT /embedder`, `error` of `POST /embedder/test`) carry the exception type
+  and message with URLs cut to host/path and tokens masked, never the raw text.
+
+### Fixed
+
+- `PUT /api/v1/embedder` could answer 409 `JsonDecodingException` at random: the index meta file was rewritten in
+  place (truncate, then write) by the background embedder swap while the request read it. It is now written
+  atomically (temp file + rename).
+
+### Upgrade and rollback
+
+- Before rolling a vault that has `syncBranch` set back to an engine older than 1.32.0: turn sync off for that
+  vault or clear `syncBranch` first. An older engine ignores the field, syncs through `refs/svod/sync/<vault>`
+  and force-pushes its mirror to `main`, which overwrites commits people made on that branch.
+
 ## v1.31.0 — unreleased (App API contract 0.39.0, additive)
 
 ### Added — team sharing: people behind agents, roles on vault grants (ADR-0020)
