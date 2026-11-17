@@ -150,6 +150,8 @@ class AppApiServer(
         val memoryRequireReview: Boolean = true,
         /** Externally reachable MCP URL for `GET /agents`; null = derive it from the bind address. */
         val publicMcpUrl: String? = null,
+        /** Hosted engine: a backup remote given as a Secrets ref must be a `git-remote-…` secret from POST /secrets. */
+        val denyPrivateRemotes: Boolean = false,
     )
 
     /** TLS material for serving the App API over HTTPS (same shape as the MCP server's). */
@@ -843,6 +845,14 @@ class AppApiServer(
                         "backup remote must not embed credentials inline; reference them as a Secrets ref (keychain:/env:/file:)",
                     ))
                 }
+                if (config.denyPrivateRemotes && isSecretsRef(req.remote) &&
+                    secrets?.owns(req.remote.trim(), dev.svod.engine.lifecycle.SecretStore.GIT_REMOTE_PREFIX) != true
+                ) {
+                    return@put call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto(
+                        "invalid_remote",
+                        "on this engine a remote given as a Secrets ref must be a secret stored with POST /api/v1/secrets under a name starting with '${dev.svod.engine.lifecycle.SecretStore.GIT_REMOTE_PREFIX}'",
+                    ))
+                }
                 req.syncBranch?.let { b ->
                     dev.svod.engine.lifecycle.SvodConfig.syncBranchError(b)?.let { why ->
                         return@put call.respond(HttpStatusCode.UnprocessableEntity, ErrorDto("invalid_sync_branch", "syncBranch $why"))
@@ -1376,6 +1386,10 @@ class AppApiServer(
     private fun withSyncBranchKey(cfg: SyncConfigDto): kotlinx.serialization.json.JsonObject {
         val obj = jsonFormat.encodeToJsonElement(SyncConfigDto.serializer(), cfg) as kotlinx.serialization.json.JsonObject
         return if ("syncBranch" in obj) obj else kotlinx.serialization.json.JsonObject(obj + ("syncBranch" to kotlinx.serialization.json.JsonNull))
+    }
+
+    private fun isSecretsRef(remote: String): Boolean = remote.trim().let { r ->
+        r.startsWith("file:") || r.startsWith("env:") || r.startsWith("keychain:")
     }
 
     private fun buildTree(paths: List<String>, trash: Map<String, SvodEngine.TrashEntry> = emptyMap()): TreeNodeDto {

@@ -58,8 +58,20 @@ independently of the engine; each entry notes the contract version it ships.
     for the connected address, so for embedders the check is at request time only.
   - A refused remote is an ordinary failed cycle: status `offline`, `lastError` = `remote check failed: remote
     host not allowed` (or `fetch failed: ... remote peer address not allowed` from the connect-time check).
+- Embedder API keys: a request that names an endpoint other than the configured one never reuses the configured
+  `apiKeyRef`; it sends its own ref or no key. With `denyPrivateRemotes` on, a request-supplied `apiKeyRef` must be
+  a `file:` secret created by `POST /api/v1/secrets` under a name starting with `embedder-` (canonical path inside
+  the engine's secrets directory, symlinks resolved); `env:`, `keychain:` and other paths are 422. In the same
+  mode a sync/backup remote given as a Secrets ref must be a `git-remote-…` secret, so neither kind can stand in
+  for the other.
 - Embedder probe errors (the 409 of `PUT /embedder`, `error` of `POST /embedder/test`) carry the exception type
   and message with URLs cut to host/path and tokens masked, never the raw text.
+
+### Fixed
+
+- `PUT /api/v1/embedder` could answer 409 `JsonDecodingException` at random: the index meta file was rewritten in
+  place (truncate, then write) by the background embedder swap while the request read it. It is now written
+  atomically (temp file + rename).
 
 ### Upgrade and rollback
 

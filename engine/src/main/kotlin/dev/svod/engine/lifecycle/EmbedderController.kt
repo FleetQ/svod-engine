@@ -30,6 +30,12 @@ class EmbedderController(
      * egress firewall covers rebinding.
      */
     private val guard: dev.svod.engine.sync.RemoteGuard = dev.svod.engine.sync.RemoteGuard.OFF,
+    /**
+     * With [guard] on: a request-supplied `apiKeyRef` must be a secret this engine stored under an `embedder-`
+     * name ([dev.svod.engine.api.SecretSink.owns]); `env:`, `keychain:` and other paths are refused, so the
+     * engine cannot be made to send an arbitrary file or variable as a Bearer token.
+     */
+    private val secrets: dev.svod.engine.api.SecretSink? = null,
 ) : EmbedderControl {
 
     private val http: HttpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build()
@@ -130,6 +136,11 @@ class EmbedderController(
             if (ref.isNotBlank() && !isSecretRef(ref)) {
                 throw EmbedderControl.InvalidSpec("apiKeyRef must be a Secrets reference (env:/file:/keychain:), never a raw key")
             }
+            if (ref.isNotBlank() && guard.deny && secrets?.owns(ref, SecretStore.EMBEDDER_PREFIX) != true) {
+                throw EmbedderControl.InvalidSpec(
+                    "apiKeyRef must be a secret stored with POST /api/v1/secrets under a name starting with '${SecretStore.EMBEDDER_PREFIX}'",
+                )
+            }
         }
         val isOnnx = spec.provider.lowercase() in listOf("onnx-local", "local-onnx")
         spec.endpoint?.takeIf { it.isNotBlank() }?.let { ep ->
@@ -149,7 +160,10 @@ class EmbedderController(
             onnxModelId = if (isOnnx && spec.model != null) spec.model else current.onnxModelId,
             endpoint = spec.endpoint ?: current.endpoint,
             model = if (!isOnnx) (spec.model ?: current.model) else current.model,
-            apiKeyRef = spec.apiKeyRef ?: current.apiKeyRef,
+            // The stored key belongs to the stored endpoint: a request that names another endpoint gets no key
+            // unless it brings its own ref (otherwise it could aim the configured key at a host of its choice).
+            apiKeyRef = spec.apiKeyRef?.takeIf { it.isNotBlank() }
+                ?: current.apiKeyRef?.takeIf { sameEndpoint(spec.endpoint, current.endpoint) },
             maxThreads = spec.maxThreads ?: current.maxThreads,
         )
     }
@@ -160,6 +174,13 @@ class EmbedderController(
             val root = e.cause ?: e
             return dev.svod.engine.sync.RemoteGuard.scrubText("${root.javaClass.simpleName}: ${root.message ?: "no detail"}")
         }
+    }
+
+    /** True when [requested] (null = "keep the configured one") names the same endpoint as [configured]. */
+    private fun sameEndpoint(requested: String?, configured: String?): Boolean {
+        if (requested.isNullOrBlank()) return true
+        fun norm(s: String?) = s?.trim()?.trimEnd('/')?.lowercase()
+        return norm(requested) == norm(configured)
     }
 
     private fun isSecretRef(ref: String) =

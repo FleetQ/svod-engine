@@ -701,6 +701,10 @@ backup will then only talk to `https` remotes whose DNS name resolves to public 
   same rules to an endpoint the request names (422 when refused). Their HTTP client has no hook for the
   connected address, so for them only the request-time check applies.
 - HTTP redirects are not followed.
+- Secrets have a purpose by name. An embedder API key must be stored with `POST /api/v1/secrets` under a name
+  starting with `embedder-`, and a git remote secret under `git-remote-` (svod-web uses `git-remote-main`).
+  Any other ref (`env:`, `keychain:`, another file) is refused with 422 for both. An embedder request that
+  names a different endpoint never gets the stored key.
 
 A refused remote shows as an `offline` sync with `lastError` = `remote check failed: remote host not allowed`
 (or `fetch failed: ... remote peer address not allowed` when the connect-time check caught it). Only an admin
