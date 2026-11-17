@@ -67,9 +67,14 @@
     while (feed.children.length > 200) feed.lastChild.remove();
   }
 
-  async function selectItem(li, path, commit) {
+  function selectItem(li, path, commit) {
     document.querySelectorAll(".item.active").forEach((e) => e.classList.remove("active"));
     li.classList.add("active");
+    showDiff(path, commit);
+  }
+
+  // Shared by the feed and a note's history: diff a commit against its parent.
+  async function showDiff(path, commit) {
     $("diffPath").textContent = path + " @ " + commit.slice(0, 8);
     renderDiff("loading…");
     try {
@@ -105,6 +110,136 @@
       return c;
     }).join("\n");
     $("diff").innerHTML = out;
+  }
+
+  // ── search ────────────────────────────────────────────────────────────
+  const searchStatus = $("searchStatus");
+  const searchResults = $("searchResults");
+
+  function splitTags(s) {
+    return s.split(",").map((t) => t.trim().replace(/^#/, "")).filter(Boolean);
+  }
+
+  async function runSearch(e) {
+    if (e) e.preventDefault();
+    const q = $("searchQuery").value.trim();
+    const mode = $("searchMode").value;
+    const tags = splitTags($("searchTags").value);
+    const pathPrefix = $("searchPath").value.trim();
+    if (!q && !tags.length && !pathPrefix) {
+      searchStatus.textContent = "type a query or pick a tag";
+      searchResults.innerHTML = "";
+      return;
+    }
+    // One `tags` parameter per tag; q is left out when blank (filter-only browse).
+    const parts = [];
+    if (q) parts.push("q=" + encodeURIComponent(q));
+    parts.push("mode=" + encodeURIComponent(mode), "limit=20");
+    tags.forEach((t) => parts.push("tags=" + encodeURIComponent(t)));
+    if (pathPrefix) parts.push("pathPrefix=" + encodeURIComponent(pathPrefix));
+    searchStatus.textContent = "searching…";
+    try {
+      const r = await fetch(`${base}/api/v1/search?${parts.join("&")}`);
+      if (!r.ok) {
+        let msg = "search failed (" + r.status + ")";
+        try { const j = await r.json(); if (j && j.message) msg = j.message; } catch (_) {}
+        searchStatus.textContent = msg;
+        searchResults.innerHTML = "";
+        return;
+      }
+      renderResults(await r.json());
+    } catch (err) {
+      searchStatus.textContent = "search failed: " + err;
+      searchResults.innerHTML = "";
+    }
+  }
+
+  function renderResults(j) {
+    const hits = j.hits || [];
+    const mode = String(j.mode || "").toLowerCase();
+    let status = `${hits.length} result${hits.length === 1 ? "" : "s"} · ${mode}`;
+    if ((j.degraded || []).includes("semantic")) status += " · semantic unavailable — showing keyword results";
+    searchStatus.textContent = status;
+    searchResults.innerHTML = "";
+    if (!hits.length) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "No notes match.";
+      searchResults.append(li);
+      return;
+    }
+    for (const h of hits) {
+      const li = document.createElement("li");
+      li.className = "result";
+      li.dataset.path = h.path;
+      const badges =
+        (h.matchedKeyword ? `<span class="badge kw">keyword</span>` : "") +
+        (h.matchedSemantic ? `<span class="badge sem">semantic</span>` : "");
+      const chips = (h.tags || []).map((t) =>
+        `<button type="button" class="tag-chip" data-tag="${esc(t)}">#${esc(t)}</button>`).join("");
+      li.innerHTML =
+        `<div class="result-head"><span class="path">${esc(h.path)}</span><span class="badges">${badges}</span></div>` +
+        (h.heading ? `<div class="heading">${esc(h.heading)}</div>` : "") +
+        `<div class="snippet">${esc(h.snippet || "")}</div>` +
+        (chips ? `<div class="chips">${chips}</div>` : "");
+      li.addEventListener("click", (ev) => {
+        const chip = ev.target.closest(".tag-chip");
+        if (chip) {
+          ev.stopPropagation();
+          $("searchTags").value = chip.dataset.tag;
+          runSearch();
+          return;
+        }
+        document.querySelectorAll(".result.active").forEach((x) => x.classList.remove("active"));
+        li.classList.add("active");
+        openNote(h.path);
+      });
+      searchResults.append(li);
+    }
+  }
+
+  async function openNote(path) {
+    const p = encodeURIComponent(path);
+    $("note").classList.remove("hidden");
+    $("notePath").textContent = path;
+    $("noteMeta").textContent = "";
+    $("noteContent").textContent = "loading…";
+    const history = $("noteHistory");
+    history.innerHTML = "";
+    try {
+      const [fr, hr] = await Promise.all([
+        fetch(`${base}/api/v1/file?path=${p}`),
+        fetch(`${base}/api/v1/file/history?path=${p}&max=50`),
+      ]);
+      if (fr.ok) {
+        const f = await fr.json();
+        $("noteContent").textContent = f.content;
+        const by = f.lastModifiedBy;
+        if (by) $("noteMeta").textContent = "last modified by " + (by.agent ? `${by.agent} (${by.name})` : by.name);
+      } else {
+        $("noteContent").textContent = "(note unavailable)";
+      }
+      if (hr.ok) {
+        const h = await hr.json();
+        for (const c of h.commits || []) {
+          const li = document.createElement("li");
+          li.className = "commit";
+          li.innerHTML =
+            `<span class="mono sha">${esc(c.commit.slice(0, 8))}</span>` +
+            `<span class="agent ${colorFor(c.agent || c.author)}">${esc(c.agent || c.author)}</span>` +
+            `<span class="when">${esc(fmtTime(c.epochSeconds * 1000))}</span>` +
+            `<span class="msg">${esc(c.message)}</span>`;
+          li.addEventListener("click", () => {
+            history.querySelectorAll(".commit.active").forEach((x) => x.classList.remove("active"));
+            li.classList.add("active");
+            showDiff(path, c.commit);
+          });
+          history.append(li);
+        }
+      }
+    } catch (err) {
+      $("noteContent").textContent = "(note failed: " + err + ")";
+    }
   }
 
   function onEvent(ev) {
@@ -162,7 +297,7 @@
   }
 
   function esc(s) {
-    return String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
   endpointEl.addEventListener("change", () => {
@@ -172,6 +307,10 @@
     connect();
   });
   $("retry").addEventListener("click", connect);
+  $("searchForm").addEventListener("submit", runSearch);
+  $("searchMode").addEventListener("change", () => {
+    if ($("searchQuery").value.trim()) runSearch();
+  });
 
   connect();
 })();
