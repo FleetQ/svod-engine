@@ -112,7 +112,11 @@ class AppApiServer(
     private val syncEngineOf: (VaultView) -> dev.svod.engine.sync.SyncEngine? = { null },
     /** Live MCP sessions for `/metrics`; null ⇒ the gauge is not emitted (no MCP server in this process). */
     private val mcpLiveSessions: (() -> Int)? = null,
+    /** Newest successful MCP authentication by any agent since process start, for `/stats`; null ⇒ none yet. */
+    private val lastAgentRequestAt: () -> java.time.Instant? = { null },
 ) {
+    private val startedAt: java.time.Instant = java.time.Instant.now()
+
     /** Back-compat single-vault constructor (one engine/index, optional conflicts + sync status). */
     constructor(
         svod: SvodEngine,
@@ -230,6 +234,22 @@ class AppApiServer(
                 call.respondText(prometheusExposition(), ContentType.Text.Plain)
             }
 
+            get("/api/v1/stats") {
+                val perVault = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    vaults.all().map { v ->
+                        val d = v.engine.diskStats()
+                        VaultStatsDto(v.id, d.notes, d.bytes, v.engine.headCommitEpochSeconds()?.let { java.time.Instant.ofEpochSecond(it).toString() })
+                    }
+                }
+                call.respond(StatsDto(
+                    version = dev.svod.engine.lifecycle.SvodNode.ENGINE_VERSION,
+                    contract = config.apiVersion,
+                    startedAt = startedAt.toString(),
+                    vaults = perVault,
+                    agents = agentAdmin?.list()?.agents?.size ?: 0,
+                    lastAgentRequestAt = lastAgentRequestAt()?.toString(),
+                ))
+            }
             get("/api/v1/vaults") {
                 // A person sees only the vaults they have a role in; the row says which role.
                 val p = principal()

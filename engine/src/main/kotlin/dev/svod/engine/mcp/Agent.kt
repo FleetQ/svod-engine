@@ -102,6 +102,10 @@ class AgentRegistry(agents: List<AgentSpec>) {
         agentIds = newByAgentId
     }
 
+    /** When a bearer token last resolved to an agent (any agent, either transport); null since process start until then. */
+    @Volatile var lastAuthenticatedAt: java.time.Instant? = null
+        private set
+
     /** Resolve a bearer token to an agent, or null if unknown. Constant-time over tokens. */
     fun authenticate(token: String?): AgentIdentity? {
         if (token.isNullOrEmpty()) return null
@@ -110,6 +114,7 @@ class AgentRegistry(agents: List<AgentSpec>) {
         for ((known, identity) in map) {
             if (constantTimeEquals(known, token)) match = identity
         }
+        if (match != null) lastAuthenticatedAt = java.time.Instant.now()
         return match
     }
 

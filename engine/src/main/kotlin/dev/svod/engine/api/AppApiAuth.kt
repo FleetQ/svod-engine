@@ -50,6 +50,7 @@ object AppApiAuth {
         Rule(setOf("POST", "DELETE"), Regex("^/api/v1/vaults(/.*)?$")),
         Rule(null, Regex("^/api/v1/agents(/.*)?$")),
         Rule(null, Regex("^/api/v1/users(/.*)?$")),
+        Rule(null, Regex("^/api/v1/stats$")),
         Rule(setOf("POST"), Regex("^/api/v1/secrets$")),
         Rule(setOf("PUT"), Regex("^/api/v1/settings/backup$")),
         Rule(setOf("POST"), Regex("^/api/v1/(backup/now|sync/now|maintenance/reindex|index/(pause|resume|reembed)|graph/rebuild|import|embedder/(test|models))$")),
@@ -59,7 +60,7 @@ object AppApiAuth {
     )
 
     /** Routes that are not scoped to one vault (no `?vault=` read check). */
-    private val NON_VAULT = Regex("^/api/v1/(vaults|agents|users|me|secrets|update|events)(/.*)?$")
+    private val NON_VAULT = Regex("^/api/v1/(vaults|agents|users|me|secrets|update|events|stats)(/.*)?$")
 
     private val LOOPBACK_NAMES = setOf("localhost", "127.0.0.1", "::1", "0:0:0:0:0:0:0:1")
     private val log = org.slf4j.LoggerFactory.getLogger(AppApiAuth::class.java)

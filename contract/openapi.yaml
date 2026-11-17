@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.40.0
+  version: 0.41.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -679,6 +679,22 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Me" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/stats:
+    get:
+      tags: [meta]
+      summary: >
+        Engine-wide counters for the platform owner (admin only). Since 0.41.0. Counters and timestamps
+        only: never note content, paths, titles, author names, emails or agent names/ids.
+      operationId: getStats
+      responses:
+        "200":
+          description: Engine stats
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Stats" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
 
   /api/v1/users:
     get:
@@ -2499,6 +2515,26 @@ components:
             Optional optimistic guard. Omit/null to resolve against the current on-disk
             revision; set it to pin a specific one. Either way a change landing after you
             resolved yields 409 (never a silent overwrite).
+
+    Stats:
+      type: object
+      required: [version, contract, startedAt, vaults, agents]
+      properties:
+        version: { type: string, description: "Engine version, e.g. 1.33.0." }
+        contract: { type: string, description: "App API contract version this engine implements." }
+        startedAt: { type: string, format: date-time, description: "Process start (UTC)." }
+        vaults:
+          type: array
+          items:
+            type: object
+            required: [id, notes, bytes]
+            properties:
+              id: { type: string }
+              notes: { type: integer, description: "Markdown notes outside dot-directories (.trash/ excluded)." }
+              bytes: { type: integer, format: int64, description: "On-disk size of the working tree, excluding .git/ and .svod/." }
+              lastCommitAt: { type: string, format: date-time, nullable: true, description: "Time of the vault's HEAD commit; absent for an empty repository." }
+        agents: { type: integer, description: "Number of configured MCP agents." }
+        lastAgentRequestAt: { type: string, format: date-time, nullable: true, description: "Newest authenticated MCP request by any agent since process start; absent when none." }
 
     Metrics:
       type: object
