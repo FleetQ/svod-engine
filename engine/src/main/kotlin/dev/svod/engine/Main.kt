@@ -1,6 +1,7 @@
 package dev.svod.engine
 
 import dev.svod.engine.core.SvodEngine
+import dev.svod.engine.lifecycle.ApiCompatibility
 import dev.svod.engine.lifecycle.EngineDiscovery
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
@@ -10,8 +11,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
+import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.concurrent.CountDownLatch
+import kotlin.system.exitProcess
 
 /**
  * Engine entrypoint. Reads a config file (first arg, else a default vault), starts the node,
@@ -21,12 +24,23 @@ import java.util.concurrent.CountDownLatch
  * One-shot import mode: `svod-engine import <config.json> <obsidian-dir> [into]` migrates an
  * Obsidian vault into the configured vault and exits (run while the daemon is stopped — the
  * vault lock is exclusive; while it's running, use POST /api/v1/import instead).
+ *
+ * `svod-engine --help` (`-h`) prints usage and `svod-engine --version` (`-V`) prints the engine
+ * and App API contract versions; both exit before any config is read.
  */
 fun main(args: Array<String>) {
-    if (args.firstOrNull() == "import") return runImport(args.drop(1))
-    if (args.firstOrNull() == "clone") return runClone(args.drop(1))
-
-    val configPath = args.firstOrNull()?.let { Paths.get(it) }
+    val configPath = when (val cmd = parseCommand(args)) {
+        Command.Help -> return println(usageText())
+        Command.Version -> return println(versionText())
+        is Command.Unknown -> {
+            System.err.println("svod-engine: unknown option ${cmd.flag}")
+            System.err.println(usageText())
+            exitProcess(2)
+        }
+        is Command.Import -> return runImport(cmd.args)
+        is Command.Clone -> return runClone(cmd.args)
+        is Command.Run -> cmd.configPath
+    }
     val config = configPath
         ?.let { SvodConfig.loadOrThrowValidated(it) }
         ?: SvodConfig.default(Paths.get(System.getProperty("user.home"), "svod-vault"))
@@ -39,12 +53,71 @@ fun main(args: Array<String>) {
         EngineDiscovery.write(discoveryFile, config.host, node.appApiPort, node.mcpPort)
     }.onFailure { System.err.println("svod-engine: could not write the discovery file: ${it.message}") }
 
-    println("svod-engine ready on java ${System.getProperty("java.version")}")
-    println("  vault:   ${config.vaultPath}")
-    println("  app api: http://${config.host}:${node.appApiPort}  (loopback)")
-    println("  mcp:     http://${config.host}:${node.mcpPort}")
+    for (line in startupBanner(config, node.appApiPort, node.mcpPort)) {
+        println(line)
+        // Also on stderr so it lands in launchd's error log.
+        if (line.startsWith(NO_AGENTS_WARNING_PREFIX)) System.err.println(line.trim())
+    }
 
     CountDownLatch(1).await() // park until SIGTERM; the shutdown hook does the cleanup
+}
+
+internal sealed interface Command {
+    data object Help : Command
+    data object Version : Command
+    data class Run(val configPath: Path?) : Command
+    data class Import(val args: List<String>) : Command
+    data class Clone(val args: List<String>) : Command
+    data class Unknown(val flag: String) : Command
+}
+
+internal fun parseCommand(args: Array<String>): Command {
+    val first = args.firstOrNull() ?: return Command.Run(null)
+    return when {
+        first in setOf("--help", "-h", "help") -> Command.Help
+        first in setOf("--version", "-V", "version") -> Command.Version
+        first == "import" -> Command.Import(args.drop(1))
+        first == "clone" -> Command.Clone(args.drop(1))
+        first.startsWith("-") -> Command.Unknown(first)
+        else -> Command.Run(Paths.get(first))
+    }
+}
+
+internal fun usageText(): String = """
+    |usage:
+    |  svod-engine [config.json]
+    |      start the engine (default vault ~/svod-vault when no config is given)
+    |  svod-engine import <config.json> <obsidian-dir> [into]
+    |      import an Obsidian vault into the configured vault, then exit (engine stopped)
+    |  svod-engine clone <remote> <dest-dir> <vaultId> [local-branch] [--branch <sync-branch>]
+    |      clone an existing synced vault onto this machine, then exit
+    |  svod-engine --help | -h
+    |      print this help
+    |  svod-engine --version | -V
+    |      print the engine and App API contract versions
+""".trimMargin()
+
+internal fun versionText(): String =
+    "svod-engine ${SvodNode.ENGINE_VERSION} (App API contract ${ApiCompatibility.CURRENT_CONTRACT_VERSION})"
+
+private const val NO_AGENTS_WARNING_PREFIX = "  warning: no agents configured"
+
+/**
+ * The lines printed once the node is up. With no agents configured every MCP login is rejected
+ * (MCP auth only goes through the agent registry), so say so — but keep running: agents can be
+ * added at runtime and the registry reloads.
+ */
+internal fun startupBanner(config: SvodConfig, appApiPort: Int, mcpPort: Int): List<String> = buildList {
+    add("svod-engine ${SvodNode.ENGINE_VERSION} ready on java ${System.getProperty("java.version")}")
+    add("  vault:   ${config.vaultPath}")
+    add("  app api: http://${config.host}:$appApiPort  (loopback)")
+    add("  mcp:     http://${config.host}:$mcpPort")
+    if (config.agents.isEmpty()) {
+        add(
+            "$NO_AGENTS_WARNING_PREFIX — every MCP client will be rejected until you add one to " +
+                "agents[] in the config or from the app (POST /api/v1/agents)",
+        )
+    }
 }
 
 /**
