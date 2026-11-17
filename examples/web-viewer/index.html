@@ -20,6 +20,29 @@
   </header>
 
   <main class="grid">
+    <section class="search-pane">
+      <div class="pane-head">
+        <h2>Search memory</h2>
+      </div>
+      <form id="searchForm" class="search-form" autocomplete="off">
+        <div class="search-row">
+          <input id="searchQuery" type="search" placeholder="Search notes…" spellcheck="false" aria-label="Query" />
+          <select id="searchMode" aria-label="Search mode">
+            <option value="hybrid" selected>hybrid</option>
+            <option value="keyword">keyword</option>
+            <option value="semantic">semantic</option>
+          </select>
+        </div>
+        <div class="search-row">
+          <input id="searchTags" type="text" placeholder="tags, comma-separated" spellcheck="false" aria-label="Tags" />
+          <input id="searchPath" type="text" placeholder="path prefix" spellcheck="false" aria-label="Path prefix" />
+        </div>
+        <button type="submit">Search</button>
+      </form>
+      <p id="searchStatus" class="muted search-status"></p>
+      <ol id="searchResults" class="results"></ol>
+    </section>
+
     <section class="feed-pane">
       <div class="pane-head">
         <h2>Agent activity</h2>
@@ -33,6 +56,15 @@
     </section>
 
     <section class="diff-pane">
+      <div id="note" class="note hidden">
+        <div class="pane-head">
+          <h2>Note</h2>
+          <span id="notePath" class="muted mono"></span>
+        </div>
+        <p id="noteMeta" class="muted note-meta"></p>
+        <pre id="noteContent" class="note-content"></pre>
+        <ol id="noteHistory" class="history"></ol>
+      </div>
       <div class="pane-head">
         <h2>git diff</h2>
         <span id="diffPath" class="muted mono"></span>
