@@ -4,12 +4,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
-import java.nio.ByteBuffer
-import java.nio.channels.SeekableByteChannel
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.PosixFilePermissions
 import java.security.SecureRandom
 import java.util.Base64
@@ -26,6 +24,7 @@ object ConfigInit {
 
     private val random = SecureRandom()
     private val prettyJson = Json { prettyPrint = true }
+    private val OWNER_RW = setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
 
     data class Result(val configPath: Path, val config: SvodConfig, val token: String)
 
@@ -52,29 +51,31 @@ object ConfigInit {
     }
 
     /**
-     * Creates [dir] if needed and writes `<dir>/config.json` with CREATE_NEW, so an existing file is
-     * never touched (no check-then-write race). On POSIX the file is created owner-only (rw-------).
+     * Creates [dir] if needed and creates `<dir>/config.json` atomically (fails if it exists), so an
+     * existing file is never touched (no check-then-write race). On POSIX the file is created
+     * owner-only (rw-------), never briefly world-readable. A write that fails part-way removes the
+     * file again, so a retry is not blocked by a truncated config.
      */
     fun write(dir: Path, embedder: String = "none"): Result {
         val token = newToken()
         val config = generate(dir, embedder, token)
+        require(!Files.exists(dir) || Files.isDirectory(dir)) { "$dir exists and is not a directory" }
         Files.createDirectories(dir)
         val path = dir.resolve("config.json")
-        val bytes = SvodConfig.toJson(config).toByteArray(Charsets.UTF_8)
-        val options = setOf(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
-        val posix = "posix" in dir.fileSystem.supportedFileAttributeViews()
         try {
-            val channel: SeekableByteChannel = if (posix) {
-                Files.newByteChannel(path, options, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
-            } else {
-                Files.newByteChannel(path, options)
-            }
-            channel.use { ch ->
-                val buf = ByteBuffer.wrap(bytes)
-                while (buf.hasRemaining()) ch.write(buf)
+            try {
+                Files.createFile(path, PosixFilePermissions.asFileAttribute(OWNER_RW))
+            } catch (_: UnsupportedOperationException) {
+                Files.createFile(path) // no POSIX permissions on this file system (Windows)
             }
         } catch (e: FileAlreadyExistsException) {
             throw IllegalArgumentException("config already exists at $path; not overwriting", e)
+        }
+        try {
+            Files.writeString(path, SvodConfig.toJson(config))
+        } catch (e: Exception) {
+            runCatching { Files.deleteIfExists(path) }
+            throw e
         }
         return Result(path, config, token)
     }

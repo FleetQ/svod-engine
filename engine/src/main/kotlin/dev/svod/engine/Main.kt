@@ -156,11 +156,13 @@ private fun runInit(argv: List<String>) {
     require(flag < 0 || flag + 1 < argv.size) { "--embedder needs a value (none or onnx-local)" }
     val embedder = if (flag >= 0) argv[flag + 1] else "none"
     val args = if (flag >= 0) argv.filterIndexed { i, _ -> i != flag && i != flag + 1 } else argv
-    require(args.size <= 1) { "usage: svod-engine init [dir] [--embedder none|onnx-local]" }
+    // A leftover option (`--embedder=onnx-local`, `--help`) must not become a directory name.
+    require(args.size <= 1 && args.none { it.startsWith("-") }) { "usage: svod-engine init [dir] [--embedder none|onnx-local]" }
     val dir = args.firstOrNull()?.let { Paths.get(it) } ?: Paths.get(System.getProperty("user.home"), "svod")
     val result = ConfigInit.write(dir, embedder)
-    println("init: wrote ${result.configPath.toAbsolutePath()}")
-    println("  start: svod-engine ${result.configPath.toAbsolutePath()}")
+    val configPath = result.configPath.toAbsolutePath().toString()
+    println("init: wrote $configPath")
+    println("  start: svod-engine ${if (configPath.any { it.isWhitespace() }) "\"$configPath\"" else configPath}")
     println("  the agent token below is a secret; it is kept in that file (owner-only where supported)")
     println()
     println(ConfigInit.clientSetup(result.config, result.token))

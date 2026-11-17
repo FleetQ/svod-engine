@@ -72,6 +72,12 @@ class ConfigInitTest {
     }
 
     @Test
+    fun `a dir path that is a regular file is rejected`() {
+        val file = Files.createTempFile("svod-init", ".txt")
+        assertFailsWith<IllegalArgumentException> { ConfigInit.write(file, "none") }
+    }
+
+    @Test
     fun `config file is owner-only on POSIX`() {
         val dir = Files.createTempDirectory("svod-init")
         if (Files.getFileAttributeView(dir, PosixFileAttributeView::class.java) == null) return
