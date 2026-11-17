@@ -72,6 +72,20 @@
       <pre id="diff" class="diff">
 <span class="empty">Select a change on the left to see the diff of an agent's memory.</span></pre>
     </section>
+
+    <section class="review-pane" id="review" data-svod-review>
+      <div class="pane-head">
+        <h2>Memory review</h2>
+        <span class="review-tools">
+          <span id="reviewCount" class="muted"></span>
+          <button type="button" id="reviewRefresh" class="ghost">Refresh</button>
+        </span>
+      </div>
+      <p id="reviewMsg" class="muted review-msg" role="status"></p>
+      <ol id="reviewList" class="review">
+        <li class="empty">Nothing is waiting for review.</li>
+      </ol>
+    </section>
   </main>
 
   <div id="offline" class="offline hidden">

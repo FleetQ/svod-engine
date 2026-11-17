@@ -13,6 +13,8 @@ that tells the Svod story in one screen:
 It consumes the engine's **App API + WebSocket** (`agent.activity`, `commit.created`,
 `index.updated`, …) to show a live, per-agent activity feed; click any change to see the
 colorized `git diff` of that write.
+A **Memory review** pane lists the review queue (`GET /api/v1/memory/review`) and approves, declines
+or reopens a memory through `POST /api/v1/memory/review` with its `expectedRevision`.
 
 ### Run it
 

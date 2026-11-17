@@ -1,5 +1,6 @@
 package dev.svod.engine.api
 
+import dev.svod.engine.core.Author
 import dev.svod.engine.core.SvodEngine
 import dev.svod.engine.events.EventBus
 import dev.svod.engine.index.IndexService
@@ -7,11 +8,17 @@ import dev.svod.engine.index.NoneEmbedder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.nio.file.Files
+import java.nio.file.Paths
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -103,6 +110,53 @@ class WebViewerTest {
             // Without the guard this is Ktor's bare 404 with an empty body — the answer must not
             // depend on whether the viewer happens to be configured.
             assertTrue(r.body().contains("unknown_route"), "got: ${r.body().take(120)}")
+        } finally {
+            api.stop(); index.close(); engine.close()
+        }
+    }
+
+    @Test
+    fun `the bundled viewer ships the memory review pane and can approve same-origin`(): Unit = runBlocking {
+        val viewer = Paths.get(System.getProperty("user.dir")).parent.resolve("examples/web-viewer")
+        assertTrue(Files.isRegularFile(viewer.resolve("index.html")), "bundled viewer at $viewer")
+        val vault = Files.createTempDirectory("svod-viewer-")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val engine = SvodEngine.open(vault, scope)
+        val index = IndexService(vault, vault.resolve(".svod").resolve("index"), NoneEmbedder).start()
+        engine.onCommit { index.onCommit(it) }
+        val api = AppApiServer(
+            engine, index, EventBus(),
+            config = AppApiServer.Config(webViewerPath = viewer.toString()),
+        ).start(0)
+        try {
+            val page = get(api.port, "/").body()
+            for (id in listOf("data-svod-review", "id=\"reviewList\"", "id=\"reviewCount\"", "id=\"reviewRefresh\"", "id=\"reviewMsg\"")) {
+                assertTrue(page.contains(id), "index.html must contain $id")
+            }
+            val js = get(api.port, "/app.js").body()
+            for (s in listOf("/api/v1/memory/review", "expectedRevision", "approve", "decline", "reopen")) {
+                assertTrue(js.contains(s), "app.js must contain $s")
+            }
+
+            val path = "memory/fact/review-me.md"
+            engine.write(path, "---\ntype: fact\nstatus: provisional\n---\nA fact waiting for review.", null, Author("ui", "ui@svod.local"))
+            index.waitIdle()
+            val list = Json.parseToJsonElement(get(api.port, "/api/v1/memory/review?limit=100").body()).jsonObject
+            val item = list["items"]!!.jsonArray.single().jsonObject
+            assertEquals(path, item["path"]!!.jsonPrimitive.content)
+            val revision = item["revision"]!!.jsonPrimitive.content
+
+            // What the pane sends: JSON body with expectedRevision, from the viewer's own origin.
+            val body = """{"path":"$path","action":"approve","expectedRevision":"$revision"}"""
+            val r = http.send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:${api.port}/api/v1/memory/review"))
+                    .header("Content-Type", "application/json")
+                    .header("Origin", "http://127.0.0.1:${api.port}")
+                    .POST(HttpRequest.BodyPublishers.ofString(body)).build(),
+                HttpResponse.BodyHandlers.ofString(),
+            )
+            assertEquals(200, r.statusCode(), r.body())
+            assertEquals("active", Json.parseToJsonElement(r.body()).jsonObject["status"]!!.jsonPrimitive.content)
         } finally {
             api.stop(); index.close(); engine.close()
         }
