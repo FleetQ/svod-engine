@@ -5,6 +5,15 @@ independently of the engine; each entry notes the contract version it ships.
 
 ## v1.32.0 — unreleased (App API contract 0.40.0, additive)
 
+### Added — Memory review pane in the reference web viewer
+
+- `examples/web-viewer` has a **Memory review** pane: it lists the queue from `GET /api/v1/memory/review`
+  (title, path, excerpt, type/status, confidence, needs-review/contradicts badges, source) and approves or
+  declines a memory through `POST /api/v1/memory/review` with its `expectedRevision`. A row acted on in
+  this session offers Reopen. A stale revision (409) reloads the list; a 401/403 says a writer or admin
+  is needed. The list reloads on review/remember commits and index updates. Viewer-only: the engine and
+  the App API contract do not change.
+
 ### Added — `svod-engine init`
 
 - `svod-engine init [dir] [--embedder none|onnx-local]` writes a new, valid `dir/config.json` (default

@@ -151,7 +151,8 @@ enforced *before* the engine is touched.
   look at it, and a `CONTRADICTION` with its `contradicts:` link to the other side. An agent with
   `"requireReview": true` in its `agents[]` entry (or set via `PUT /api/v1/agents/{id}`) has its
   fact/policy stored `provisional`, waiting in the review queue until a person approves it in the
-  Svod app. Agents without their own setting follow `"memory": { "requireReview": … }` (default
+  reference web viewer's Memory review pane (`examples/web-viewer`) or through
+  `POST /api/v1/memory/review`. Agents without their own setting follow `"memory": { "requireReview": … }` (default
   `false`). Each agent's MCP instructions and tool descriptions say what applies to it, and
   `GET /api/v1/settings` reports the engine-wide default as `memory.requireReview`.
 - `write` / `delete` / `move` take an optional `expectedRevision` for optimistic concurrency —

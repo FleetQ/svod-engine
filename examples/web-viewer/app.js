@@ -259,7 +259,143 @@
     }
   }
 
+  // ── memory review ─────────────────────────────────────────────────────
+  // The queue (GET /api/v1/memory/review) lists only provisional or needs-review memories, so a row
+  // that was approved or declined here drops out of it. Such rows are kept in `reviewed` (this
+  // session only) with the returned status and revision, so the person can still Reopen them.
+  const reviewList = $("reviewList");
+  const reviewMsg = $("reviewMsg");
+  const reviewed = new Map(); // path → { item, status, revision }
+  const reviewItems = new Map(); // path → item, from the last list
+
+  let reviewSeq = 0;
+  let reviewTimer = null;
+
+  function scheduleReview() {
+    clearTimeout(reviewTimer);
+    reviewTimer = setTimeout(loadReview, 500);
+  }
+
+  async function loadReview() {
+    clearTimeout(reviewTimer);
+    const seq = ++reviewSeq;
+    try {
+      const r = await fetch(`${base}/api/v1/memory/review?limit=100`, { cache: "no-store" });
+      if (!r.ok) {
+        const msg = await errorText(r, "review list failed");
+        if (seq === reviewSeq) { reviewMsg.textContent = msg; $("reviewCount").textContent = ""; }
+        return;
+      }
+      const j = await r.json();
+      if (seq === reviewSeq) renderReview(j);
+    } catch (err) {
+      if (seq === reviewSeq) reviewMsg.textContent = "review list failed: " + err;
+    }
+  }
+
+  async function errorText(r, prefix) {
+    try { const j = await r.json(); if (j && j.message) return j.message; } catch (_) {}
+    return `${prefix} (${r.status})`;
+  }
+
+  function renderReview(j) {
+    const items = j.items || [];
+    const total = typeof j.total === "number" ? j.total : items.length;
+    reviewItems.clear();
+    for (const i of items) reviewItems.set(i.path, i);
+    // A memory back in the queue (reopened elsewhere) is shown as a queue row again.
+    for (const p of [...reviewed.keys()]) if (reviewItems.has(p)) reviewed.delete(p);
+
+    $("reviewCount").textContent =
+      `${total} waiting` + (total > items.length ? ` · showing ${items.length}` : "");
+    reviewList.innerHTML = "";
+    if (!items.length && !reviewed.size) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "Nothing is waiting for review.";
+      reviewList.append(li);
+      return;
+    }
+    for (const it of items) reviewList.append(reviewRow(it, null));
+    for (const [, done] of reviewed) reviewList.append(reviewRow(done.item, done));
+  }
+
+  function reviewRow(it, done) {
+    const li = document.createElement("li");
+    const flagged = !done && (it.needsReview || it.contradicts);
+    li.className = "review-item" + (done ? " done" : "") + (flagged ? " flagged" : "");
+    li.dataset.path = it.path;
+    li.dataset.revision = done ? done.revision : it.revision;
+    const badges =
+      (!done && it.needsReview ? `<span class="badge warn">needs review</span>` : "") +
+      (!done && it.contradicts ? `<span class="badge warn">contradicts</span>` : "") +
+      (done ? `<span class="badge done">${esc(done.status)}</span>` : "");
+    const meta = [it.type, done ? null : it.status].filter(Boolean).map(esc);
+    if (typeof it.confidence === "number") meta.push("confidence " + esc(it.confidence.toFixed(2)));
+    if (it.source) meta.push("by " + esc(it.source));
+    const actions = done
+      ? `<button type="button" class="ghost" data-action="reopen">Reopen</button>`
+      : `<button type="button" data-action="approve">Approve</button>` +
+        `<button type="button" class="ghost" data-action="decline">Decline</button>`;
+    li.innerHTML =
+      `<div class="result-head"><span class="review-title">${esc(it.title || it.path)}</span>` +
+      `<span class="badges">${badges}</span></div>` +
+      `<div class="path">${esc(it.path)}</div>` +
+      (it.excerpt ? `<div class="excerpt">${esc(it.excerpt)}</div>` : "") +
+      (meta.length ? `<div class="muted">${meta.join(" · ")}</div>` : "") +
+      (it.contradicts ? `<div class="muted link">contradicts <span class="mono">${esc(it.contradicts)}</span></div>` : "") +
+      (it.supersedes ? `<div class="muted link">supersedes <span class="mono">${esc(it.supersedes)}</span></div>` : "") +
+      `<div class="review-actions">${actions}</div>`;
+    return li;
+  }
+
+  async function act(path, action, revision, item) {
+    const row = [...reviewList.querySelectorAll(".review-item")].find((li) => li.dataset.path === path);
+    const buttons = row ? row.querySelectorAll("button") : [];
+    buttons.forEach((b) => { b.disabled = true; });
+    reviewMsg.textContent = `${action} ${path}…`;
+    try {
+      const r = await fetch(`${base}/api/v1/memory/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, action, expectedRevision: revision }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        if (action === "reopen") reviewed.delete(path);
+        else reviewed.set(path, { item: item || { path, title: path }, status: j.status, revision: j.revision });
+        reviewMsg.textContent = `${path} → ${j.status}`;
+      } else if (r.status === 409) {
+        let j = null;
+        try { j = await r.json(); } catch (_) {}
+        reviewed.delete(path);
+        reviewMsg.textContent = j && j.error === "superseded" && j.message
+          ? j.message
+          : `${path} changed since you loaded it, reloaded`;
+      } else if (r.status === 401 || r.status === 403) {
+        reviewMsg.textContent = "This engine needs a writer or admin to review memories.";
+      } else {
+        reviewMsg.textContent = await errorText(r, `${action} failed`);
+      }
+    } catch (err) {
+      reviewMsg.textContent = `${action} failed: ${err}`;
+    }
+    await loadReview();
+  }
+
+  reviewList.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-action]");
+    if (!btn) return;
+    const li = btn.closest(".review-item");
+    const path = li.dataset.path;
+    const done = reviewed.get(path);
+    // Keep the listed item so an acted-on row can still be drawn after it leaves the queue.
+    const item = done ? done.item : reviewItems.get(path);
+    act(path, btn.dataset.action, li.dataset.revision, item);
+  });
+
   function onEvent(ev) {
+    const tool = (ev.data || {}).tool;
     switch (ev.type) {
       case "agent.activity":
       case "conflict":
@@ -267,9 +403,11 @@
         // addItem de-dupes by commit id, so an MCP write (agent.activity + commit.created)
         // appears once, while API/watcher commits (commit.created only) still show.
         addItem(ev);
+        if (tool === "memory.review" || tool === "remember") scheduleReview();
         break;
       case "index.updated":
         refreshIndexInfo();
+        scheduleReview();
         break;
       case "engine.status":
         // no-op visual; connection pill already reflects it
@@ -306,6 +444,7 @@
       if (!r.ok) throw new Error("not ready");
       setConnected(true);
       refreshIndexInfo();
+      loadReview();
       connectWs();
     } catch (e) {
       setConnected(false);
@@ -320,11 +459,14 @@
   endpointEl.addEventListener("change", () => {
     base = endpointEl.value.trim().replace(/\/$/, "");
     localStorage.setItem("svod.endpoint", base);
+    reviewed.clear(); // acted-on rows belong to the previous engine
+    reviewMsg.textContent = "";
     if (ws) try { ws.close(); } catch (_) {}
     connect();
   });
   $("retry").addEventListener("click", connect);
   $("searchForm").addEventListener("submit", runSearch);
+  $("reviewRefresh").addEventListener("click", () => { reviewMsg.textContent = ""; loadReview(); });
   $("searchMode").addEventListener("change", () => {
     if ($("searchQuery").value.trim()) runSearch();
   });
