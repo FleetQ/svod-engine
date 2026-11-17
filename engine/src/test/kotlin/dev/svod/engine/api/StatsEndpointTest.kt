@@ -92,7 +92,6 @@ class StatsEndpointTest {
 
             val res = fx.stats("k-admin")
             assertEquals(200, res.statusCode(), res.body())
-            println("STATS RESPONSE: ${res.body()}")
             val j = obj(res.body())
             assertEquals(setOf("version", "contract", "startedAt", "vaults", "agents", "lastAgentRequestAt").minus("lastAgentRequestAt"), j.keys, "null lastAgentRequestAt is omitted")
             assertEquals(SvodNode.ENGINE_VERSION, j["version"]!!.jsonPrimitive.content)
@@ -127,11 +126,15 @@ class StatsEndpointTest {
     }
 
     @Test
-    fun `an empty vault has no lastCommitAt and lastAgentRequestAt is null before and set after an authenticated MCP call`(): Unit = runBlocking {
+    fun `lastCommitAt is omitted or an instant, and lastAgentRequestAt is null before and set after an authenticated MCP call`(): Unit = runBlocking {
         Fx().use { fx ->
             val before = obj(fx.stats("k-admin").body())
             assertFalse("lastAgentRequestAt" in before.keys, "none yet")
-            assertNotNull(before["vaults"]!!.jsonArray.single().jsonObject["lastCommitAt"].let { it ?: JsonNull }, "present or omitted, never a path")
+            val lastCommit = before["vaults"]!!.jsonArray.single().jsonObject["lastCommitAt"]
+            assertTrue(
+                lastCommit == null || lastCommit is JsonNull || runCatching { java.time.Instant.parse(lastCommit.jsonPrimitive.content) }.isSuccess,
+                "lastCommitAt is omitted or an instant, never anything else: $lastCommit",
+            )
 
             val server = SvodMcpServer(fx.mcp.tools, fx.mcp.registry).start(0)
             try {
