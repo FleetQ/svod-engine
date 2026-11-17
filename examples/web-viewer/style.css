@@ -163,7 +163,7 @@ button {
 .history .commit:hover { background: var(--panel); }
 .history .commit.active { background: var(--panel-2); border-color: var(--line); }
 .history .sha { color: var(--ink-faint); font-size: 12px; }
-.history .msg { color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history .msg { color: var(--ink-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 @keyframes rise { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 

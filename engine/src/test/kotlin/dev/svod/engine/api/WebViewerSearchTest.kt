@@ -1,5 +1,6 @@
 package dev.svod.engine.api
 
+import dev.svod.engine.api.ApiFixture.Companion.enc
 import dev.svod.engine.core.Author
 import dev.svod.engine.index.NoneEmbedder
 import kotlinx.coroutines.runBlocking
@@ -8,12 +9,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import java.net.URI
-import java.net.URLEncoder
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
-import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -30,11 +25,7 @@ import kotlin.test.assertTrue
  */
 class WebViewerSearchTest {
 
-    private val http = HttpClient.newHttpClient()
     private val UI = Author("ui", "ui@svod.local")
-    private fun get(port: Int, path: String) =
-        http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port$path")).GET().build(), HttpResponse.BodyHandlers.ofString())
-    private fun enc(s: String) = URLEncoder.encode(s, StandardCharsets.UTF_8)
     private fun json(body: String): JsonObject = Json.parseToJsonElement(body).jsonObject
 
     private fun viewerDir(): Path {
@@ -52,7 +43,7 @@ class WebViewerSearchTest {
     @Test
     fun `the real viewer ships a search pane`() {
         serve().use { fx ->
-            val root = get(fx.port, "/")
+            val root = fx.get("/")
             assertEquals(200, root.statusCode())
             val html = root.body()
             val required = listOf(
@@ -74,7 +65,7 @@ class WebViewerSearchTest {
     @Test
     fun `viewer script calls the search, file and history endpoints with the right fields`() {
         serve().use { fx ->
-            val r = get(fx.port, "/app.js")
+            val r = fx.get("/app.js")
             assertEquals(200, r.statusCode())
             val js = r.body()
             for (needle in listOf(
@@ -93,10 +84,9 @@ class WebViewerSearchTest {
             fx.engine.write("projects/beta.md", "---\ntags: [deploy, infra]\n---\n# Beta\nThe rollout checklist for beta.", null, UI)
             fx.engine.write("notes/gamma.md", "# Gamma\nThe rollout checklist without tags.", null, UI)
             fx.index.waitIdle()
-            val port = fx.port
 
             // The viewer's keyword query: q, mode, limit
-            val kw = get(port, "/api/v1/search?q=rollout&mode=keyword&limit=20")
+            val kw = fx.get("/api/v1/search?q=rollout&mode=keyword&limit=20")
             assertEquals(200, kw.statusCode(), kw.body())
             val kwJson = json(kw.body())
             // `degraded` may be left out when empty; the viewer reads it as `j.degraded || []`.
@@ -111,35 +101,35 @@ class WebViewerSearchTest {
             }
 
             // Tag filter, one `tags` param per tag, as the viewer sends it
-            val tagged = get(port, "/api/v1/search?q=rollout&mode=keyword&limit=20&tags=deploy&tags=infra")
+            val tagged = fx.get("/api/v1/search?q=rollout&mode=keyword&limit=20&tags=deploy&tags=infra")
             assertEquals(200, tagged.statusCode())
             assertEquals(setOf("projects/beta.md"), json(tagged.body())["hits"]!!.jsonArray.map { it.jsonObject["path"]!!.jsonPrimitive.content }.toSet())
 
             // Filter-only: a tag and no query (the viewer leaves q out when blank)
-            val tagOnly = get(port, "/api/v1/search?mode=hybrid&limit=20&tags=deploy")
+            val tagOnly = fx.get("/api/v1/search?mode=hybrid&limit=20&tags=deploy")
             assertEquals(200, tagOnly.statusCode())
             assertEquals(setOf("projects/alpha.md", "projects/beta.md"), json(tagOnly.body())["hits"]!!.jsonArray.map { it.jsonObject["path"]!!.jsonPrimitive.content }.toSet())
 
             // Path prefix filter
-            val prefixed = get(port, "/api/v1/search?q=rollout&mode=keyword&limit=20&pathPrefix=${enc("notes/")}")
+            val prefixed = fx.get("/api/v1/search?q=rollout&mode=keyword&limit=20&pathPrefix=${enc("notes/")}")
             assertEquals(200, prefixed.statusCode())
             assertEquals(setOf("notes/gamma.md"), json(prefixed.body())["hits"]!!.jsonArray.map { it.jsonObject["path"]!!.jsonPrimitive.content }.toSet())
 
             // Neither query nor filter: an error with a message the viewer shows
-            val bad = get(port, "/api/v1/search?mode=hybrid&limit=20")
+            val bad = fx.get("/api/v1/search?mode=hybrid&limit=20")
             assertEquals(400, bad.statusCode())
             assertTrue(json(bad.body()).containsKey("message"), bad.body())
 
             // Open note: content + lastModifiedBy
             val path = "projects/beta.md"
-            val file = get(port, "/api/v1/file?path=${enc(path)}")
+            val file = fx.get("/api/v1/file?path=${enc(path)}")
             assertEquals(200, file.statusCode(), file.body())
             val fileJson = json(file.body())
             assertTrue(fileJson["content"]!!.jsonPrimitive.content.contains("rollout checklist for beta"), "note content: $fileJson")
             assertTrue(fileJson.containsKey("lastModifiedBy"), "the viewer shows who last modified the note: $fileJson")
 
             // History: commits with commit, author, epochSeconds, message
-            val hist = get(port, "/api/v1/file/history?path=${enc(path)}&max=50")
+            val hist = fx.get("/api/v1/file/history?path=${enc(path)}&max=50")
             assertEquals(200, hist.statusCode())
             val commits = json(hist.body())["commits"]!!.jsonArray.map { it.jsonObject }
             assertTrue(commits.isNotEmpty(), "a written note has history")
@@ -147,7 +137,7 @@ class WebViewerSearchTest {
 
             // The viewer's fallback for a commit whose diff is unavailable: the content at that revision
             val commit = commits[0]["commit"]!!.jsonPrimitive.content
-            val rev = get(port, "/api/v1/file/revision?path=${enc(path)}&revision=${enc(commit)}")
+            val rev = fx.get("/api/v1/file/revision?path=${enc(path)}&revision=${enc(commit)}")
             assertEquals(200, rev.statusCode())
             assertTrue(json(rev.body())["content"]!!.jsonPrimitive.content.contains("rollout checklist for beta"), "revision: ${rev.body()}")
 
@@ -158,8 +148,8 @@ class WebViewerSearchTest {
                 """{"content":"---\ntags: [deploy, infra]\n---\n# Beta\nThe rollout checklist for beta, revised.","expectedRevision":"$currentRev"}""",
             )
             assertEquals(200, edit.statusCode(), edit.body())
-            val newest = json(get(port, "/api/v1/file/history?path=${enc(path)}&max=50").body())["commits"]!!.jsonArray[0].jsonObject["commit"]!!.jsonPrimitive.content
-            val diff = get(port, "/api/v1/file/diff?path=${enc(path)}&from=${enc("$newest~1")}&to=${enc(newest)}")
+            val newest = json(fx.get("/api/v1/file/history?path=${enc(path)}&max=50").body())["commits"]!!.jsonArray[0].jsonObject["commit"]!!.jsonPrimitive.content
+            val diff = fx.get("/api/v1/file/diff?path=${enc(path)}&from=${enc("$newest~1")}&to=${enc(newest)}")
             assertEquals(200, diff.statusCode(), diff.body())
             assertTrue(json(diff.body())["diff"]!!.jsonPrimitive.content.contains("revised"), "diff: ${diff.body()}")
         }

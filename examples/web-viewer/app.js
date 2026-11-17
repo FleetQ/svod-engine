@@ -67,35 +67,40 @@
     while (feed.children.length > 200) feed.lastChild.remove();
   }
 
+  // One commit is selected at a time, whether it was picked in the feed or in a note's history.
   function selectItem(li, path, commit) {
-    document.querySelectorAll(".item.active").forEach((e) => e.classList.remove("active"));
+    document.querySelectorAll(".item.active, .history .commit.active").forEach((e) => e.classList.remove("active"));
     li.classList.add("active");
     showDiff(path, commit);
   }
 
   // Shared by the feed and a note's history: diff a commit against its parent.
+  // Only the latest request may render, so a slow earlier diff can't overwrite a newer one.
+  let diffSeq = 0;
   async function showDiff(path, commit) {
+    const seq = ++diffSeq;
+    const render = (text, added) => { if (seq === diffSeq) renderDiff(text, added); };
     $("diffPath").textContent = path + " @ " + commit.slice(0, 8);
-    renderDiff("loading…");
+    render("loading…");
     try {
       const url = `${base}/api/v1/file/diff?path=${encodeURIComponent(path)}` +
         `&from=${encodeURIComponent(commit + "~1")}&to=${encodeURIComponent(commit)}`;
       const r = await fetch(url);
       if (r.ok) {
         const j = await r.json();
-        renderDiff(j.diff && j.diff.trim() ? j.diff : "(no textual change)");
+        render(j.diff && j.diff.trim() ? j.diff : "(no textual change)");
       } else {
         // first commit of the file → no parent; show the content as freshly added
         const rev = await fetch(`${base}/api/v1/file/revision?path=${encodeURIComponent(path)}&revision=${encodeURIComponent(commit)}`);
         if (rev.ok) {
           const j = await rev.json();
-          renderDiff(j.content.split("\n").map((l) => "+" + l).join("\n"), true);
+          render(j.content.split("\n").map((l) => "+" + l).join("\n"), true);
         } else {
-          renderDiff("(diff unavailable)");
+          render("(diff unavailable)");
         }
       }
     } catch (e) {
-      renderDiff("(diff failed: " + e + ")");
+      render("(diff failed: " + e + ")");
     }
   }
 
@@ -120,8 +125,11 @@
     return s.split(",").map((t) => t.trim().replace(/^#/, "")).filter(Boolean);
   }
 
+  // Only the latest search may render, so a slow earlier response can't overwrite newer results.
+  let searchSeq = 0;
   async function runSearch(e) {
     if (e) e.preventDefault();
+    const seq = ++searchSeq;
     const q = $("searchQuery").value.trim();
     const mode = $("searchMode").value;
     const tags = splitTags($("searchTags").value);
@@ -143,12 +151,15 @@
       if (!r.ok) {
         let msg = "search failed (" + r.status + ")";
         try { const j = await r.json(); if (j && j.message) msg = j.message; } catch (_) {}
+        if (seq !== searchSeq) return;
         searchStatus.textContent = msg;
         searchResults.innerHTML = "";
         return;
       }
-      renderResults(await r.json());
+      const j = await r.json();
+      if (seq === searchSeq) renderResults(j);
     } catch (err) {
+      if (seq !== searchSeq) return;
       searchStatus.textContent = "search failed: " + err;
       searchResults.innerHTML = "";
     }
@@ -158,7 +169,10 @@
     const hits = j.hits || [];
     const mode = String(j.mode || "").toLowerCase();
     let status = `${hits.length} result${hits.length === 1 ? "" : "s"} · ${mode}`;
-    if ((j.degraded || []).includes("semantic")) status += " · semantic unavailable — showing keyword results";
+    // A failed query embed in semantic mode has no keyword leg to fall back on, so only claim
+    // keyword results when there are some.
+    if ((j.degraded || []).includes("semantic"))
+      status += " · semantic unavailable" + (hits.length ? " — showing keyword results" : "");
     searchStatus.textContent = status;
     searchResults.innerHTML = "";
     if (!hits.length) {
@@ -198,7 +212,11 @@
     }
   }
 
+  // Only the latest opened note may render, so a slow earlier note can't overwrite (or append its
+  // history to) the one the user picked last.
+  let noteSeq = 0;
   async function openNote(path) {
+    const seq = ++noteSeq;
     const p = encodeURIComponent(path);
     $("note").classList.remove("hidden");
     $("notePath").textContent = path;
@@ -211,34 +229,33 @@
         fetch(`${base}/api/v1/file?path=${p}`),
         fetch(`${base}/api/v1/file/history?path=${p}&max=50`),
       ]);
-      if (fr.ok) {
-        const f = await fr.json();
+      const f = fr.ok ? await fr.json() : null;
+      const h = hr.ok ? await hr.json() : null;
+      if (seq !== noteSeq) return;
+      if (f) {
         $("noteContent").textContent = f.content;
         const by = f.lastModifiedBy;
         if (by) $("noteMeta").textContent = "last modified by " + (by.agent ? `${by.agent} (${by.name})` : by.name);
       } else {
         $("noteContent").textContent = "(note unavailable)";
       }
-      if (hr.ok) {
-        const h = await hr.json();
-        for (const c of h.commits || []) {
-          const li = document.createElement("li");
-          li.className = "commit";
-          li.innerHTML =
-            `<span class="mono sha">${esc(c.commit.slice(0, 8))}</span>` +
-            `<span class="agent ${colorFor(c.agent || c.author)}">${esc(c.agent || c.author)}</span>` +
-            `<span class="when">${esc(fmtTime(c.epochSeconds * 1000))}</span>` +
-            `<span class="msg">${esc(c.message)}</span>`;
-          li.addEventListener("click", () => {
-            history.querySelectorAll(".commit.active").forEach((x) => x.classList.remove("active"));
-            li.classList.add("active");
-            showDiff(path, c.commit);
-          });
-          history.append(li);
-        }
+      for (const c of (h && h.commits) || []) {
+        const li = document.createElement("li");
+        li.className = "commit";
+        // History spans days, so show the date too (the live feed's time-of-day is not enough).
+        const when = new Date(c.epochSeconds * 1000).toLocaleString([], {
+          year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+        });
+        li.innerHTML =
+          `<span class="mono sha">${esc(c.commit.slice(0, 8))}</span>` +
+          `<span class="agent ${colorFor(c.agent || c.author)}">${esc(c.agent || c.author)}</span>` +
+          `<span class="when">${esc(when)}</span>` +
+          `<span class="msg">${esc(c.message)}</span>`;
+        li.addEventListener("click", () => selectItem(li, path, c.commit));
+        history.append(li);
       }
     } catch (err) {
-      $("noteContent").textContent = "(note failed: " + err + ")";
+      if (seq === noteSeq) $("noteContent").textContent = "(note failed: " + err + ")";
     }
   }
 
