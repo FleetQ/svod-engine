@@ -2,6 +2,7 @@ package dev.svod.engine
 
 import dev.svod.engine.core.SvodEngine
 import dev.svod.engine.lifecycle.ApiCompatibility
+import dev.svod.engine.lifecycle.ConfigInit
 import dev.svod.engine.lifecycle.EngineDiscovery
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
@@ -25,6 +26,10 @@ import kotlin.system.exitProcess
  * Obsidian vault into the configured vault and exits (run while the daemon is stopped — the
  * vault lock is exclusive; while it's running, use POST /api/v1/import instead).
  *
+ * First run: `svod-engine init [dir] [--embedder none|onnx-local]` writes a new `dir/config.json`
+ * (default `~/svod`, one WRITE agent with a random token; never overwrites) and prints the MCP
+ * client snippets and system prompt, then exits.
+ *
  * `svod-engine --help` (`-h`) prints usage and `svod-engine --version` (`-V`) prints the engine
  * and App API contract versions; both exit before any config is read.
  */
@@ -39,6 +44,7 @@ fun main(args: Array<String>) {
         }
         is Command.Import -> return runImport(cmd.args)
         is Command.Clone -> return runClone(cmd.args)
+        is Command.Init -> return runInit(cmd.args)
         is Command.Run -> cmd.configPath
     }
     val config = configPath
@@ -66,6 +72,7 @@ internal sealed interface Command {
     data class Run(val configPath: Path?) : Command
     data class Import(val args: List<String>) : Command
     data class Clone(val args: List<String>) : Command
+    data class Init(val args: List<String>) : Command
     data class Unknown(val flag: String) : Command
 }
 
@@ -79,6 +86,7 @@ internal fun parseCommand(args: Array<String>): Command {
         first in VERSION_FLAGS -> Command.Version
         first == "import" -> Command.Import(args.drop(1))
         first == "clone" -> Command.Clone(args.drop(1))
+        first == "init" -> Command.Init(args.drop(1))
         first.startsWith("-") -> Command.Unknown(first)
         else -> Command.Run(Paths.get(first))
     }
@@ -88,6 +96,8 @@ internal fun usageText(): String = """
     |usage:
     |  svod-engine [config.json]
     |      start the engine (default vault ~/svod-vault when no config is given)
+    |  svod-engine init [dir] [--embedder none|onnx-local]
+    |      write a new config.json in dir (default ~/svod) and print how to connect an agent
     |  svod-engine import <config.json> <obsidian-dir> [into]
     |      import an Obsidian vault into the configured vault, then exit (engine stopped)
     |  svod-engine clone <remote> <dest-dir> <vaultId> [local-branch] [--branch <sync-branch>]
@@ -138,6 +148,22 @@ private fun runClone(argv: List<String>) {
     )
     println("clone: $vaultId ← $remote into $dest (sync ref ${syncBranch?.let { "refs/heads/$it" } ?: "refs/svod/sync/$vaultId"})")
     println("  next: add this dir to the engine config with sync enabled + the same remote, then start the engine")
+}
+
+/** `svod-engine init [dir] [--embedder none|onnx-local]`: write a new config, print the client setup. */
+private fun runInit(argv: List<String>) {
+    val flag = argv.indexOf("--embedder")
+    require(flag < 0 || flag + 1 < argv.size) { "--embedder needs a value (none or onnx-local)" }
+    val embedder = if (flag >= 0) argv[flag + 1] else "none"
+    val args = if (flag >= 0) argv.filterIndexed { i, _ -> i != flag && i != flag + 1 } else argv
+    require(args.size <= 1) { "usage: svod-engine init [dir] [--embedder none|onnx-local]" }
+    val dir = args.firstOrNull()?.let { Paths.get(it) } ?: Paths.get(System.getProperty("user.home"), "svod")
+    val result = ConfigInit.write(dir, embedder)
+    println("init: wrote ${result.configPath.toAbsolutePath()}")
+    println("  start: svod-engine ${result.configPath.toAbsolutePath()}")
+    println("  the agent token below is a secret; it is kept in that file (owner-only where supported)")
+    println()
+    println(ConfigInit.clientSetup(result.config, result.token))
 }
 
 private fun runImport(args: List<String>) {

@@ -5,6 +5,16 @@ independently of the engine; each entry notes the contract version it ships.
 
 ## v1.32.0 — unreleased (App API contract 0.40.0, additive)
 
+### Added — `svod-engine init`
+
+- `svod-engine init [dir] [--embedder none|onnx-local]` writes a new, valid `dir/config.json` (default
+  `~/svod`): the vault in `dir/vault`, loopback ports 7517/7518, secret scanning on, and one `WRITE` agent
+  with a random 256-bit token (`sva_…`). It never overwrites an existing config (the file is created
+  with `CREATE_NEW`), and on POSIX the file is owner-only (`rw-------`). The default embedder is `none`.
+- It then prints the start command, a ready-to-paste Claude Desktop / Cursor `mcpServers` entry, a
+  `claude mcp add --transport http …` line and the system prompt, all filled in with the new token.
+  The App API contract does not change.
+
 ### Added — `--help`, `--version` and a no-agents startup warning
 
 - `svod-engine --help` (`-h`, `help`) prints usage for run, `import` and `clone`; `svod-engine --version`

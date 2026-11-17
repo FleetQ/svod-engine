@@ -177,6 +177,9 @@ endpoint** and authenticate with one of the bearer tokens from your config's `ag
   identity — its `agentId` becomes the git commit author and its `role` (`WRITE` / `READ_ONLY`) gates
   every call.
 
+`svod-engine init` (see [Quickstart](#quickstart)) prints the snippets below filled in with your own
+endpoint and the new agent's token, plus a matching `claude mcp add --transport http …` line for Claude Code.
+
 A minimal Claude Desktop / Cursor MCP server entry:
 
 ```json
@@ -261,8 +264,10 @@ no Java needed, every embedder including in-process `onnx-local` semantic search
 | **Linux** (x64) | `SvodEngine-linux-x64.tar.gz` | `./SvodEngine/bin/SvodEngine config.json` |
 | **Windows** (x64) | `SvodEngine-windows-x64.zip` | `SvodEngine\SvodEngine.exe config.json` |
 
-Every OS follows the same three steps: **(1)** unpack the download, **(2)** write a `config.json`
-(see [Quickstart](#quickstart) for a minimal one, or copy
+Every OS follows the same three steps: **(1)** unpack the download, **(2)** create a `config.json` —
+fastest is `init ~/svod` (e.g. `./SvodEngine/bin/SvodEngine init ~/svod`), which writes
+`~/svod/config.json` with a random agent token and prints how to connect your agent; or write one by
+hand (see [Quickstart](#quickstart) for a minimal one, or copy
 [`dist/config.sample.json`](dist/config.sample.json)), **(3)** run the engine with that config as its
 only argument. It binds `127.0.0.1:7517` (App API) + `127.0.0.1:7518` (MCP) by default.
 
@@ -331,6 +336,20 @@ Build from source instead? Read on.
 ## Quickstart
 
 Requires a JDK (20 used here; the Gradle wrapper is committed).
+
+Fastest start: let the engine write the config for you, then run with it.
+
+```sh
+svod-engine init ~/svod                    # writes ~/svod/config.json (never overwrites); add --embedder onnx-local for semantic search
+svod-engine ~/svod/config.json             # start the engine with it
+```
+
+From source, the same is `cd engine && ./gradlew run --args="init $HOME/svod"`.
+
+`init` creates one `WRITE` agent with a random token (kept in the owner-only config file) and prints a
+ready-to-paste Claude Desktop / Cursor `mcpServers` entry, a `claude mcp add` line and the system prompt.
+
+Or write the config by hand:
 
 ```sh
 # 1. write a config (or copy dist/config.sample.json)
