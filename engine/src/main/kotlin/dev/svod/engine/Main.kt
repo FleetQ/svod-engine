@@ -77,8 +77,6 @@ internal fun parseCommand(args: Array<String>): Command {
     return when {
         first in HELP_FLAGS -> Command.Help
         first in VERSION_FLAGS -> Command.Version
-        // `import --help` / `clone -h`: usage, not a config/remote named "--help".
-        (first == "import" || first == "clone") && args.getOrNull(1) in HELP_FLAGS -> Command.Help
         first == "import" -> Command.Import(args.drop(1))
         first == "clone" -> Command.Clone(args.drop(1))
         first.startsWith("-") -> Command.Unknown(first)
@@ -115,11 +113,9 @@ internal fun noAgentsWarning(config: SvodConfig): String? =
 /** The lines printed once the node is up. */
 internal fun startupBanner(config: SvodConfig, appApiPort: Int, mcpPort: Int): List<String> = buildList {
     add("svod-engine ${SvodNode.ENGINE_VERSION} ready on java ${System.getProperty("java.version")}")
-    // resolvedVaults, not vaultPath: a multi-vault config has no vaultPath and would print "null".
-    add("  vault:   ${config.resolvedVaults().joinToString(", ") { it.path }}")
-    val loopback = if (config.host in SvodConfig.LOOPBACK) "  (loopback)" else ""
-    add("  app api: ${if (config.appApiTls != null) "https" else "http"}://${config.host}:$appApiPort$loopback")
-    add("  mcp:     ${if (config.mcpTls != null) "https" else "http"}://${config.host}:$mcpPort")
+    add("  vault:   ${config.vaultPath}")
+    add("  app api: http://${config.host}:$appApiPort  (loopback)")
+    add("  mcp:     http://${config.host}:$mcpPort")
     noAgentsWarning(config)?.let(::add)
 }
 
