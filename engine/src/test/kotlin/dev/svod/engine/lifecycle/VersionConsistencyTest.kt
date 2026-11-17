@@ -20,14 +20,8 @@ class VersionConsistencyTest {
         val gradleVersion = System.getProperty("svod.projectVersion")
         assertNotNull(gradleVersion, "svod.projectVersion was not forwarded by the test task")
 
-        val source = File(projectDir, "src/main/kotlin/dev/svod/engine/lifecycle/SvodNode.kt")
-        assertTrue(source.isFile, "SvodNode.kt not found at ${source.path}")
-
-        val declared = Regex("ENGINE_VERSION\\s*=\\s*\"([^\"]+)\"")
-            .find(source.readText())
-            ?.groupValues?.get(1)
-        assertNotNull(declared, "no ENGINE_VERSION literal found in SvodNode.kt")
-
+        // A constant now, so compare it directly instead of scraping the source for a literal.
+        val declared = SvodNode.ENGINE_VERSION
         assertEquals(
             gradleVersion,
             declared,
@@ -35,7 +29,6 @@ class VersionConsistencyTest {
                 "SvodNode.ENGINE_VERSION is $declared. Cutting a release means bumping BOTH " +
                 "engine/build.gradle.kts and SvodNode.kt.",
         )
-        assertEquals(gradleVersion, SvodNode.ENGINE_VERSION)
     }
 
     /**

@@ -53,11 +53,9 @@ fun main(args: Array<String>) {
         EngineDiscovery.write(discoveryFile, config.host, node.appApiPort, node.mcpPort)
     }.onFailure { System.err.println("svod-engine: could not write the discovery file: ${it.message}") }
 
-    for (line in startupBanner(config, node.appApiPort, node.mcpPort)) {
-        println(line)
-        // Also on stderr so it lands in launchd's error log.
-        if (line.startsWith(NO_AGENTS_WARNING_PREFIX)) System.err.println(line.trim())
-    }
+    startupBanner(config, node.appApiPort, node.mcpPort).forEach(::println)
+    // Also on stderr so it lands in launchd's error log.
+    noAgentsWarning(config)?.let { System.err.println(it.trim()) }
 
     CountDownLatch(1).await() // park until SIGTERM; the shutdown hook does the cleanup
 }
@@ -71,11 +69,16 @@ internal sealed interface Command {
     data class Unknown(val flag: String) : Command
 }
 
+private val HELP_FLAGS = setOf("--help", "-h", "help")
+private val VERSION_FLAGS = setOf("--version", "-V", "version")
+
 internal fun parseCommand(args: Array<String>): Command {
     val first = args.firstOrNull() ?: return Command.Run(null)
     return when {
-        first in setOf("--help", "-h", "help") -> Command.Help
-        first in setOf("--version", "-V", "version") -> Command.Version
+        first in HELP_FLAGS -> Command.Help
+        first in VERSION_FLAGS -> Command.Version
+        // `import --help` / `clone -h`: usage, not a config/remote named "--help".
+        (first == "import" || first == "clone") && args.getOrNull(1) in HELP_FLAGS -> Command.Help
         first == "import" -> Command.Import(args.drop(1))
         first == "clone" -> Command.Clone(args.drop(1))
         first.startsWith("-") -> Command.Unknown(first)
@@ -100,24 +103,24 @@ internal fun usageText(): String = """
 internal fun versionText(): String =
     "svod-engine ${SvodNode.ENGINE_VERSION} (App API contract ${ApiCompatibility.CURRENT_CONTRACT_VERSION})"
 
-private const val NO_AGENTS_WARNING_PREFIX = "  warning: no agents configured"
-
 /**
- * The lines printed once the node is up. With no agents configured every MCP login is rejected
- * (MCP auth only goes through the agent registry), so say so — but keep running: agents can be
- * added at runtime and the registry reloads.
+ * With no agents configured every MCP login is rejected (MCP auth only goes through the agent
+ * registry), so say so — but keep running: agents can be added at runtime and the registry reloads.
  */
+internal fun noAgentsWarning(config: SvodConfig): String? =
+    if (config.agents.isNotEmpty()) null
+    else "  warning: no agents configured — every MCP client will be rejected until you add one to " +
+        "agents[] in the config or from the app (POST /api/v1/agents)"
+
+/** The lines printed once the node is up. */
 internal fun startupBanner(config: SvodConfig, appApiPort: Int, mcpPort: Int): List<String> = buildList {
     add("svod-engine ${SvodNode.ENGINE_VERSION} ready on java ${System.getProperty("java.version")}")
-    add("  vault:   ${config.vaultPath}")
-    add("  app api: http://${config.host}:$appApiPort  (loopback)")
-    add("  mcp:     http://${config.host}:$mcpPort")
-    if (config.agents.isEmpty()) {
-        add(
-            "$NO_AGENTS_WARNING_PREFIX — every MCP client will be rejected until you add one to " +
-                "agents[] in the config or from the app (POST /api/v1/agents)",
-        )
-    }
+    // resolvedVaults, not vaultPath: a multi-vault config has no vaultPath and would print "null".
+    add("  vault:   ${config.resolvedVaults().joinToString(", ") { it.path }}")
+    val loopback = if (config.host in SvodConfig.LOOPBACK) "  (loopback)" else ""
+    add("  app api: ${if (config.appApiTls != null) "https" else "http"}://${config.host}:$appApiPort$loopback")
+    add("  mcp:     ${if (config.mcpTls != null) "https" else "http"}://${config.host}:$mcpPort")
+    noAgentsWarning(config)?.let(::add)
 }
 
 /**

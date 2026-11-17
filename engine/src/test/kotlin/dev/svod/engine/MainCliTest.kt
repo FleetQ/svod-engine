@@ -15,6 +15,15 @@ class MainCliTest {
     fun `help and version flags are recognised without loading a config`() {
         for (a in listOf("--help", "-h", "help")) assertEquals(Command.Help, parseCommand(arrayOf(a)), a)
         for (a in listOf("--version", "-V", "version")) assertEquals(Command.Version, parseCommand(arrayOf(a)), a)
+        assertEquals(Command.Help, parseCommand(arrayOf("import", "--help")))
+        assertEquals(Command.Help, parseCommand(arrayOf("clone", "-h")))
+    }
+
+    @Test
+    fun `startup banner names every vault of a multi-vault config`() {
+        val cfg = SvodConfig(vaults = listOf(SvodConfig.VaultSettings("a", "/v/a"), SvodConfig.VaultSettings("b", "/v/b")))
+        val vaultLine = startupBanner(cfg, 7517, 7518).single { it.trimStart().startsWith("vault:") }
+        assertTrue("/v/a" in vaultLine && "/v/b" in vaultLine && "null" !in vaultLine, vaultLine)
     }
 
     @Test
