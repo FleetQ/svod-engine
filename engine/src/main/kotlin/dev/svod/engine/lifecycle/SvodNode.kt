@@ -72,6 +72,9 @@ class SvodNode private constructor(
     override fun close() = shutdown()
 
     companion object {
+        /** The engine version; kept equal to the Gradle `version` by VersionConsistencyTest. */
+        const val ENGINE_VERSION = "1.32.0"
+
         /**
          * Run one reconcile cycle for [id] when it is a synced vault (its remote resolves), recording
          * the success markers (lastSyncedAt/head) for the UI + restart. Returns null when [id] is not
@@ -195,7 +198,7 @@ class SvodNode private constructor(
                         dev.svod.engine.security.Secrets.resolve(t.keyPassword).toCharArray())
                 }
                 val updateService = UpdateService(
-                    currentAppVersion = "1.32.0",
+                    currentAppVersion = ENGINE_VERSION,
                     releaseFetcher = UpdateService.productionFetcher(),
                 )
                 // Two-way sync driver: startup + interval poll + on-change debounce, per synced vault.
