@@ -5,6 +5,15 @@ independently of the engine; each entry notes the contract version it ships.
 
 ## v1.32.0 — unreleased (App API contract 0.40.0, additive)
 
+### Added — `--help`, `--version` and a no-agents startup warning
+
+- `svod-engine --help` (`-h`, `help`) prints usage for run, `import` and `clone`; `svod-engine --version`
+  (`-V`, `version`) prints the engine and App API contract versions. Both exit before any config is read.
+  An unknown option prints the usage to stderr and exits with status 2.
+- The startup banner names the engine version, and warns (stdout and stderr) when the config has no
+  agents: every MCP client is rejected until one is added to `agents[]` or from the app
+  (`POST /api/v1/agents`). The engine still starts. The contract does not change.
+
 ### Added — sync through a plain git branch (`syncBranch`)
 
 - Per-vault `syncBranch` (`PUT /api/v1/settings/backup`, returned by `GET /api/v1/sync/config`; also the
