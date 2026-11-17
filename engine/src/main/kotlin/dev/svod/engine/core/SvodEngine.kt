@@ -233,6 +233,36 @@ class SvodEngine private constructor(
 
     suspend fun head(): String? = actor.submit { git.headId() }
 
+    /** Counters for the admin stats endpoint: `.md` notes outside dot-directories, and bytes of everything but `.git/` and `.svod/`. */
+    data class DiskStats(val notes: Int, val bytes: Long)
+
+    /**
+     * Walks the working tree directly, NOT through the write actor, so a stats poll never queues
+     * behind (or in front of) a write. Read-only; a file written mid-walk is counted or not.
+     */
+    fun diskStats(): DiskStats {
+        var notes = 0
+        var bytes = 0L
+        Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
+            override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
+                val n = dir.fileName?.toString()
+                return if (dir != root && (n == ".git" || n == ".svod")) FileVisitResult.SKIP_SUBTREE else FileVisitResult.CONTINUE
+            }
+
+            override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                bytes += attrs.size()
+                if (file.fileName.toString().endsWith(".md") && !root.relativize(file).any { it.toString().startsWith(".") }) notes++
+                return FileVisitResult.CONTINUE
+            }
+
+            override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult = FileVisitResult.CONTINUE
+        })
+        return DiskStats(notes, bytes)
+    }
+
+    /** Commit time of HEAD in epoch seconds; null for an empty repo. Not routed through the write actor. */
+    fun headCommitEpochSeconds(): Long? = git.log(null, 1).firstOrNull()?.epochSeconds
+
     fun branch(): String = git.branch()
 
     // ---- sync write primitives (actor-serialized; keep the single-writer guarantee) ----

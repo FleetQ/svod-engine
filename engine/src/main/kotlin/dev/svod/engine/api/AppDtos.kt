@@ -386,6 +386,20 @@ data class MetricsDto(
     val sync: SyncStatusDto? = null,
 )
 
+/** `GET /api/v1/stats` (0.41.0): counters and timestamps only — no paths, titles, content or names. */
+@Serializable
+data class StatsDto(
+    val version: String,
+    val contract: String,
+    val startedAt: String,
+    val vaults: List<VaultStatsDto>,
+    val agents: Int,
+    val lastAgentRequestAt: String? = null,
+)
+
+@Serializable
+data class VaultStatsDto(val id: String, val notes: Int, val bytes: Long, val lastCommitAt: String? = null)
+
 // ---- Ops surface: per-vault backup / sync-config / maintenance (the UI's Sync & Backup panel) ----
 // Wire shapes match FleetQ/svod-ui-macos exactly. Credentials in any remote URL are REDACTED before
 // they leave the process (invariant: secrets never on the wire).

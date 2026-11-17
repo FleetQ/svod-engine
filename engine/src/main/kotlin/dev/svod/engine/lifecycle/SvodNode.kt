@@ -73,7 +73,7 @@ class SvodNode private constructor(
 
     companion object {
         /** The engine version; kept equal to the Gradle `version` by VersionConsistencyTest. */
-        const val ENGINE_VERSION = "1.32.0"
+        const val ENGINE_VERSION = "1.33.0"
 
         /**
          * Run one reconcile cycle for [id] when it is a synced vault (its remote resolves), recording
@@ -239,6 +239,7 @@ class SvodNode private constructor(
                     secrets = secretStore,
                     activity = userActivity,
                     audit = apiAudit,
+                    lastAgentRequestAt = { registry.lastAuthenticatedAt },
                     backup = backup,
                     syncConfig = { vc ->
                         val b = backup.configOf(vc.id)
