@@ -72,9 +72,11 @@ index. The result:
 | **Hybrid search** | Lucene BM25 (lexical) + optional HNSW kNN vectors (semantic), fused with Reciprocal Rank Fusion. Heading-aware chunking. Filters by tag / path / date; fuzzy / prefix / phrase / field-scoped queries. |
 | **Pluggable embeddings** | Default `onnx-local` runs `multilingual-e5-small` (MIT) in-process via ONNX Runtime — no server, no Python, no network at query time. Or `local-ollama` (a local Ollama server), `remote-openai` (any OpenAI-compatible `/v1/embeddings` endpoint, API key as a Secrets ref), or `none` for a guaranteed BM25-only baseline. Switchable at runtime via `PUT /api/v1/embedder`; `POST /api/v1/embedder/models` lists what a provider can serve. |
 | **Optional reranking** | A second-stage cross-encoder re-scores the fused candidates for a relevance lift — opt-in, default off, degrades to the fused order on any failure. Configured under `reranker` and reported in `GET /settings`. |
-| **MCP server for agents** | 14 tools over streamable HTTP, per-agent bearer tokens → git author, read-only/write roles, token-bucket rate limiting, append-only audit log, optional TLS. |
+| **MCP server for agents** | 20 tools over streamable HTTP, per-agent bearer tokens → git author (or the bound person, see team sharing), read-only/write roles, token-bucket rate limiting, append-only audit log, optional TLS. Memory review is chosen per agent (`requireReview`). |
+| **Typed memory + review** | `remember` turns an observation into a typed memory note (policy / preference / fact / episode) with a lifecycle; `context_pack` recalls it (ranked, or the whole rule book with `enumerate=true`). Review is per agent via `agents[].requireReview` (agents without one follow `memory.requireReview`) and **off by default since 1.30.0**; an agent that opts in has its fact/policy wait `provisional` in the review queue (`GET`/`POST /api/v1/memory/review`, the viewer's Memory review pane) until a person approves it. See [ADR-0018](docs/adr/0018-memory-fact-classification.md). |
 | **Local App API + WebSocket** | A loopback-only HTTP/JSON API for UIs, plus a live `/api/v1/events` stream (agent activity, commits, index updates, conflicts) so a UI feels alive. |
-| **Wikilink graph** | `[[wikilinks]]` parsed into a backlink/outlink graph. Moving or renaming a note **rewrites every backlink in a single commit** — link integrity for free. |
+| **Wikilink graph + thematic graph** | `[[wikilinks]]` parsed into a backlink/outlink graph. Moving or renaming a note **rewrites every backlink in a single commit** — link integrity for free. Optionally (`graph.enabled`), a derived note graph (wikilinks + kNN similarity over the stored vectors) is clustered by Louvain into thematic communities, with optional build-time summaries: MCP `graph_communities` / `graph_community` / `graph_status`, App API `graph/communities` / `graph/community` / `graph/status` / `graph/rebuild`. |
+| **Team vault sharing** | People are App API principals with personal keys, an `admin` flag and per-vault grants ([ADR-0019](docs/adr/0019-app-api-principals.md)). An agent can be bound to a person (`agents[].user`) and get a role per vault (`reader` / `writer` / `maintainer`); a bound agent's commits are authored by the person with a `Svod-Agent:` trailer, so history shows who stands behind each change. See [ADR-0020](docs/adr/0020-team-sharing-users-and-roles.md). |
 | **Multiple vaults** | Run N vaults in one engine (e.g. `personal` + `work`), each its own git repo, lock, index, and sync remote. Routes select a vault via `?vault=`; agents are scoped to their granted vault. Cross-vault `[[vault:note]]` links resolve and surface as backlinks. |
 | **Multi-host sync** | Replicate the vault across machines over git transport. Frontmatter-aware structured merge (YAML keys union, body via git 3-way). A designated merge authority keeps history deterministic; real conflicts are *surfaced*, never auto-resolved. |
 | **Hardening** | Pre-commit secret scanning (a leaked key never enters history), live metrics (write latency, queue depth, index lag, conflicts, sync status), secret refs (`env:` / `file:` / macOS `keychain:`) instead of plaintext tokens. |
@@ -226,19 +228,28 @@ Principles:
 ## The UI interface — local App API
 
 Loopback HTTP/JSON, validated against [`contract/openapi.yaml`](contract/openapi.yaml) (the
-versioned single source of truth for every client — currently **0.14.0**):
+versioned single source of truth for every client — currently **0.41.0**):
 
 - **Health:** `/health` · `/ready`
-- **Content:** `/api/v1/` `tree` · `file` (GET/PUT/DELETE) · `file/move` · `file/restore` ·
-  `file/history` · `file/diff` · `file/revision` · `file/links`
+- **Content:** `/api/v1/` `tree` · `file` (GET/PUT/DELETE; DELETE under `.trash/` purges, admin only) ·
+  `file/move` · `file/restore` · `file/history` · `file/diff` · `file/revision` · `file/links` ·
+  `trash` (list soft-deleted files)
 - **Discovery:** `search` (filter-only "browse by tag" when `q` is omitted) · `graph` · `tags`
+- **Graph (thematic):** `graph/communities` · `graph/community` · `graph/status` · `graph/rebuild`
+- **People & agents** ([ADR-0019](docs/adr/0019-app-api-principals.md),
+  [ADR-0020](docs/adr/0020-team-sharing-users-and-roles.md)): `me` · `users` · `users/{id}` ·
+  `users/{id}/key` · `agents` · `agents/{id}` · `stats` (engine admin only)
+- **Memory:** `memory/review` (GET queue / POST approve, decline, reopen) · `memory/rulebook` ·
+  `memory/capture` · `memory/sessions` · `memory/sessions/mark-distilled` · `memory/proposals` ·
+  `memory/proposals/{id}` · `memory/dashboard`
+- **Updates & secrets:** `update/check` · `update/apply` · `secrets` (upload once, get a `file:` ref)
 - **Index & embedder:** `index/status` · `index/reembed` · `index/pause` · `index/resume` ·
   `embedder` (PUT, switch provider) · `embedder/test` · `embedder/models` · `settings`
-- **Conflicts & sync:** `conflicts` · `conflicts/resolve` · `sync/config` · `sync/now` ·
-  `backup/now` · `settings/backup` · `maintenance/reindex`
-- **Import & external sources:** `import` · `sources` (GET/POST) · `sources/{id}` (DELETE) ·
-  `sources/{id}/sync` · `sources/sync`
-- **Multi-vault:** `vaults`; every per-vault route takes `?vault=<id>`
+- **Conflicts & sync:** `conflicts` · `conflicts/resolve` · `sync/config` · `sync/status` ·
+  `sync/now` · `backup/now` · `settings/backup` · `maintenance/reindex`
+- **Import & external sources:** `import` · `sources` (GET/POST) · `sources/{id}` (PATCH/DELETE) ·
+  `sources/{id}/sync` · `sources/{id}/resolve` · `sources/sync`
+- **Multi-vault:** `vaults` · `vaults/{id}`; every per-vault route takes `?vault=<id>`
 - **Live + metrics:** `events` (WebSocket) · `/api/v1/metrics` (JSON) · **`/metrics`** (Prometheus
   text exposition, for scrapers — at the root, outside the versioned contract)
   — incl. `svod_conflicts`, `svod_sync_held_seconds` / `svod_sync_out_of_sync_seconds` per synced
@@ -446,7 +457,7 @@ a working, dependency-free reference you can crib from.)
 | **Conflict surfaced, not auto-merged** | ✅ | ❌ | ❌ | ❌ | n/a | ❌ |
 | **Hybrid search (BM25 + vectors)** | ✅ RRF | ⚠️ vector-first | ⚠️ | ✅ | ⚠️ plugins | ⚠️ vector-only |
 | **Runs fully local, no Python/server** | ✅ single JVM, in-proc embeddings | ⚠️ | ⚠️ | ⚠️ | ✅ | ⚠️ |
-| **Agent protocol** | ✅ MCP (14 tools) | SDK | SDK | SDK | ❌ | ❌ (DIY) |
+| **Agent protocol** | ✅ MCP (20 tools) | SDK | SDK | SDK | ❌ | ❌ (DIY) |
 | **Multi-host replication** | ✅ git transport | ⚠️ hosted | ⚠️ | ⚠️ hosted | ⚠️ sync apps | ⚠️ |
 | **Lock-in** | None (git clone) | High | Medium | High | None | High |
 
@@ -483,7 +494,7 @@ dependency. The engine stays vendor-agnostic (see
 
 ## Status
 
-**v1.5.0 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
+**v1.33.0 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
 watcher → lifecycle → reference viewer → multi-host sync → hardening → multi-vault + Obsidian
 import → backup/DR + ops surface → external sources (prune + auto-sync) → non-blocking keyword-first
 indexing + pluggable embedders (local-onnx / local-ollama / remote-openai) → restart robustness
@@ -492,11 +503,16 @@ fault tolerance → embedder model enumeration (`POST /embedder/models`) → emb
 link/tag index, `context_pack` agent-memory recall, reranker in `/settings`, filter-only tag browse →
 scheduled auto-backup → two-way multi-machine sync (canonical `refs/svod/sync/<vault>`, or a plain branch via `syncBranch`, 3-way merge,
 conflict surface/resolve, `clone` bootstrap) → per-source filesystem auto-sync (FSEvents watcher,
-debounced; `autoSync` toggle via PATCH).
+debounced; `autoSync` toggle via PATCH) → thematic graph (Louvain communities over wikilinks + kNN
+similarity, `graph_communities` / `graph_community` / `graph_status`) → typed memory (`remember`,
+rule-book recall) and the review queue (per agent, off by default since 1.30.0) → people as App API
+principals (personal keys, per-vault grants) → team sharing (agents bound to people, per-vault roles,
+person-authored commits) → trash listing/purge → SSRF
+guard for hosted engines (`denyPrivateRemotes`) → admin-only `GET /stats` counters.
 Full suite green;
 CI gates every change; packaged as self-contained app-images **and** GraalVM `native-image` single
-binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.14.0**
-(versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0017) for the decision record.
+binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.41.0**
+(versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0020) for the decision record.
 
 Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption).
 The GraalVM `native-image` binary now ships for all three OSes (built on GraalVM CE/JDK 23; serves
