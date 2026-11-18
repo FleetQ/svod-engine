@@ -38,12 +38,19 @@ object Mem0Import {
         author: Author = Author("mem0-import", "import@svod.localhost"),
         into: String = "mem0",
     ): ObsidianImport.Result {
-        val size = Files.size(source)
-        require(size <= MAX_BYTES) { "mem0 export is larger than 64 MiB" }
+        // An unreadable export is a bad `source` (400 at the API), not a server error, and is not
+        // reported as invalid JSON.
+        val bytes = try {
+            require(Files.size(source) <= MAX_BYTES) { "mem0 export is larger than 64 MiB" }
+            Files.readAllBytes(source)
+        } catch (e: java.io.IOException) {
+            throw IllegalArgumentException("cannot read mem0 export: ${e.message}", e)
+        }
         val root = try {
-            Json.parseToJsonElement(String(Files.readAllBytes(source), UTF_8))
+            // A UTF-8 BOM (Windows tools add one) is not part of the JSON.
+            Json.parseToJsonElement(String(bytes, UTF_8).removePrefix(Char(0xFEFF).toString()))
         } catch (e: Exception) {
-            throw IllegalArgumentException("mem0 export is not valid JSON")
+            throw IllegalArgumentException("mem0 export is not valid JSON", e)
         }
         val items: JsonArray = when (root) {
             is JsonArray -> root
@@ -54,8 +61,9 @@ object Mem0Import {
 
         val prefix = into.trim('/').let { if (it.isEmpty()) "" else "$it/" }
         val skipped = ArrayList<String>()
+        // Keyed case-insensitively: `A.md` and `a.md` are one file on macOS/Windows hosts the vault syncs to.
         val seen = HashSet<String>()
-        val entries = ArrayList<BatchEntry>()
+        val entries = ArrayList<Pending>()
         items.forEachIndexed { i, el ->
             val obj = el as? JsonObject ?: run { skipped += "entry $i: not an object"; return@forEachIndexed }
             val id = (obj["id"] as? JsonPrimitive)?.takeIf { it.isString }?.content
@@ -63,22 +71,31 @@ object Mem0Import {
             if (!SAFE_ID.matches(id)) { skipped += "entry $i: unsafe id"; return@forEachIndexed }
             val memory = (obj["memory"] as? JsonPrimitive)?.takeIf { it.isString }?.content
             if (memory.isNullOrBlank()) { skipped += "entry $i: blank memory"; return@forEachIndexed }
-            if (!seen.add(id)) { skipped += "entry $i: duplicate id"; return@forEachIndexed }
-            entries += BatchEntry.Text("$prefix$id.md", noteText(id, memory, obj))
+            if (!seen.add(id.lowercase())) { skipped += "entry $i: duplicate id"; return@forEachIndexed }
+            entries += Pending(id, memory, obj)
         }
 
         val imported = ArrayList<String>()
         val unchanged = ArrayList<String>()
+        // Note texts are built per chunk, so only one chunk of them is in memory at a time.
         for (chunk in entries.chunked(CHUNK)) {
-            val r = engine.writeBatch(chunk, author, "import: mem0, ${chunk.size} memories")
+            val batch = chunk.map { BatchEntry.Text("$prefix${it.id}.md", noteText(it.id, it.memory, it.obj)) }
+            val r = engine.writeBatch(batch, author, "import: mem0, ${batch.size} memories")
             imported += r.written; unchanged += r.unchanged; skipped += r.skipped
         }
         return ObsidianImport.Result(imported.distinct().sorted(), unchanged.distinct().sorted(), skipped.distinct().sorted())
     }
 
+    private class Pending(val id: String, val memory: String, val obj: JsonObject)
+
     private fun noteText(id: String, memory: String, obj: JsonObject): String {
+        // Cut at 80 chars without splitting a surrogate pair (an emoji at the boundary).
+        val title = memory.trim().lineSequence().first().trim().let { line ->
+            val cut = line.take(80)
+            if (cut.length < line.length && cut.last().isHighSurrogate()) cut.dropLast(1) else cut
+        }
         val fm = linkedMapOf<String, Any?>(
-            "title" to memory.trim().lineSequence().first().trim().take(80),
+            "title" to title,
             "source" to "mem0",
             "mem0_id" to id,
         )
@@ -106,7 +123,8 @@ object Mem0Import {
             el.isString -> el.content
             el.booleanOrNull != null -> el.booleanOrNull
             el.longOrNull != null -> el.longOrNull
-            else -> el.doubleOrNull ?: el.content
+            // An integer beyond Long stays exact rather than rounding through Double.
+            else -> el.content.toBigIntegerOrNull() ?: el.doubleOrNull ?: el.content
         }
     }
 }
