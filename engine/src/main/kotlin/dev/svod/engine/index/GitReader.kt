@@ -61,6 +61,9 @@ class GitReader(root: Path) : AutoCloseable {
         return null
     }
 
+    /** Bytes of the blob [blobId] (e.g. a value from [listMarkdown]), without resolving a commit or path. */
+    fun readBlobById(blobId: String): ByteArray = repo.open(ObjectId.fromString(blobId)).bytes
+
     /** Git blob id of [path] at [commit] (the file-level revision used to detect changes). */
     fun blobId(commit: String, path: String): String? {
         val tree = RevWalk(repo).use { it.parseCommit(ObjectId.fromString(commit)).tree }

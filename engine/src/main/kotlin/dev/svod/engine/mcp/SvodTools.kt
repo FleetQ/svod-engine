@@ -423,65 +423,51 @@ class SvodTools(
             var total = 0
             val mode: String
             var degraded = emptyList<String>()
+            val asOfEpoch = q.asOfEpoch
+            // The commit an as-of answer comes from; stays null when no commit existed then (no paths/hits).
             var asOfCommit: String? = null
-            if (q.asOfEpoch != null) {
-                // Point in time: the text and provenance come from the resolved commit, never the working tree.
-                fun contentAt(commit: String, path: String): String? =
-                    index.readAt(commit, path)?.let(dev.svod.engine.index.MarkdownChunker::stripPrivateSpans)
-                if (enumerate) {
-                    mode = "enumerate"
-                    val (commit, paths) = index.enumerateAsOf(q.filters, q.asOfEpoch, ENUMERATE_CAP)
-                    asOfCommit = commit
-                    if (commit != null) for (p in paths) {
-                        val content = contentAt(commit, p) ?: continue
-                        val est = estimateTokens(content)
-                        val prov = index.provenanceAt(commit, p)
-                        blocks.add(PackBlock(p, "", content, 0.0, prov?.first, prov?.second, est))
-                        total += est
-                    }
-                } else {
-                    val result = index.search(q)
-                    mode = result.mode.name
-                    degraded = result.degraded
-                    asOfCommit = result.asOfCommit
-                    val commit = result.asOfCommit
-                    val seenPaths = HashSet<String>()
-                    if (commit != null) for (h in result.hits) {
-                        if (!seenPaths.add(h.path)) continue
-                        val content = contentAt(commit, h.path) ?: h.snippet
-                        val est = estimateTokens(content)
-                        if (blocks.isNotEmpty() && total + est > tokenBudget) continue
-                        val prov = index.provenanceAt(commit, h.path)
-                        blocks.add(PackBlock(h.path, h.heading, content, h.score, prov?.first, prov?.second, est))
-                        total += est
-                        if (total >= tokenBudget) break
-                    }
-                }
-            } else if (enumerate) {
+
+            // Full-note re-read, so strip `<private>` spans here too (index-only stripping wouldn't cover
+            // it). As of a time, the text and provenance come from the resolved commit, never the working tree.
+            suspend fun contentOf(path: String): String? =
+                (if (asOfEpoch == null) engine.read(path)?.text else asOfCommit?.let { index.readAt(it, path) })
+                    ?.let(dev.svod.engine.index.MarkdownChunker::stripPrivateSpans)
+
+            /** (commit, author) of the last change to [path]. */
+            suspend fun provenanceOf(path: String): Pair<String?, String?> =
+                if (asOfEpoch == null) engine.history(path, 1).firstOrNull().let { it?.commit to it?.authorName }
+                else asOfCommit?.let { index.provenanceAt(it, path) }.let { it?.first to it?.second }
+
+            if (enumerate) {
                 mode = "enumerate"
-                val paths = index.enumerate(query.filters, ENUMERATE_CAP)
+                val paths = if (asOfEpoch == null) {
+                    index.enumerate(q.filters, ENUMERATE_CAP)
+                } else {
+                    val (commit, atCommit) = index.enumerateAsOf(q.filters, asOfEpoch, ENUMERATE_CAP)
+                    asOfCommit = commit
+                    atCommit
+                }
                 for (p in paths) {
-                    // Re-read is the full note, so strip `<private>` spans here too (index-only stripping
-                    // wouldn't cover this path). `private: true` notes never reach enumerate (not indexed).
-                    val content = engine.read(p)?.text?.let(dev.svod.engine.index.MarkdownChunker::stripPrivateSpans) ?: continue
+                    // `private: true` notes never reach enumerate (not indexed).
+                    val content = contentOf(p) ?: continue
                     val est = estimateTokens(content)
-                    val prov = engine.history(p, 1).firstOrNull()
-                    blocks.add(PackBlock(p, "", content, 0.0, prov?.commit, prov?.authorName, est))
+                    val (commit, author) = provenanceOf(p)
+                    blocks.add(PackBlock(p, "", content, 0.0, commit, author, est))
                     total += est
                 }
             } else {
-                val result = index.search(query)
+                val result = index.search(q)
                 mode = result.mode.name
                 degraded = result.degraded
+                asOfCommit = result.asOfCommit
                 val seenPaths = HashSet<String>()
                 for (h in result.hits) {
                     if (!seenPaths.add(h.path)) continue // one block per note (dedup + source diversity)
-                    // Full-note re-read ⇒ strip `<private>` spans (the index snippet is already stripped).
-                    val content = engine.read(h.path)?.text?.let(dev.svod.engine.index.MarkdownChunker::stripPrivateSpans) ?: h.snippet
+                    val content = contentOf(h.path) ?: h.snippet
                     val est = estimateTokens(content)
                     if (blocks.isNotEmpty() && total + est > tokenBudget) continue // keep ≥1 block, else respect budget
-                    val prov = engine.history(h.path, 1).firstOrNull()
-                    blocks.add(PackBlock(h.path, h.heading, content, h.score, prov?.commit, prov?.authorName, est))
+                    val (commit, author) = provenanceOf(h.path)
+                    blocks.add(PackBlock(h.path, h.heading, content, h.score, commit, author, est))
                     total += est
                     if (total >= tokenBudget) break
                 }

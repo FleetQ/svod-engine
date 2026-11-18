@@ -519,8 +519,9 @@ class IndexService(
         val idx = LuceneIndex(org.apache.lucene.store.ByteBuffersDirectory())
         try {
             for ((path, blob) in reader.listMarkdown(commit)) {
-                val bytes = reader.readBlob(commit, path) ?: continue
-                val doc = MarkdownChunker.parse(String(bytes, Charsets.UTF_8))
+                // listMarkdown already resolved each blob id: read it directly instead of re-parsing the
+                // commit and walking the tree to the path once per file.
+                val doc = MarkdownChunker.parse(String(reader.readBlobById(blob), Charsets.UTF_8))
                 if (doc.private || doc.chunks.isEmpty()) continue
                 idx.upsertFile(path, blob, doc.tags, doc.created, doc.chunks.map { LuceneIndex.ChunkDoc(it, null) }, memoryMetaOf(doc))
             }

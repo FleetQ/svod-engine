@@ -600,7 +600,7 @@ private const val AS_OF_TEXT =
     "asOf (ISO-8601 instant or date): answer from the vault as it was committed at that time — keyword-only, " +
         "lifecycle (revoked/expired/superseded) judged at that time; not combinable with graphExpand."
 
-private val RESULT_JSON =kotlinx.serialization.json.Json { encodeDefaults = true }
+private val RESULT_JSON = kotlinx.serialization.json.Json { encodeDefaults = true }
 
 private fun ToolResult.toCallToolResult(): CallToolResult =
     CallToolResult(
