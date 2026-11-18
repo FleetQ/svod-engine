@@ -27,8 +27,8 @@ import kotlin.test.assertTrue
  */
 class ReadmeConsistencyTest {
 
-    private val engineDir: Path = Paths.get(System.getProperty("user.dir"))
-    private val repoRoot: Path = engineDir.parent
+    private val engineDir: Path = Paths.get(System.getProperty("svod.projectDir") ?: System.getProperty("user.dir"))
+    private val repoRoot: Path = engineDir.toAbsolutePath().parent
     private val readme: String = Files.readString(repoRoot.resolve("README.md"))
     private val openapi: String = Files.readString(repoRoot.resolve("contract/openapi.yaml"))
 
@@ -41,35 +41,42 @@ class ReadmeConsistencyTest {
         return lines.subList(start, end).joinToString("\n")
     }
 
-    private fun meta(): String =
-        """"_meta":{"${McpProtocol.META_PROTOCOL_VERSION}":"${McpProtocol.V2026_07_28}",""" +
-            """"${McpProtocol.META_CLIENT_INFO}":{"name":"readme-test","version":"1.0.0"},""" +
-            """"${McpProtocol.META_CLIENT_CAPABILITIES}":{}}"""
+    private fun advertisedTools(): List<String> = ADVERTISED_TOOLS
 
-    /** The tool names a WRITE agent sees over a stateless tools/list. */
-    private fun advertisedTools(): List<String> = runBlocking {
-        McpFixture().use { fx ->
-            val server = SvodMcpServer(fx.tools, fx.registry).start(0)
-            try {
-                HttpClient(ClientCIO).use { http ->
-                    val res = http.post("http://127.0.0.1:${server.port}/mcp") {
-                        header(HttpHeaders.Authorization, "Bearer ${WRITE_AGENT.token}")
-                        header(McpProtocol.HEADER_PROTOCOL_VERSION, McpProtocol.V2026_07_28)
-                        header(McpProtocol.HEADER_METHOD, "tools/list")
-                        contentType(ContentType.Application.Json)
-                        setBody("""{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{${meta()}}}""")
+    private companion object {
+        fun meta(): String =
+            """"_meta":{"${McpProtocol.META_PROTOCOL_VERSION}":"${McpProtocol.V2026_07_28}",""" +
+                """"${McpProtocol.META_CLIENT_INFO}":{"name":"readme-test","version":"1.0.0"},""" +
+                """"${McpProtocol.META_CLIENT_CAPABILITIES}":{}}"""
+
+        /** The tool names a WRITE agent sees over a stateless tools/list, fetched once per test class. */
+        val ADVERTISED_TOOLS: List<String> by lazy { fetchAdvertisedTools() }
+
+        fun fetchAdvertisedTools(): List<String> = runBlocking {
+            McpFixture().use { fx ->
+                val server = SvodMcpServer(fx.tools, fx.registry).start(0)
+                try {
+                    HttpClient(ClientCIO).use { http ->
+                        val res = http.post("http://127.0.0.1:${server.port}/mcp") {
+                            header(HttpHeaders.Authorization, "Bearer ${WRITE_AGENT.token}")
+                            header(McpProtocol.HEADER_PROTOCOL_VERSION, McpProtocol.V2026_07_28)
+                            header(McpProtocol.HEADER_METHOD, "tools/list")
+                            contentType(ContentType.Application.Json)
+                            setBody("""{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{${meta()}}}""")
+                        }
+                        Json.parseToJsonElement(res.bodyAsText()).jsonObject["result"]!!.jsonObject["tools"]!!.jsonArray
+                            .map { it.jsonObject["name"]!!.jsonPrimitive.content }
                     }
-                    Json.parseToJsonElement(res.bodyAsText()).jsonObject["result"]!!.jsonObject["tools"]!!.jsonArray
-                        .map { it.jsonObject["name"]!!.jsonPrimitive.content }
-                }
-            } finally { server.stop() }
+                } finally { server.stop() }
+            }
         }
     }
 
     @Test
     fun `every tool count in the README equals the advertised tool list`() {
         val count = advertisedTools().size
-        val matches = Regex("""(\d+)(?:\s+MCP)?\s+tools\b""", RegexOption.IGNORE_CASE).findAll(readme).toList()
+        // `[\s-]` also catches the "Jump to" anchor slug (`#the-agent-interface--20-mcp-tools`)
+        val matches = Regex("""(\d+)(?:[\s-]+MCP)?[\s-]+tools\b""", RegexOption.IGNORE_CASE).findAll(readme).toList()
         assertTrue(matches.isNotEmpty(), "README states no MCP tool count")
         val wrong = matches.filter { it.groupValues[1].toInt() != count }.map { m ->
             val line = readme.substring(0, m.range.first).count { it == '\n' } + 1
@@ -92,7 +99,7 @@ class ReadmeConsistencyTest {
                 var j = i + 1
                 while (j < lines.size && lines[j].isNotBlank() && !lines[j].startsWith("**")) { add(lines[j]); j++ }
             }.joinToString(" ")
-            return Regex("`([a-z_]+)`").findAll(block).map { it.groupValues[1] }.toSet()
+            return Regex("`([a-z0-9_]+)`").findAll(block).map { it.groupValues[1] }.toSet()
         }
         val listed = namesOn("**Read (any role):**") + namesOn("**Write (WRITE role):**")
         val advertised = advertisedTools().toSet()
@@ -104,7 +111,8 @@ class ReadmeConsistencyTest {
 
     @Test
     fun `every contract version in the README equals openapi info version`() {
-        val version = Regex("""(?m)^info:\s*\n(?:\s+.*\n)*?\s+version:\s*(\S+)""").find(openapi)!!.groupValues[1]
+        // VersionConsistencyTest pins this constant to openapi.yaml info.version
+        val version = dev.svod.engine.lifecycle.ApiCompatibility.CURRENT_CONTRACT_VERSION
         val matches = Regex("""contract \*{0,2}(\d+\.\d+\.\d+)""").findAll(readme).toList() +
             Regex("""currently \*{0,2}(\d+\.\d+\.\d+)""").findAll(readme).toList()
         assertTrue(matches.isNotEmpty(), "README states no contract version")
@@ -117,12 +125,12 @@ class ReadmeConsistencyTest {
 
     @Test
     fun `the Status section names the current engine version`() {
-        val gradle = Files.readString(engineDir.resolve("build.gradle.kts"))
-        val version = Regex("""(?m)^version\s*=\s*"([^"]+)"""").find(gradle)!!.groupValues[1]
-        val body = section("Status").lines().drop(1).dropWhile { it.isBlank() }.joinToString("\n")
-        assertTrue(
-            body.startsWith("**v$version"),
-            "README '## Status' must start with **v$version (engine/build.gradle.kts), starts with: '${body.lineSequence().first()}'",
+        // VersionConsistencyTest pins this constant to the Gradle version
+        val version = dev.svod.engine.lifecycle.SvodNode.ENGINE_VERSION
+        val first = section("Status").lines().drop(1).first { it.isNotBlank() }
+        assertEquals(
+            version, Regex("""^\*\*v(\S+)""").find(first)?.groupValues?.get(1),
+            "README '## Status' must start with **v$version (engine version), starts with: '$first'",
         )
     }
 
