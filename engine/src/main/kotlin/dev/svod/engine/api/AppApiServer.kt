@@ -761,9 +761,24 @@ class AppApiServer(
                 // local UI identity, and import is deliberately NOT an MCP tool, so a remote agent
                 // cannot reach it. Restricting `source` to vault roots would break the feature.
                 val src = java.nio.file.Paths.get(req.source)
-                if (!java.nio.file.Files.isDirectory(src)) return@post call.badRequest("source is not a directory: ${req.source}")
-                val r = dev.svod.engine.migrate.ObsidianImport.import(src, vc.engine, into = req.into ?: "", followSymlinks = req.followSymlinks)
-                call.respond(ImportResultDto(r.imported, r.unchanged, r.skipped))
+                when (val format = req.format ?: "obsidian") {
+                    "obsidian" -> {
+                        if (!java.nio.file.Files.isDirectory(src)) return@post call.badRequest("source is not a directory: ${req.source}")
+                        val r = dev.svod.engine.migrate.ObsidianImport.import(src, vc.engine, into = req.into ?: "", followSymlinks = req.followSymlinks)
+                        call.respond(ImportResultDto(r.imported, r.unchanged, r.skipped))
+                    }
+                    "mem0" -> {
+                        // `source` is a Mem0 JSON export file; one note per memory under `into` (default mem0/).
+                        if (!java.nio.file.Files.isRegularFile(src)) return@post call.badRequest("source is not a file: ${req.source}")
+                        val r = try {
+                            dev.svod.engine.migrate.Mem0Import.import(src, vc.engine, into = req.into ?: "mem0")
+                        } catch (e: IllegalArgumentException) {
+                            return@post call.badRequest(e.message ?: "invalid mem0 export")
+                        }
+                        call.respond(ImportResultDto(r.imported, r.unchanged, r.skipped))
+                    }
+                    else -> call.badRequest("unknown import format: $format")
+                }
             }
             get("/api/v1/metrics") {
                 val vc = vault() ?: return@get call.notFound("vault")
