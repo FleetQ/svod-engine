@@ -5,11 +5,15 @@ import org.eclipse.jgit.diff.DiffFormatter
 import org.eclipse.jgit.lib.Constants
 import org.eclipse.jgit.lib.ObjectId
 import org.eclipse.jgit.lib.Repository
+import org.eclipse.jgit.revwalk.RevCommit
 import org.eclipse.jgit.revwalk.RevWalk
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder
 import org.eclipse.jgit.treewalk.CanonicalTreeParser
 import org.eclipse.jgit.treewalk.TreeWalk
+import org.eclipse.jgit.treewalk.filter.AndTreeFilter
+import org.eclipse.jgit.treewalk.filter.PathFilter
 import org.eclipse.jgit.treewalk.filter.PathSuffixFilter
+import org.eclipse.jgit.treewalk.filter.TreeFilter
 import org.eclipse.jgit.util.io.DisabledOutputStream
 import java.nio.file.Path
 
@@ -68,6 +72,33 @@ class GitReader(root: Path) : AutoCloseable {
 
     fun commitEpochSeconds(commit: String): Long =
         RevWalk(repo).use { it.parseCommit(ObjectId.fromString(commit)).commitTime.toLong() }
+
+    /**
+     * The last commit on HEAD's first-parent line whose commit time is at or before [epochSeconds],
+     * or null when there is none (empty repo, or the time precedes the first commit). Commits that
+     * came in through a merge count from the time the merge was made.
+     */
+    fun commitAtOrBefore(epochSeconds: Long): String? {
+        val head = repo.resolve(Constants.HEAD) ?: return null
+        RevWalk(repo).use { walk ->
+            var c: RevCommit? = walk.parseCommit(head)
+            while (c != null) {
+                if (c.commitTime.toLong() <= epochSeconds) return c.name
+                c = if (c.parentCount > 0) walk.parseCommit(c.getParent(0)) else null
+            }
+        }
+        return null
+    }
+
+    /** The latest commit reachable from [commit] that touched [path], as (commit id, author name), or null. */
+    fun lastCommitTouching(commit: String, path: String): Pair<String, String>? {
+        RevWalk(repo).use { walk ->
+            walk.markStart(walk.parseCommit(ObjectId.fromString(commit)))
+            walk.setTreeFilter(AndTreeFilter.create(PathFilter.create(path), TreeFilter.ANY_DIFF))
+            val c = walk.next() ?: return null
+            return c.name to c.authorIdent.name
+        }
+    }
 
     /** Changed markdown paths between two commits (for incremental indexing from commits). */
     fun diffMarkdown(oldCommit: String, newCommit: String): List<Change> {

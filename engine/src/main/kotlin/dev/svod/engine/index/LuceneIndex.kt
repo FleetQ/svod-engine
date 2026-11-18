@@ -23,6 +23,7 @@ import org.apache.lucene.search.PrefixQuery
 import org.apache.lucene.search.Query
 import org.apache.lucene.search.SearcherManager
 import org.apache.lucene.search.TermQuery
+import org.apache.lucene.store.Directory
 import org.apache.lucene.store.FSDirectory
 import org.apache.lucene.util.BytesRef
 import java.nio.ByteBuffer
@@ -41,10 +42,12 @@ import java.nio.file.Path
  * Writes are expected to come from a single thread (the [IndexService]); reads are
  * thread-safe via [SearcherManager].
  */
-class LuceneIndex(private val dir: Path) : AutoCloseable {
+class LuceneIndex(private val directory: Directory) : AutoCloseable {
+
+    /** An on-disk index at [dir]. (The primary constructor also takes an in-memory directory, for as-of snapshots.) */
+    constructor(dir: Path) : this(FSDirectory.open(dir))
 
     private val analyzer = StandardAnalyzer()
-    private val directory = FSDirectory.open(dir)
     private val writer = IndexWriter(directory, IndexWriterConfig(analyzer).setOpenMode(IndexWriterConfig.OpenMode.CREATE_OR_APPEND))
     private val searcherManager = SearcherManager(writer, null)
 

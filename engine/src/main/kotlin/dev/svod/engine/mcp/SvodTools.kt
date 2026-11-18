@@ -203,10 +203,39 @@ class SvodTools(
         }
     }
 
-    suspend fun search(agent: AgentIdentity, query: SearchQuery): ToolResult = guarded(agent, "search", write = false) {
-        val result = index.search(query)
+    /**
+     * [query], with `asOf` applied when [asOf] is given: an ISO-8601 instant, or a date meaning the end of
+     * that UTC day (23:59:59). Null [asOf] (or blank) leaves the query as it is; an unparsable value is a
+     * bad_request, returned as the second element.
+     */
+    private fun withAsOf(query: SearchQuery, asOf: String?): Pair<SearchQuery?, ToolResult?> {
+        val raw = asOf?.trim()?.takeIf { it.isNotEmpty() } ?: return query to null
+        val epoch = parseAsOf(raw) ?: return null to ToolResult.badRequest("asOf must be an ISO-8601 instant or date, got '$raw'")
+        return query.copy(asOfEpoch = epoch) to null
+    }
+
+    /** Epoch seconds for an ISO-8601 instant, or for the last second of an ISO date in UTC; null when unparsable. */
+    private fun parseAsOf(raw: String): Long? =
+        runCatching { java.time.Instant.parse(raw).epochSecond }
+            .recoverCatching { java.time.LocalDate.parse(raw).atTime(23, 59, 59).toEpochSecond(java.time.ZoneOffset.UTC) }
+            .getOrNull()
+
+    private fun JsonObjectBuilder.putAsOf(query: SearchQuery, requested: String?, commit: String?) {
+        val epoch = query.asOfEpoch ?: return
+        put("asOf", buildJsonObject {
+            put("requested", requested?.trim() ?: java.time.Instant.ofEpochSecond(epoch).toString())
+            put("commit", commit)
+            put("commitEpochSeconds", commit?.let { index.commitEpochSeconds(it) })
+        })
+    }
+
+    suspend fun search(agent: AgentIdentity, query: SearchQuery, asOf: String? = null): ToolResult = guarded(agent, "search", write = false) {
+        val (q, bad) = withAsOf(query, asOf)
+        if (q == null) return@guarded bad!!
+        val result = index.search(q)
         ToolResult.ok {
             put("mode", result.mode.name)
+            putAsOf(q, asOf, result.asOfCommit)
             putJsonArray("degraded") { result.degraded.forEach { add(it) } }
             putJsonArray("hits") {
                 result.hits.forEach { h ->
@@ -381,13 +410,54 @@ class SvodTools(
         tokenBudget: Int,
         enumerate: Boolean = false,
         graphExpand: Boolean = false,
+        /** ISO-8601 instant or date: answer from the vault as committed then (see [search]). */
+        asOf: String? = null,
     ): ToolResult =
         guarded(agent, "context_pack", write = false) {
+            val (q, bad) = withAsOf(query, asOf)
+            if (q == null) return@guarded bad!!
+            if (q.asOfEpoch != null && graphExpand) {
+                return@guarded ToolResult.badRequest("asOf cannot be combined with graphExpand: the link graph only reflects the current vault")
+            }
             val blocks = ArrayList<PackBlock>()
             var total = 0
             val mode: String
             var degraded = emptyList<String>()
-            if (enumerate) {
+            var asOfCommit: String? = null
+            if (q.asOfEpoch != null) {
+                // Point in time: the text and provenance come from the resolved commit, never the working tree.
+                fun contentAt(commit: String, path: String): String? =
+                    index.readAt(commit, path)?.let(dev.svod.engine.index.MarkdownChunker::stripPrivateSpans)
+                if (enumerate) {
+                    mode = "enumerate"
+                    val (commit, paths) = index.enumerateAsOf(q.filters, q.asOfEpoch, ENUMERATE_CAP)
+                    asOfCommit = commit
+                    if (commit != null) for (p in paths) {
+                        val content = contentAt(commit, p) ?: continue
+                        val est = estimateTokens(content)
+                        val prov = index.provenanceAt(commit, p)
+                        blocks.add(PackBlock(p, "", content, 0.0, prov?.first, prov?.second, est))
+                        total += est
+                    }
+                } else {
+                    val result = index.search(q)
+                    mode = result.mode.name
+                    degraded = result.degraded
+                    asOfCommit = result.asOfCommit
+                    val commit = result.asOfCommit
+                    val seenPaths = HashSet<String>()
+                    if (commit != null) for (h in result.hits) {
+                        if (!seenPaths.add(h.path)) continue
+                        val content = contentAt(commit, h.path) ?: h.snippet
+                        val est = estimateTokens(content)
+                        if (blocks.isNotEmpty() && total + est > tokenBudget) continue
+                        val prov = index.provenanceAt(commit, h.path)
+                        blocks.add(PackBlock(h.path, h.heading, content, h.score, prov?.first, prov?.second, est))
+                        total += est
+                        if (total >= tokenBudget) break
+                    }
+                }
+            } else if (enumerate) {
                 mode = "enumerate"
                 val paths = index.enumerate(query.filters, ENUMERATE_CAP)
                 for (p in paths) {
@@ -424,6 +494,7 @@ class SvodTools(
             ToolResult.ok {
                 put("query", query.text); put("mode", mode)
                 put("tokenBudget", tokenBudget); put("estimatedTokens", total)
+                putAsOf(q, asOf, asOfCommit)
                 putJsonArray("degraded") { degraded.forEach { add(it) } }
                 putJsonArray("blocks") {
                     blocks.forEach { b ->
