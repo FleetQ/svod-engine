@@ -501,7 +501,94 @@ class IndexService(
     /** Paths of memories awaiting review ([LuceneIndex.reviewFilter]), capped at [limit], sorted. */
     fun enumerateReview(limit: Int): List<String> = index.enumeratePaths(index.reviewFilter(), limit)
 
+    // ---- point-in-time recall (asOf) ----
+
+    /** Guards [snapshotCommit]/[snapshot]; held for a whole as-of query so a snapshot is never closed mid-search. */
+    private val snapshotLock = Any()
+    private var snapshotCommit: String? = null
+    private var snapshot: LuceneIndex? = null
+
+    /**
+     * A keyword-only, in-memory index of the markdown at [commit], built like the keyword-first pass
+     * ([prepare] with no embedding) but never touching the live index or the indexer thread. A
+     * single entry is cached by commit id. MUST be called holding [snapshotLock].
+     */
+    private fun snapshotFor(commit: String): LuceneIndex {
+        val cached = snapshot
+        if (cached != null && snapshotCommit == commit) return cached
+        val idx = LuceneIndex(org.apache.lucene.store.ByteBuffersDirectory())
+        try {
+            for ((path, blob) in reader.listMarkdown(commit)) {
+                // listMarkdown already resolved each blob id: read it directly instead of re-parsing the
+                // commit and walking the tree to the path once per file.
+                val doc = MarkdownChunker.parse(String(reader.readBlobById(blob), Charsets.UTF_8))
+                if (doc.private || doc.chunks.isEmpty()) continue
+                idx.upsertFile(path, blob, doc.tags, doc.created, doc.chunks.map { LuceneIndex.ChunkDoc(it, null) }, memoryMetaOf(doc))
+            }
+            idx.commit()
+        } catch (t: Throwable) {
+            runCatching { idx.close() }
+            throw t
+        }
+        cached?.let { runCatching { it.close() } }
+        snapshot = idx
+        snapshotCommit = commit
+        return idx
+    }
+
+    /** Commit epoch seconds of [commit] (for reporting which commit an as-of answer came from). */
+    fun commitEpochSeconds(commit: String): Long = reader.commitEpochSeconds(commit)
+
+    /**
+     * Point-in-time search: the last commit on HEAD's first-parent line at or before [SearchQuery.asOfEpoch],
+     * BM25 over a snapshot of it, lifecycle filters judged at that time. No semantic leg (old chunk text
+     * has no vectors) and no rerank.
+     */
+    private fun searchAsOf(q: SearchQuery): SearchResult {
+        val start = System.nanoTime()
+        val asOf = q.asOfEpoch!!
+        val commit = reader.commitAtOrBefore(asOf)
+            ?: return SearchResult(emptyList(), SearchMode.KEYWORD, (System.nanoTime() - start) / 1_000_000)
+        val degraded = if (q.mode != SearchMode.KEYWORD && embedder.isActive && q.text.isNotBlank()) listOf(SearchResult.SEMANTIC) else emptyList()
+        if (q.text.isBlank() && q.filters.isEmpty) {
+            return SearchResult(emptyList(), SearchMode.KEYWORD, (System.nanoTime() - start) / 1_000_000, degraded, commit)
+        }
+        val hits = synchronized(snapshotLock) {
+            val snap = snapshotFor(commit)
+            val filter = snap.buildFilter(q.filters, includeMessy = includeMessyInRecall, nowEpoch = asOf)
+            keywordLeg(snap, q.text, filter, maxOf(q.limit * 5, 50)).asSequence()
+                .mapNotNull { (id, score) ->
+                    snap.loadChunk(id)?.let { c ->
+                        SearchHit(id, c.path, c.heading, snippet(c.text, q.text), c.tags, score.toDouble(), matchedKeyword = true, matchedSemantic = false)
+                    }
+                }
+                .take(q.limit)
+                .toList()
+        }
+        return SearchResult(hits, SearchMode.KEYWORD, (System.nanoTime() - start) / 1_000_000, degraded, commit)
+    }
+
+    /**
+     * Path A enumeration as of [asOfEpoch]: the resolved commit (null when none existed then) and the
+     * distinct paths in it matching [filters], lifecycle judged at that time.
+     */
+    fun enumerateAsOf(filters: SearchFilters, asOfEpoch: Long, limit: Int = 500): Pair<String?, List<String>> {
+        val commit = reader.commitAtOrBefore(asOfEpoch) ?: return null to emptyList()
+        val paths = synchronized(snapshotLock) {
+            val snap = snapshotFor(commit)
+            snap.enumeratePaths(snap.buildFilter(filters, includeMessy = includeMessyInRecall, nowEpoch = asOfEpoch), limit)
+        }
+        return commit to paths
+    }
+
+    /** The UTF-8 text of [path] at [commit], or null when it did not exist there. */
+    fun readAt(commit: String, path: String): String? = reader.readBlob(commit, path)?.let { String(it, Charsets.UTF_8) }
+
+    /** The latest commit at or before [commit] that touched [path], as (commit id, author name). */
+    fun provenanceAt(commit: String, path: String): Pair<String, String>? = reader.lastCommitTouching(commit, path)
+
     fun search(q: SearchQuery): SearchResult {
+        if (q.asOfEpoch != null) return searchAsOf(q)
         val start = System.nanoTime()
         // Blank text AND no user-facing filter ⇒ nothing to search (the lifecycle defaults alone must
         // not turn an empty query into a match-all browse). The App API already 400s this case.
@@ -567,14 +654,16 @@ class IndexService(
         return SearchResult(hits, q.mode, (System.nanoTime() - start) / 1_000_000, degraded)
     }
 
-    private fun keywordLeg(text: String, filter: Query?, k: Int): List<Pair<String, Float>> {
+    private fun keywordLeg(text: String, filter: Query?, k: Int): List<Pair<String, Float>> = keywordLeg(index, text, filter, k)
+
+    private fun keywordLeg(target: LuceneIndex, text: String, filter: Query?, k: Int): List<Pair<String, Float>> {
         val userQuery = parseUserQuery(text)
         // No query text but a filter present ⇒ filter-only browse: every doc passing the filter.
         // No query text and no filter ⇒ nothing to search.
         if (userQuery == null && filter == null) return emptyList()
         val b = BooleanQuery.Builder().add(userQuery ?: MatchAllDocsQuery(), BooleanClause.Occur.MUST)
         if (filter != null) b.add(filter, BooleanClause.Occur.FILTER)
-        return index.keywordSearch(b.build(), k)
+        return target.keywordSearch(b.build(), k)
     }
 
     /**
@@ -830,6 +919,11 @@ class IndexService(
         exec.shutdown()
         if (!exec.awaitTermination(30, TimeUnit.SECONDS)) exec.shutdownNow()
         index.close()
+        synchronized(snapshotLock) {
+            snapshot?.let { runCatching { it.close() } }
+            snapshot = null
+            snapshotCommit = null
+        }
         reader.close()
         // The embedder and reranker are NOT closed here: they are handed in, so whoever created
         // them closes them (VaultContext in production, the test itself in tests). Closing an

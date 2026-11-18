@@ -412,16 +412,16 @@ class SvodMcpServer(
             " stays provisional and hidden from recall until a person approves it in the Svod app. Do not use it on notes outside messy/.", mapOf("from" to "string", "to" to "string", "expectedRevision" to "string"), listOf("from", "to")) { req ->
             val (t, d) = routed(req, "promote"); d ?: t!!.promote(agent, req.str("from")!!, req.str("to")!!, req.str("expectedRevision")).toCallToolResult()
         }
-        tool("search", "Hybrid search (keyword/semantic/hybrid) with filters: finds notes by meaning. For exact strings (versions, hosts, identifiers, error messages) use grep; for the folder structure use tree. Provisional, revoked, superseded and expired memories are hidden by default. A non-empty `degraded` (semantic, rerank) means a retrieval step failed: `semantic` = no semantic part, any hits are keyword-only, `rerank` = hits are not reranked. A miss is then weaker evidence than usual.", mapOf("query" to "string", "mode" to "string", "limit" to "integer"), listOf("query")) { req ->
-            val (t, d) = routed(req, "search"); d ?: t!!.search(agent, req.toSearchQuery()).toCallToolResult()
+        tool("search", "Hybrid search (keyword/semantic/hybrid) with filters: finds notes by meaning. For exact strings (versions, hosts, identifiers, error messages) use grep; for the folder structure use tree. Provisional, revoked, superseded and expired memories are hidden by default. A non-empty `degraded` (semantic, rerank) means a retrieval step failed: `semantic` = no semantic part, any hits are keyword-only, `rerank` = hits are not reranked. A miss is then weaker evidence than usual. $AS_OF_TEXT", mapOf("query" to "string", "mode" to "string", "limit" to "integer", "asOf" to "string"), listOf("query")) { req ->
+            val (t, d) = routed(req, "search"); d ?: t!!.search(agent, req.toSearchQuery(), req.str("asOf")).toCallToolResult()
         }
-        tool("context_pack", "Assemble a cited context block. Default: token-budgeted hybrid recall. enumerate=true: return EVERY note matching the filters (type/tags) in full, unranked — the 'rule book' (all active policies/preferences) every turn. graphExpand=true: also pull the 1-hop wikilink neighbourhood of the top hits into any leftover budget (those blocks are marked viaGraph) — worth it when you need the CONTEXT around an answer (what a decision links to, what cites it), not when you just need the matching text. `degraded` has the same meaning as in search.", mapOf("query" to "string", "mode" to "string", "tokenBudget" to "integer", "type" to "string", "status" to "string", "enumerate" to "boolean", "graphExpand" to "boolean"), emptyList()) { req ->
+        tool("context_pack", "Assemble a cited context block. Default: token-budgeted hybrid recall. enumerate=true: return EVERY note matching the filters (type/tags) in full, unranked — the 'rule book' (all active policies/preferences) every turn. graphExpand=true: also pull the 1-hop wikilink neighbourhood of the top hits into any leftover budget (those blocks are marked viaGraph) — worth it when you need the CONTEXT around an answer (what a decision links to, what cites it), not when you just need the matching text. `degraded` has the same meaning as in search. $AS_OF_TEXT", mapOf("query" to "string", "mode" to "string", "tokenBudget" to "integer", "type" to "string", "status" to "string", "enumerate" to "boolean", "graphExpand" to "boolean", "asOf" to "string"), emptyList()) { req ->
             val (t, d) = routed(req, "context_pack")
             d ?: run {
                 // Pull a generous candidate pool, then trim to the token budget.
                 val base = req.toSearchQuery()
                 val q = base.copy(limit = maxOf(base.limit, 50))
-                t!!.contextPack(agent, q, req.int("tokenBudget", 2000), req.bool("enumerate", false), req.bool("graphExpand", false)).toCallToolResult()
+                t!!.contextPack(agent, q, req.int("tokenBudget", 2000), req.bool("enumerate", false), req.bool("graphExpand", false), req.str("asOf")).toCallToolResult()
             }
         }
         tool("remember", "Promote an observation into durable typed memory (policy/preference/fact/episode). Classifies the incoming memory against existing memory of the same type+subject and returns 'classification' (NEW|DUPLICATE|UPDATE|CONTRADICTION|UNCERTAIN) with 'relatedNote' and 'confidence': DUPLICATE is a no-op, UPDATE revokes+links its predecessor, CONTRADICTION keeps BOTH sides linked by 'contradicts' (never overwrites), UNCERTAIN is stored with 'needs-review: true'. " + rememberReviewText(review) + " Use 'supersedes' to declare a replacement explicitly. 'expiresAt' (ISO-8601 instant or date, must be in the future) stores 'expires_at'; recall hides the memory after it. Do not use it for scratch notes or drafts: write those under messy/.", mapOf("content" to "string", "type" to "string", "subject" to "string", "confidence" to "number", "source" to "string", "status" to "string", "into" to "string", "supersedes" to "string", "expiresAt" to "string"), listOf("content")) { req ->
@@ -594,6 +594,11 @@ private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolRequest.toSearchQue
     )
     return SearchQuery(text, filters, mode, limit)
 }
+
+/** Shared `asOf` wording for the search and context_pack tool descriptions. */
+private const val AS_OF_TEXT =
+    "asOf (ISO-8601 instant or date): answer from the vault as it was committed at that time — keyword-only, " +
+        "lifecycle (revoked/expired/superseded) judged at that time; not combinable with graphExpand."
 
 private val RESULT_JSON = kotlinx.serialization.json.Json { encodeDefaults = true }
 

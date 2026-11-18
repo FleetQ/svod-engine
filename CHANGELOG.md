@@ -15,6 +15,19 @@ independently of the engine; each entry notes the contract version it ships.
   `bytes` is the vault working tree without `.git/` and `.svod/`; `notes` counts `.md` files outside
   dot-directories (so `.trash/` is excluded). The walk does not go through the write actor.
 
+### Added — point-in-time recall (`asOf`)
+
+- The MCP `search` and `context_pack` tools take an optional `asOf`: an ISO-8601 instant, or a date meaning the
+  end of that UTC day. The engine answers from the last commit on HEAD's first-parent line at or before that
+  time (a commit that came in through a merge counts from the merge): a temporary in-memory keyword (BM25) index
+  of that commit's markdown, lifecycle filters (revoked / provisional / superseded / expired) judged at that
+  time, and that commit's note text and provenance in `context_pack` blocks. Both results carry an `asOf`
+  object `{requested, commit, commitEpochSeconds}`; `commit` is null when the vault had no commit yet.
+- As-of recall is keyword-only (old text has no vectors), so a hybrid/semantic request reports `degraded:
+  ["semantic"]` when the vault has an embedder. `asOf` with `graphExpand` is a bad request, and an unparsable
+  `asOf` is too. The last snapshot is cached by commit id. Calls without `asOf` behave as before. The App
+  API contract does not change.
+
 ## v1.32.0 — unreleased (App API contract 0.40.0, additive)
 
 ### Added — Memory review pane in the reference web viewer

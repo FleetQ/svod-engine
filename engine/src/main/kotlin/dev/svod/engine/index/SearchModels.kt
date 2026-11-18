@@ -31,6 +31,11 @@ data class SearchQuery(
     val filters: SearchFilters = SearchFilters(),
     val mode: SearchMode = SearchMode.HYBRID,
     val limit: Int = 10,
+    /**
+     * Point-in-time recall: when set (epoch seconds), answer from the last commit on HEAD's
+     * first-parent line at or before this time — keyword-only, lifecycle judged at this time.
+     */
+    val asOfEpoch: Long? = null,
 )
 
 data class SearchHit(
@@ -57,6 +62,8 @@ data class SearchResult(
      * failed). Empty for a complete result.
      */
     val degraded: List<String> = emptyList(),
+    /** For an as-of query ([SearchQuery.asOfEpoch]): the commit answered from; null when none existed then. */
+    val asOfCommit: String? = null,
 ) {
     companion object {
         const val SEMANTIC = "semantic"

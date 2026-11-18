@@ -203,10 +203,39 @@ class SvodTools(
         }
     }
 
-    suspend fun search(agent: AgentIdentity, query: SearchQuery): ToolResult = guarded(agent, "search", write = false) {
-        val result = index.search(query)
+    /**
+     * [query], with `asOf` applied when [asOf] is given: an ISO-8601 instant, or a date meaning the end of
+     * that UTC day (23:59:59). Null [asOf] (or blank) leaves the query as it is; an unparsable value is a
+     * bad_request, returned as the second element.
+     */
+    private fun withAsOf(query: SearchQuery, asOf: String?): Pair<SearchQuery?, ToolResult?> {
+        val raw = asOf?.trim()?.takeIf { it.isNotEmpty() } ?: return query to null
+        val epoch = parseAsOf(raw) ?: return null to ToolResult.badRequest("asOf must be an ISO-8601 instant or date, got '$raw'")
+        return query.copy(asOfEpoch = epoch) to null
+    }
+
+    /** Epoch seconds for an ISO-8601 instant, or for the last second of an ISO date in UTC; null when unparsable. */
+    private fun parseAsOf(raw: String): Long? =
+        runCatching { java.time.Instant.parse(raw).epochSecond }
+            .recoverCatching { java.time.LocalDate.parse(raw).atTime(23, 59, 59).toEpochSecond(java.time.ZoneOffset.UTC) }
+            .getOrNull()
+
+    private fun JsonObjectBuilder.putAsOf(query: SearchQuery, requested: String?, commit: String?) {
+        val epoch = query.asOfEpoch ?: return
+        put("asOf", buildJsonObject {
+            put("requested", requested?.trim() ?: java.time.Instant.ofEpochSecond(epoch).toString())
+            put("commit", commit)
+            put("commitEpochSeconds", commit?.let { index.commitEpochSeconds(it) })
+        })
+    }
+
+    suspend fun search(agent: AgentIdentity, query: SearchQuery, asOf: String? = null): ToolResult = guarded(agent, "search", write = false) {
+        val (q, bad) = withAsOf(query, asOf)
+        if (q == null) return@guarded bad!!
+        val result = index.search(q)
         ToolResult.ok {
             put("mode", result.mode.name)
+            putAsOf(q, asOf, result.asOfCommit)
             putJsonArray("degraded") { result.degraded.forEach { add(it) } }
             putJsonArray("hits") {
                 result.hits.forEach { h ->
@@ -381,37 +410,64 @@ class SvodTools(
         tokenBudget: Int,
         enumerate: Boolean = false,
         graphExpand: Boolean = false,
+        /** ISO-8601 instant or date: answer from the vault as committed then (see [search]). */
+        asOf: String? = null,
     ): ToolResult =
         guarded(agent, "context_pack", write = false) {
+            val (q, bad) = withAsOf(query, asOf)
+            if (q == null) return@guarded bad!!
+            if (q.asOfEpoch != null && graphExpand) {
+                return@guarded ToolResult.badRequest("asOf cannot be combined with graphExpand: the link graph only reflects the current vault")
+            }
             val blocks = ArrayList<PackBlock>()
             var total = 0
             val mode: String
             var degraded = emptyList<String>()
+            val asOfEpoch = q.asOfEpoch
+            // The commit an as-of answer comes from; stays null when no commit existed then (no paths/hits).
+            var asOfCommit: String? = null
+
+            // Full-note re-read, so strip `<private>` spans here too (index-only stripping wouldn't cover
+            // it). As of a time, the text and provenance come from the resolved commit, never the working tree.
+            suspend fun contentOf(path: String): String? =
+                (if (asOfEpoch == null) engine.read(path)?.text else asOfCommit?.let { index.readAt(it, path) })
+                    ?.let(dev.svod.engine.index.MarkdownChunker::stripPrivateSpans)
+
+            /** (commit, author) of the last change to [path]. */
+            suspend fun provenanceOf(path: String): Pair<String?, String?> =
+                if (asOfEpoch == null) engine.history(path, 1).firstOrNull().let { it?.commit to it?.authorName }
+                else asOfCommit?.let { index.provenanceAt(it, path) }.let { it?.first to it?.second }
+
             if (enumerate) {
                 mode = "enumerate"
-                val paths = index.enumerate(query.filters, ENUMERATE_CAP)
+                val paths = if (asOfEpoch == null) {
+                    index.enumerate(q.filters, ENUMERATE_CAP)
+                } else {
+                    val (commit, atCommit) = index.enumerateAsOf(q.filters, asOfEpoch, ENUMERATE_CAP)
+                    asOfCommit = commit
+                    atCommit
+                }
                 for (p in paths) {
-                    // Re-read is the full note, so strip `<private>` spans here too (index-only stripping
-                    // wouldn't cover this path). `private: true` notes never reach enumerate (not indexed).
-                    val content = engine.read(p)?.text?.let(dev.svod.engine.index.MarkdownChunker::stripPrivateSpans) ?: continue
+                    // `private: true` notes never reach enumerate (not indexed).
+                    val content = contentOf(p) ?: continue
                     val est = estimateTokens(content)
-                    val prov = engine.history(p, 1).firstOrNull()
-                    blocks.add(PackBlock(p, "", content, 0.0, prov?.commit, prov?.authorName, est))
+                    val (commit, author) = provenanceOf(p)
+                    blocks.add(PackBlock(p, "", content, 0.0, commit, author, est))
                     total += est
                 }
             } else {
-                val result = index.search(query)
+                val result = index.search(q)
                 mode = result.mode.name
                 degraded = result.degraded
+                asOfCommit = result.asOfCommit
                 val seenPaths = HashSet<String>()
                 for (h in result.hits) {
                     if (!seenPaths.add(h.path)) continue // one block per note (dedup + source diversity)
-                    // Full-note re-read ⇒ strip `<private>` spans (the index snippet is already stripped).
-                    val content = engine.read(h.path)?.text?.let(dev.svod.engine.index.MarkdownChunker::stripPrivateSpans) ?: h.snippet
+                    val content = contentOf(h.path) ?: h.snippet
                     val est = estimateTokens(content)
                     if (blocks.isNotEmpty() && total + est > tokenBudget) continue // keep ≥1 block, else respect budget
-                    val prov = engine.history(h.path, 1).firstOrNull()
-                    blocks.add(PackBlock(h.path, h.heading, content, h.score, prov?.commit, prov?.authorName, est))
+                    val (commit, author) = provenanceOf(h.path)
+                    blocks.add(PackBlock(h.path, h.heading, content, h.score, commit, author, est))
                     total += est
                     if (total >= tokenBudget) break
                 }
@@ -424,6 +480,7 @@ class SvodTools(
             ToolResult.ok {
                 put("query", query.text); put("mode", mode)
                 put("tokenBudget", tokenBudget); put("estimatedTokens", total)
+                putAsOf(q, asOf, asOfCommit)
                 putJsonArray("degraded") { degraded.forEach { add(it) } }
                 putJsonArray("blocks") {
                     blocks.forEach { b ->
