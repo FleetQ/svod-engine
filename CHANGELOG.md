@@ -15,6 +15,17 @@ independently of the engine; each entry notes the contract version it ships.
   `bytes` is the vault working tree without `.git/` and `.svod/`; `notes` counts `.md` files outside
   dot-directories (so `.trash/` is excluded). The walk does not go through the write actor.
 
+### Added — Mem0 export import
+
+- `POST /api/v1/import` takes an optional `format` (`obsidian`, the default, or `mem0`; contract 0.41.0,
+  additive). With `mem0`, `source` is a local Mem0 JSON export (a top-level array, or an object with a
+  `results` or `memories` array, at most 64 MiB) and each memory becomes one note at `‹into›/‹mem0 id›.md`
+  (`into` defaults to `mem0`) with `source`, `mem0_id`, `created`/`updated`, the user/agent/app/run ids,
+  `tags` (`mem0` plus the categories) and `mem0_metadata` in the frontmatter. The path depends only on the
+  id, so a re-run is idempotent and makes no commit; a note that differs locally is skipped, never
+  overwritten. Malformed entries (no id, unsafe id, blank memory, duplicate id) are listed in `skipped` as
+  `entry i: reason`. An invalid export or an unknown `format` is a 400. Still admin-only, not an MCP tool.
+
 ### Added — point-in-time recall (`asOf`)
 
 - The MCP `search` and `context_pack` tools take an optional `asOf`: an ISO-8601 instant, or a date meaning the

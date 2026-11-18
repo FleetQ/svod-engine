@@ -275,7 +275,7 @@ data class ResolveConflictResultDto(
 )
 
 @Serializable
-data class ImportRequestDto(val source: String, val into: String? = null, val vault: String? = null, val followSymlinks: Boolean = false)
+data class ImportRequestDto(val source: String, val into: String? = null, val vault: String? = null, val followSymlinks: Boolean = false, val format: String? = null)
 
 @Serializable
 data class ImportResultDto(val imported: List<String>, val unchanged: List<String>, val skipped: List<String>)

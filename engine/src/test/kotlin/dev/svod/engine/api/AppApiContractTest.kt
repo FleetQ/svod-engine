@@ -185,6 +185,37 @@ class AppApiContractTest {
     }
 
     @Test
+    fun `import endpoint imports a mem0 export and conforms to the contract`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            val ap = "/api/v1"
+            val dir = Files.createTempDirectory("mem0-src-")
+            val file = dir.resolve("export.json")
+            Files.writeString(file, """{"results":[{"id":"m-1","memory":"Likes tea","categories":["drinks"]}]}""")
+            fun esc(p: Path) = p.toString().replace("\\", "\\\\")
+
+            val resp = fx.post("$ap/import", """{"source":"${esc(file)}","format":"mem0"}""")
+            assertEquals(200, resp.statusCode(), resp.body())
+            validate("$ap/import", Request.Method.POST, 200, resp.body())
+            assertTrue(resp.body().contains("mem0/m-1.md"), resp.body())
+
+            // mem0 with a directory, an invalid export, and an unknown format are 400s that conform
+            val notFile = fx.post("$ap/import", """{"source":"${esc(dir)}","format":"mem0"}""")
+            assertEquals(400, notFile.statusCode())
+            validate("$ap/import", Request.Method.POST, 400, notFile.body())
+
+            val junk = dir.resolve("junk.json")
+            Files.writeString(junk, """{"items":[]}""")
+            val invalid = fx.post("$ap/import", """{"source":"${esc(junk)}","format":"mem0"}""")
+            assertEquals(400, invalid.statusCode())
+            validate("$ap/import", Request.Method.POST, 400, invalid.body())
+
+            val unknown = fx.post("$ap/import", """{"source":"${esc(dir)}","format":"notion"}""")
+            assertEquals(400, unknown.statusCode())
+            validate("$ap/import", Request.Method.POST, 400, unknown.body())
+        }
+    }
+
+    @Test
     fun `ops endpoints (sync config, backup, reindex) conform to the contract`() = runBlocking {
         ApiFixture.create().use { fx ->
             val ap = "/api/v1"
