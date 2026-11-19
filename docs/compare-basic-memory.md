@@ -39,9 +39,12 @@ history do that without any setup.
 ## Where Basic Memory is ahead
 
 - **A hosted product.** Basic Memory offers a paid cloud tier with apps. Svod is self-host only
-  today. It has no hosted product and has made no decision about one.
-- **Team seats.** ⚠️ Basic Memory's paid plans advertise team use. Svod supports shared vaults
-  with users and roles (ADR-0020), but you run the server yourself.
+  today. A separate hosted layer is the stated long-term direction
+  ([ADR-0002](adr/0002-repo-split-and-license.md)), but nothing is built and the product decision
+  has not been taken.
+- **Team seats.** Basic Memory's paid plans advertise team use. Svod supports shared vaults
+  with users and roles ([ADR-0020](adr/0020-team-sharing-users-and-roles.md)), but you run the
+  server yourself.
 - **Onboarding.** A polished hosted sign-up gets a non-technical user going faster than
   installing and configuring a JVM service.
 - **Copyleft, if that is what you want.** Some teams prefer AGPL-3.0 because it keeps hosted
