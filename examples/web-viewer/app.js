@@ -8,12 +8,30 @@
   const feedEmpty = $("feedEmpty");
   const statusEl = $("status");
   const endpointEl = $("endpoint");
+  const keyEl = $("apiKey");
   const offline = $("offline");
 
-  // Default to same origin (the engine serves this page); allow override.
-  const defaultBase = location.protocol.startsWith("http") ? location.origin : "http://127.0.0.1:7517";
-  let base = localStorage.getItem("svod.endpoint") || defaultBase;
+  // Default to the engine that serves this page, including a path prefix (a hosted engine sits
+  // behind /t/<team>/); allow override.
+  const defaultBase = location.protocol.startsWith("http")
+    ? location.origin + location.pathname.replace(/\/[^/]*$/, "")
+    : "http://127.0.0.1:7517";
+  // Storage is per origin, and one origin can host many viewers (/t/<team>/): key it by the page's path.
+  const scope = location.pathname.replace(/[^/]*$/, "");
+  const endpointKey = scope === "/" ? "svod.endpoint" : "svod.endpoint:" + scope;
+  let base = localStorage.getItem(endpointKey) || defaultBase;
   endpointEl.value = base;
+  // A personal API key, needed when the engine is not this machine's own. Kept for this tab only,
+  // and per engine URL, so one engine's key is never sent to another.
+  const keyStoreKey = () => "svod.key:" + base;
+  let apiKey = sessionStorage.getItem(keyStoreKey()) || "";
+  keyEl.value = apiKey;
+
+  // fetch() with the key, when there is one. A keyless request is the local engine's own UI.
+  function api(url, opts = {}) {
+    if (!apiKey) return fetch(url, opts);
+    return fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: "Bearer " + apiKey } });
+  }
 
   let ws = null;
   let reconnectTimer = null;
@@ -99,13 +117,13 @@
     try {
       const url = `${base}/api/v1/file/diff?path=${encodeURIComponent(path)}` +
         `&from=${encodeURIComponent(commit + "~1")}&to=${encodeURIComponent(commit)}`;
-      const r = await fetch(url);
+      const r = await api(url);
       if (r.ok) {
         const j = await r.json();
         render(j.diff && j.diff.trim() ? j.diff : "(no textual change)");
       } else {
         // first commit of the file → no parent; show the content as freshly added
-        const rev = await fetch(`${base}/api/v1/file/revision?path=${encodeURIComponent(path)}&revision=${encodeURIComponent(commit)}`);
+        const rev = await api(`${base}/api/v1/file/revision?path=${encodeURIComponent(path)}&revision=${encodeURIComponent(commit)}`);
         if (rev.ok) {
           const j = await rev.json();
           render(j.content.split("\n").map((l) => "+" + l).join("\n"), true);
@@ -163,7 +181,7 @@
     if (pathPrefix) parts.push("pathPrefix=" + encodeURIComponent(pathPrefix));
     searchStatus.textContent = "searching…";
     try {
-      const r = await fetch(`${base}/api/v1/search?${parts.join("&")}`);
+      const r = await api(`${base}/api/v1/search?${parts.join("&")}`);
       if (!r.ok) {
         let msg = "search failed (" + r.status + ")";
         try { const j = await r.json(); if (j && j.message) msg = j.message; } catch (_) {}
@@ -242,8 +260,8 @@
     history.innerHTML = "";
     try {
       const [fr, hr] = await Promise.all([
-        fetch(`${base}/api/v1/file?path=${p}`),
-        fetch(`${base}/api/v1/file/history?path=${p}&max=50`),
+        api(`${base}/api/v1/file?path=${p}`),
+        api(`${base}/api/v1/file/history?path=${p}&max=50`),
       ]);
       const f = fr.ok ? await fr.json() : null;
       const h = hr.ok ? await hr.json() : null;
@@ -296,7 +314,7 @@
     clearTimeout(reviewTimer);
     const seq = ++reviewSeq;
     try {
-      const r = await fetch(`${base}/api/v1/memory/review?limit=100`, { cache: "no-store" });
+      const r = await api(`${base}/api/v1/memory/review?limit=100`, { cache: "no-store" });
       if (!r.ok) {
         const msg = await errorText(r, "review list failed");
         if (seq === reviewSeq) { reviewMsg.textContent = msg; $("reviewCount").textContent = ""; }
@@ -371,7 +389,7 @@
     buttons.forEach((b) => { b.disabled = true; });
     reviewMsg.textContent = `${action} ${path}…`;
     try {
-      const r = await fetch(`${base}/api/v1/memory/review`, {
+      const r = await api(`${base}/api/v1/memory/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path, action, expectedRevision: revision }),
@@ -433,7 +451,7 @@
 
   async function refreshIndexInfo() {
     try {
-      const r = await fetch(`${base}/api/v1/index/status`);
+      const r = await api(`${base}/api/v1/index/status`);
       if (r.ok) {
         const j = await r.json();
         $("indexInfo").textContent = `${j.docCount} chunks indexed · ${j.model}`;
@@ -443,7 +461,8 @@
 
   function connectWs() {
     const wsUrl = base.replace(/^http/, "ws") + "/api/v1/events";
-    ws = new WebSocket(wsUrl);
+    // A browser cannot send a header on a WebSocket: the key goes as an offered subprotocol.
+    ws = apiKey ? new WebSocket(wsUrl, ["svod.events", "svod.key." + apiKey]) : new WebSocket(wsUrl);
     ws.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch (_) {} };
     ws.onclose = () => { setConnected(false); scheduleReconnect(); };
     ws.onerror = () => { try { ws.close(); } catch (_) {} };
@@ -459,6 +478,14 @@
       const r = await fetch(`${base}/ready`, { cache: "no-store" });
       if (!r.ok) throw new Error("not ready");
       setConnected(true);
+      // /ready is open; this one says whether the engine accepts us. Without a key the socket
+      // would only be refused and retried every 1.5 s.
+      const probe = await api(`${base}/api/v1/index/status`, { cache: "no-store" });
+      if (probe.status === 401) {
+        statusEl.textContent = apiKey ? "key rejected" : "API key needed";
+        statusEl.className = "status off";
+        return;
+      }
       refreshIndexInfo();
       loadReview();
       connectWs();
@@ -474,10 +501,20 @@
 
   endpointEl.addEventListener("change", () => {
     base = endpointEl.value.trim().replace(/\/$/, "");
-    localStorage.setItem("svod.endpoint", base);
+    localStorage.setItem(endpointKey, base);
+    apiKey = sessionStorage.getItem(keyStoreKey()) || "";
+    keyEl.value = apiKey;
     reviewed.clear(); // acted-on rows belong to the previous engine
     reviewMsg.textContent = "";
     if (ws) try { ws.close(); } catch (_) {}
+    connect();
+  });
+  keyEl.addEventListener("change", () => {
+    apiKey = keyEl.value.trim();
+    if (apiKey) sessionStorage.setItem(keyStoreKey(), apiKey);
+    else sessionStorage.removeItem(keyStoreKey());
+    clearTimeout(reconnectTimer);
+    if (ws) try { ws.onclose = null; ws.close(); } catch (_) {}
     connect();
   });
   $("retry").addEventListener("click", connect);

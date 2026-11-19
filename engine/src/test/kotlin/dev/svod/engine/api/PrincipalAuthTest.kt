@@ -572,6 +572,55 @@ class PrincipalAuthTest {
         Fixture().use { fx -> assertEquals(200, fx.get("/metrics").statusCode()) }
     }
 
+    /** A raw WebSocket handshake; returns the status line and the response headers (lower-cased names). */
+    private fun handshake(port: Int, path: String, protocols: String? = null, key: String? = null): Pair<String, Map<String, String>> =
+        java.net.Socket("127.0.0.1", port).use { sock ->
+            val lines = mutableListOf("GET $path HTTP/1.1", "Host: 127.0.0.1:$port", "Upgrade: websocket", "Connection: Upgrade",
+                "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version: 13")
+            if (protocols != null) lines += "Sec-WebSocket-Protocol: $protocols"
+            if (key != null) lines += "Authorization: Bearer $key"
+            sock.getOutputStream().write((lines.joinToString("\r\n") + "\r\n\r\n").toByteArray())
+            sock.getOutputStream().flush()
+            val reader = sock.getInputStream().bufferedReader()
+            val status = reader.readLine() ?: ""
+            val headers = generateSequence { reader.readLine()?.takeIf { it.isNotEmpty() } }
+                .associate { it.substringBefore(':').trim().lowercase() to it.substringAfter(':').trim() }
+            status to headers
+        }
+
+    @Test
+    fun `a browser passes its key to the events stream as a subprotocol`(): Unit = runBlocking {
+        Fixture(localAdmin = false).use { fx ->
+            val (ok, okHeaders) = handshake(fx.port, "/api/v1/events", protocols = "svod.events, svod.key.k-editor")
+            assertTrue(" 101 " in ok, ok)
+            assertEquals("svod.events", okHeaders["sec-websocket-protocol"], "a browser drops the socket unless the server picks an offered protocol")
+            assertTrue(" 401 " in handshake(fx.port, "/api/v1/events", protocols = "svod.events, svod.key.svk_guess").first)
+            assertTrue(" 401 " in handshake(fx.port, "/api/v1/events", protocols = "svod.events").first, "no key, no stream")
+            val (plain, plainHeaders) = handshake(fx.port, "/api/v1/events", key = "k-editor")
+            assertTrue(" 101 " in plain, plain)
+            assertEquals(null, plainHeaders["sec-websocket-protocol"], "a header client that offers nothing gets no protocol")
+            // The subprotocol carries a key on the events stream only.
+            val tree = HttpRequest.newBuilder(URI.create("http://127.0.0.1:${fx.port}/api/v1/tree"))
+                .header("Sec-WebSocket-Protocol", "svod.key.k-editor").GET().build()
+            assertEquals(401, JHttpClient.newHttpClient().send(tree, HttpResponse.BodyHandlers.ofString()).statusCode())
+
+            val received = CopyOnWriteArrayList<String>()
+            val client = HttpClient(CIO) { install(WebSockets) }
+            val job = launch(Dispatchers.IO) {
+                runCatching {
+                    client.webSocket(host = "127.0.0.1", port = fx.port, path = "/api/v1/events",
+                        request = { header("Sec-WebSocket-Protocol", "svod.events, svod.key.k-editor") }) {
+                        for (frame in incoming) if (frame is Frame.Text) received.add(frame.readText())
+                    }
+                }
+            }
+            delay(500)
+            assertEquals(200, fx.write("a", "via-protocol.md", "# p", key = "k-editor").statusCode())
+            withTimeout(5000) { while (received.none { "via-protocol.md" in it }) delay(50) }
+            job.cancel(); client.close()
+        }
+    }
+
     @Test
     fun `events are filtered to readable vaults`(): Unit = runBlocking {
         Fixture().use { fx ->
