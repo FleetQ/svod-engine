@@ -39,3 +39,4 @@ reaches users who point `webViewerPath` at their checkout; there is no image to 
 - [x] T7 Stable agent colour by name
 - [x] T8 Reduced motion, diff meta lines, remove `⌘`
 - [x] T9 Fallbacks for browsers without `dvh` and `color-mix()` {added}
+- [x] T10 Light badge colours, reviewed rows and placeholders at ≥ 4.5:1 (found by the verifier) {added}

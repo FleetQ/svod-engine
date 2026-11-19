@@ -11,8 +11,10 @@ independently of the engine; each entry notes the contract version it ships.
   changed; before, a wrong URL left only Retry against the same URL.
 - Feed rows, search results and note history commits can be reached with Tab and opened with Enter or Space,
   with a visible focus ring. The engine URL field has a label.
-- Every text colour is at least 4.5:1 against its background (`--ink-faint` was 3.1-3.6:1), and a light theme
-  follows `prefers-color-scheme`. The header fits at 390px width.
+- Text, agent badges and input placeholders are at least 4.5:1 against their background in both themes
+  (`--ink-faint` was 3.1-3.6:1, placeholders used the browser default, reviewed rows were faded with
+  opacity), and a light theme follows `prefers-color-scheme`. The header fits at 390px width; the `⌘`
+  mark next to the name is gone.
 - A conflict row says "conflict" instead of relying on a red border; the "→ diff" hint stays on the row's
   line; an agent keeps the same badge colour across reloads (hash of the name); the row animation respects
   `prefers-reduced-motion`; the diff drops git's `diff --git`/`index` header lines.

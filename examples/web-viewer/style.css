@@ -48,11 +48,11 @@
     --bad: #a8322f;
     --bar-bg: rgba(238,240,243,0.88);
     --scrim: rgba(247,248,250,0.94);
-    --c0-bg: rgba(138,90,18,0.12);  --c0: #7a5410;
-    --c1-bg: rgba(43,92,148,0.12);  --c1: #2b5c94;
-    --c2-bg: rgba(61,107,44,0.12);  --c2: #3d6b2c;
-    --c3-bg: rgba(127,63,132,0.12); --c3: #7f3f84;
-    --c4-bg: rgba(138,79,34,0.12);  --c4: #8a4f22;
+    --c0-bg: rgba(138,90,18,0.12);  --c0: #6e4b0e;
+    --c1-bg: rgba(43,92,148,0.12);  --c1: #285689;
+    --c2-bg: rgba(61,107,44,0.12);  --c2: #335a24;
+    --c3-bg: rgba(127,63,132,0.12); --c3: #743a79;
+    --c4-bg: rgba(138,79,34,0.12);  --c4: #7a441b;
   }
 }
 
@@ -179,6 +179,7 @@ button {
   font-family: var(--ui); font-size: 13px;
 }
 .search-form select { flex: 0 0 auto; color: var(--ink-dim); }
+.endpoint::placeholder, .search-form input::placeholder { color: var(--ink-faint); opacity: 1; }
 .search-form input:focus, .search-form select:focus { border-color: var(--accent); }
 .search-form button { align-self: flex-start; margin-top: 2px; }
 .search-status { margin: 6px 16px 0; }
@@ -236,7 +237,8 @@ button {
 }
 .review-item:hover { background: var(--panel); }
 .review-item.flagged { border-color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
-.review-item.done { opacity: 0.7; }
+/* dimmed by colour, not opacity, so the text keeps its contrast */
+.review-item.done .review-title { color: var(--ink-dim); }
 .review-title { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
 .review-item .excerpt {
   color: var(--ink-dim); font-size: 12.5px; white-space: pre-wrap; word-break: break-word;
