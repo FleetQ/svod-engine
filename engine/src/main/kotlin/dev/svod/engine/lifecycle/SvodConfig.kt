@@ -168,6 +168,17 @@ data class SvodConfig(
     @Serializable
     data class MemorySettings(
         val requireReview: Boolean = false,
+        /**
+         * Model behind the opt-in `extract_memories` tool: "none" (default, the tool answers "not
+         * configured") or "ollama". Extracted memories are always stored `provisional`.
+         */
+        val extractionProvider: String = "none",
+        val extractionModel: String = dev.svod.engine.graphrag.OllamaSummaryLlm.DEFAULT_MODEL,
+        /** Null ⇒ the embedder's Ollama endpoint. */
+        val extractionEndpoint: String? = null,
+        val extractionTimeoutSeconds: Int = 120,
+        /** Longer transcripts are refused, not truncated. */
+        val extractionMaxTranscriptChars: Int = 20000,
     )
     /**
      * [sessionIdleMinutes]: a 2025-11-25 (session-based) MCP session with no request for this long is
@@ -484,6 +495,12 @@ data class SvodConfig(
         }
         if (reranker.topK < 1) errors += "reranker.topK must be >= 1, was ${reranker.topK}"
         if (reranker.requestTimeoutSeconds < 1) errors += "reranker.requestTimeoutSeconds must be >= 1, was ${reranker.requestTimeoutSeconds}"
+        // A typo would otherwise silently leave extract_memories answering "not configured".
+        if (EXTRACTION_PROVIDERS.none { it.equals(memory.extractionProvider, ignoreCase = true) }) {
+            errors += "memory.extractionProvider must be one of $EXTRACTION_PROVIDERS, was '${memory.extractionProvider}'"
+        }
+        if (memory.extractionTimeoutSeconds < 1) errors += "memory.extractionTimeoutSeconds must be >= 1, was ${memory.extractionTimeoutSeconds}"
+        if (memory.extractionMaxTranscriptChars < 1) errors += "memory.extractionMaxTranscriptChars must be >= 1, was ${memory.extractionMaxTranscriptChars}"
         val tokens = agents.map { it.token }
         if (tokens.any { it.isBlank() }) errors += "agent tokens must be non-blank"
         if (tokens.size != tokens.toSet().size) errors += "agent tokens must be unique"
@@ -591,6 +608,24 @@ data class SvodConfig(
         )
     }
 
+    fun toMemoryExtractorConfig(): dev.svod.engine.memory.MemoryExtractionConfig {
+        val provider = when (memory.extractionProvider.lowercase()) {
+            "ollama", "local-ollama" -> dev.svod.engine.memory.MemoryExtractionProvider.OLLAMA
+            else -> dev.svod.engine.memory.MemoryExtractionProvider.NONE
+        }
+        return dev.svod.engine.memory.MemoryExtractionConfig(
+            provider = provider,
+            model = memory.extractionModel,
+            // embedder.endpoint is an OpenAI-compatible URL under remote-openai: falling back to it would
+            // post the conversation to a remote host. Only an Ollama-style endpoint is a safe default.
+            endpoint = memory.extractionEndpoint
+                ?: embedder.endpoint?.takeUnless { embedder.provider.lowercase() in setOf("remote-openai", "openai") }
+                ?: embedder.ollamaEndpoint,
+            timeoutSeconds = memory.extractionTimeoutSeconds,
+            maxTranscriptChars = memory.extractionMaxTranscriptChars,
+        )
+    }
+
     fun toAgentSpecs(): List<AgentRegistry.AgentSpec> = agents.map { a ->
         val role = if (a.role.equals("WRITE", ignoreCase = true)) AgentRole.WRITE else AgentRole.READ_ONLY
         // A user-bound agent writes as the person (ADR-0020); an unbound one exactly as before.
@@ -690,6 +725,7 @@ data class SvodConfig(
 
         val PROVIDERS = listOf("onnx-local", "local-onnx", "ollama", "local-ollama", "remote-openai", "openai", "none")
         val RERANKER_PROVIDERS = listOf("none", "remote", "remote-tei", "tei", "local-onnx", "onnx-local")
+        val EXTRACTION_PROVIDERS = listOf("none", "ollama", "local-ollama")
         val ROLES = listOf("READ_ONLY", "WRITE")
 
         private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
