@@ -44,12 +44,35 @@ object ObsidianImport {
     /** Files per batch commit — bounds in-flight memory while collapsing a big import to few commits. */
     private const val CHUNK = 512
 
-    private class Walk(val files: List<Path>, val skipped: List<String>)
+    internal class Walk(val files: List<Path>, val skipped: List<String>)
 
-    suspend fun import(source: Path, engine: SvodEngine, author: Author = Author("obsidian-import", "import@svod.localhost"), into: String = "", followSymlinks: Boolean = false): Result {
+    /** The vault-relative prefix for `into` ("" or "dir/"). */
+    internal fun prefixOf(into: String): String = into.trim('/').let { if (it.isEmpty()) "" else "$it/" }
+
+    /** Vault-relative path of [file] under [base], after [prefix]. */
+    internal fun relPath(base: Path, prefix: String, file: Path): String =
+        prefix + base.relativize(file).toString().replace('\\', '/')
+
+    suspend fun import(source: Path, engine: SvodEngine, author: Author = Author("obsidian-import", "import@svod.localhost"), into: String = "", followSymlinks: Boolean = false): Result =
+        importWith(source, engine, author, into, followSymlinks) { _, text -> text }
+
+    /**
+     * The shared import core. [transform] is applied to each markdown file's text (vault-relative
+     * path, content) before it is written; attachments are never transformed. A caller that already
+     * walked the source (to pre-scan it) passes that [walk] so the tree is not walked twice and the
+     * written file set is exactly the one it scanned.
+     */
+    internal suspend fun importWith(
+        source: Path,
+        engine: SvodEngine,
+        author: Author,
+        into: String,
+        followSymlinks: Boolean,
+        walk: Walk = collectFiles(source.normalize(), prefixOf(into), followSymlinks),
+        transform: (rel: String, text: String) -> String,
+    ): Result {
         val base = source.normalize()
-        val prefix = into.trim('/').let { if (it.isEmpty()) "" else "$it/" }
-        val walk = collectFiles(base, prefix, followSymlinks)
+        val prefix = prefixOf(into)
         val imported = ArrayList<String>()
         val unchanged = ArrayList<String>()
         val skipped = ArrayList(walk.skipped)
@@ -61,10 +84,10 @@ object ObsidianImport {
             // A single unreadable entry must not abort the whole import: read failures are recorded
             // in `skipped` and the walk continues (only a missing source — checked by the caller — is fatal).
             val entries = chunk.mapNotNull { file ->
-                val rel = prefix + base.relativize(file).toString().replace('\\', '/')
+                val rel = relPath(base, prefix, file)
                 try {
                     val bytes = Files.readAllBytes(file)
-                    if (rel.endsWith(".md")) BatchEntry.Text(rel, String(bytes, UTF_8)) else BatchEntry.Bytes(rel, bytes)
+                    if (rel.endsWith(".md")) BatchEntry.Text(rel, transform(rel, String(bytes, UTF_8))) else BatchEntry.Bytes(rel, bytes)
                 } catch (e: IOException) {
                     log.warn("import: skipping unreadable entry {}: {}", rel, e.message)
                     skipped += rel
@@ -78,7 +101,7 @@ object ObsidianImport {
         return Result(imported.sorted(), unchanged.sorted(), skipped.distinct().sorted())
     }
 
-    private fun collectFiles(base: Path, prefix: String, followSymlinks: Boolean): Walk {
+    internal fun collectFiles(base: Path, prefix: String, followSymlinks: Boolean): Walk {
         val out = ArrayList<Path>()
         val skipped = ArrayList<String>()
         // Default: walkFileTree does NOT follow symlinks, so a symlink — even to a directory — arrives
@@ -102,7 +125,7 @@ object ObsidianImport {
                 if (name.startsWith(".")) return FileVisitResult.CONTINUE
                 if (!followSymlinks && (attrs.isSymbolicLink() || Files.isSymbolicLink(file))) {
                     log.info("import: skipping symlink {}", file)
-                    skipped += prefix + base.relativize(file).toString().replace('\\', '/')
+                    skipped += relPath(base, prefix, file)
                     return FileVisitResult.CONTINUE
                 }
                 out.add(file)
@@ -113,7 +136,7 @@ object ObsidianImport {
             // abort the walk — record it and continue.
             override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult {
                 log.warn("import: skipping inaccessible entry {}: {}", file, exc.message)
-                skipped += prefix + base.relativize(file).toString().replace('\\', '/')
+                skipped += relPath(base, prefix, file)
                 return FileVisitResult.CONTINUE
             }
         })

@@ -6,12 +6,14 @@ import dev.svod.engine.lifecycle.ConfigInit
 import dev.svod.engine.lifecycle.EngineDiscovery
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
+import dev.svod.engine.migrate.BasicMemoryImport
 import dev.svod.engine.migrate.ObsidianImport
 import dev.svod.engine.security.SecretScanner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
+import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.concurrent.CountDownLatch
@@ -25,6 +27,8 @@ import kotlin.system.exitProcess
  * One-shot import mode: `svod-engine import <config.json> <obsidian-dir> [into]` migrates an
  * Obsidian vault into the configured vault and exits (run while the daemon is stopped — the
  * vault lock is exclusive; while it's running, use POST /api/v1/import instead).
+ * `svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]` does the same for a
+ * Basic Memory project, rewriting relations to note titles/permalinks into resolvable wikilinks.
  *
  * First run: `svod-engine init [dir] [--embedder none|onnx-local]` writes a new `dir/config.json`
  * (default `~/svod`, one WRITE agent with a random token; never overwrites) and prints the MCP
@@ -43,6 +47,7 @@ fun main(args: Array<String>) {
             exitProcess(2)
         }
         is Command.Import -> return runImport(cmd.args)
+        is Command.ImportBasicMemory -> return runImportBasicMemory(cmd.args)
         is Command.Clone -> return runClone(cmd.args)
         is Command.Init -> return runInit(cmd.args)
         is Command.Run -> cmd.configPath
@@ -71,6 +76,7 @@ internal sealed interface Command {
     data object Version : Command
     data class Run(val configPath: Path?) : Command
     data class Import(val args: List<String>) : Command
+    data class ImportBasicMemory(val args: List<String>) : Command
     data class Clone(val args: List<String>) : Command
     data class Init(val args: List<String>) : Command
     data class Unknown(val flag: String) : Command
@@ -85,6 +91,7 @@ internal fun parseCommand(args: Array<String>): Command {
         first in HELP_FLAGS -> Command.Help
         first in VERSION_FLAGS -> Command.Version
         first == "import" -> Command.Import(args.drop(1))
+        first == "import-basic-memory" -> Command.ImportBasicMemory(args.drop(1))
         first == "clone" -> Command.Clone(args.drop(1))
         first == "init" -> Command.Init(args.drop(1))
         first.startsWith("-") -> Command.Unknown(first)
@@ -100,6 +107,8 @@ internal fun usageText(): String = """
     |      write a new config.json in dir (default ~/svod) and print how to connect an agent
     |  svod-engine import <config.json> <obsidian-dir> [into]
     |      import an Obsidian vault into the configured vault, then exit (engine stopped)
+    |  svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]
+    |      import a Basic Memory project (relations to titles/permalinks resolved), then exit (engine stopped)
     |  svod-engine clone <remote> <dest-dir> <vaultId> [local-branch] [--branch <sync-branch>]
     |      clone an existing synced vault onto this machine, then exit
     |  svod-engine --help | -h
@@ -170,12 +179,23 @@ private fun runInit(argv: List<String>) {
 
 private fun runImport(args: List<String>) {
     require(args.size >= 2) { "usage: svod-engine import <config.json> <obsidian-dir> [into]" }
+    runImportWith(args) { source, engine, into -> ObsidianImport.import(source, engine, into = into) }
+}
+
+private fun runImportBasicMemory(args: List<String>) {
+    require(args.size >= 2) { "usage: svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]" }
+    runImportWith(args) { source, engine, into -> BasicMemoryImport.import(source, engine, into = into) }
+}
+
+private fun runImportWith(args: List<String>, run: suspend (Path, SvodEngine, String) -> ObsidianImport.Result) {
     val config = SvodConfig.loadOrThrowValidated(Paths.get(args[0]))
     val source = Paths.get(args[1])
+    // Same guard as POST /api/v1/import: a mistyped path must fail loudly, not report "1 skipped".
+    require(Files.isDirectory(source)) { "source is not a directory: ${args[1]}" }
     val into = args.getOrNull(2) ?: ""
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     SvodEngine.open(config.vault(), scope, SecretScanner(config.secretScanning)).use { engine ->
-        val r = runBlocking { ObsidianImport.import(source, engine, into = into) }
+        val r = runBlocking { run(source, engine, into) }
         println("import: ${r.imported.size} imported, ${r.unchanged.size} unchanged, ${r.skipped.size} skipped")
         if (r.skipped.isNotEmpty()) println("  skipped (present-but-differs / blocked): ${r.skipped.joinToString(", ")}")
     }
