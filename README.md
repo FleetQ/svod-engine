@@ -459,7 +459,7 @@ a working, dependency-free reference you can crib from.)
 |---|---|---|---|---|---|---|---|
 | **Store of record** | Git repo of Markdown | Vector + KV store | DB + vector store; ⚠️ git-backed Context Repositories (newer) | Markdown files + SQLite index | DB + vector store | Markdown files | Embeddings |
 | **Human-readable / editable** | ✅ any editor | ❌ opaque | ⚠️ via API | ✅ any editor | ❌ opaque | ✅ | ❌ |
-| **Full version history / diff** | ✅ git | ❌ | ⚠️ Context Repositories only | ⚠️ DIY (your own git/sync) | ⚠️ partial | ❌ (last save) | ❌ |
+| **Full version history / diff** | ✅ git | ❌ | ❌ | ⚠️ DIY (your own git/sync) | ⚠️ partial | ❌ (last save) | ❌ |
 | **Per-change provenance (who/when)** | ✅ commit author | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ |
 | **Never-lose-files guarantee** | ✅ atomic + soft-delete + recovery | ❌ | ❌ | ⚠️ | ❌ | ❌ | ❌ |
 | **Concurrency control** | ✅ single writer + optimistic revision | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ⚠️ |
