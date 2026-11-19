@@ -2,6 +2,8 @@ package dev.svod.engine.memory
 
 import dev.svod.engine.graphrag.OllamaSummaryLlm
 import dev.svod.engine.graphrag.SummaryLlm
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -39,7 +41,9 @@ class LlmMemoryExtractor(private val llm: SummaryLlm) : MemoryExtractor {
 
     override suspend fun extract(transcript: String, maxMemories: Int): List<ExtractedMemory>? {
         val raw = try {
-            llm.summarise(transcript, system = systemPrompt(maxMemories))
+            // The Ollama client blocks on its HTTP call for up to the request timeout; keep that off the
+            // MCP request dispatcher so a slow model cannot starve every other tool call.
+            withContext(Dispatchers.IO) { llm.summarise(transcript, system = systemPrompt(maxMemories)) }
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -62,11 +66,16 @@ class LlmMemoryExtractor(private val llm: SummaryLlm) : MemoryExtractor {
         /** The candidates in [raw] model output, at most [maxMemories]; null when no JSON array can be read. */
         internal fun parseCandidates(raw: String, maxMemories: Int): List<ExtractedMemory>? {
             val text = raw.replace(Regex("```[a-zA-Z]*"), "")
-            val start = text.indexOf('[')
             val end = text.lastIndexOf(']')
-            if (start < 0 || end <= start) return null
-            val array = runCatching { json.parseToJsonElement(text.substring(start, end + 1)) }.getOrNull() as? JsonArray
-                ?: return null
+            // Prose before the array may itself contain a '[' ("I found [2] memories: [...]"), so try
+            // each opening bracket until one yields a JSON array, rather than only the first.
+            var start = text.indexOf('[')
+            var array: JsonArray? = null
+            while (array == null && start in 0 until end) {
+                array = runCatching { json.parseToJsonElement(text.substring(start, end + 1)) }.getOrNull() as? JsonArray
+                start = text.indexOf('[', start + 1)
+            }
+            if (array == null) return null
             return array.asSequence()
                 .mapNotNull { it as? JsonObject }
                 .mapNotNull { o ->

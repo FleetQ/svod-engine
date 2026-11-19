@@ -495,6 +495,12 @@ data class SvodConfig(
         }
         if (reranker.topK < 1) errors += "reranker.topK must be >= 1, was ${reranker.topK}"
         if (reranker.requestTimeoutSeconds < 1) errors += "reranker.requestTimeoutSeconds must be >= 1, was ${reranker.requestTimeoutSeconds}"
+        // A typo would otherwise silently leave extract_memories answering "not configured".
+        if (EXTRACTION_PROVIDERS.none { it.equals(memory.extractionProvider, ignoreCase = true) }) {
+            errors += "memory.extractionProvider must be one of $EXTRACTION_PROVIDERS, was '${memory.extractionProvider}'"
+        }
+        if (memory.extractionTimeoutSeconds < 1) errors += "memory.extractionTimeoutSeconds must be >= 1, was ${memory.extractionTimeoutSeconds}"
+        if (memory.extractionMaxTranscriptChars < 1) errors += "memory.extractionMaxTranscriptChars must be >= 1, was ${memory.extractionMaxTranscriptChars}"
         val tokens = agents.map { it.token }
         if (tokens.any { it.isBlank() }) errors += "agent tokens must be non-blank"
         if (tokens.size != tokens.toSet().size) errors += "agent tokens must be unique"
@@ -610,7 +616,11 @@ data class SvodConfig(
         return dev.svod.engine.memory.MemoryExtractionConfig(
             provider = provider,
             model = memory.extractionModel,
-            endpoint = memory.extractionEndpoint ?: embedder.endpoint ?: embedder.ollamaEndpoint,
+            // embedder.endpoint is an OpenAI-compatible URL under remote-openai: falling back to it would
+            // post the conversation to a remote host. Only an Ollama-style endpoint is a safe default.
+            endpoint = memory.extractionEndpoint
+                ?: embedder.endpoint?.takeUnless { embedder.provider.lowercase() in setOf("remote-openai", "openai") }
+                ?: embedder.ollamaEndpoint,
             timeoutSeconds = memory.extractionTimeoutSeconds,
             maxTranscriptChars = memory.extractionMaxTranscriptChars,
         )
@@ -715,6 +725,7 @@ data class SvodConfig(
 
         val PROVIDERS = listOf("onnx-local", "local-onnx", "ollama", "local-ollama", "remote-openai", "openai", "none")
         val RERANKER_PROVIDERS = listOf("none", "remote", "remote-tei", "tei", "local-onnx", "onnx-local")
+        val EXTRACTION_PROVIDERS = listOf("none", "ollama", "local-ollama")
         val ROLES = listOf("READ_ONLY", "WRITE")
 
         private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
