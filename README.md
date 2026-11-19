@@ -237,7 +237,7 @@ Principles:
 ## The UI interface — local App API
 
 Loopback HTTP/JSON, validated against [`contract/openapi.yaml`](contract/openapi.yaml) (the
-versioned single source of truth for every client — currently **0.41.0**):
+versioned single source of truth for every client — currently **0.42.0**):
 
 - **Health:** `/health` · `/ready`
 - **Content:** `/api/v1/` `tree` · `file` (GET/PUT/DELETE; DELETE under `.trash/` purges, admin only) ·
@@ -503,7 +503,7 @@ dependency. The engine stays vendor-agnostic (see
 
 ## Status
 
-**v1.33.0 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
+**v1.34.0 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
 watcher → lifecycle → reference viewer → multi-host sync → hardening → multi-vault + Obsidian
 import → backup/DR + ops surface → external sources (prune + auto-sync) → non-blocking keyword-first
 indexing + pluggable embedders (local-onnx / local-ollama / remote-openai) → restart robustness
@@ -520,7 +520,7 @@ person-authored commits) → trash listing/purge → SSRF
 guard for hosted engines (`denyPrivateRemotes`) → admin-only `GET /stats` counters.
 Full suite green;
 CI gates every change; packaged as self-contained app-images **and** GraalVM `native-image` single
-binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.41.0**
+binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.42.0**
 (versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0020) for the decision record.
 
 Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption).

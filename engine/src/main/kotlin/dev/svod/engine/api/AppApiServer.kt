@@ -1156,15 +1156,19 @@ class AppApiServer(
                 ))
             }
 
-            webSocket("/api/v1/events") {
-                // A person receives events only for vaults they can read; untagged events (engine
-                // status) pass through — every vault-scoped publisher tags its events.
+            // A person receives events only for vaults they can read; untagged events (engine
+            // status) pass through — every vault-scoped publisher tags its events.
+            val streamEvents: suspend io.ktor.server.websocket.DefaultWebSocketServerSession.() -> Unit = {
                 val p = call.attributes.getOrNull(AppApiAuth.PrincipalKey) ?: error("no principal on /api/v1/events")
                 eventBus.events.collect { e ->
                     val v = runCatching { e.data["vault"]?.jsonPrimitive?.contentOrNull }.getOrNull()
                     if (v == null || p.canRead(v)) send(Frame.Text(encodeEvent(e)))
                 }
             }
+            // A browser that offers subprotocols (the key, see AppApiAuth.protocolKey) drops the
+            // socket unless the server picks one of them, so that client gets this route.
+            webSocket("/api/v1/events", protocol = AppApiAuth.EVENTS_PROTOCOL, handler = streamEvents)
+            webSocket("/api/v1/events", handler = streamEvents)
 
             // An unmatched path UNDER /api is a client error, not a viewer route.
             //
