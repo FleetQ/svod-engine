@@ -15,6 +15,15 @@ independently of the engine; each entry notes the contract version it ships.
   `bytes` is the vault working tree without `.git/` and `.svod/`; `notes` counts `.md` files outside
   dot-directories (so `.trash/` is excluded). The walk does not go through the write actor.
 
+### Added — Basic Memory project import (CLI)
+
+- `svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]` imports a Basic Memory project
+  with the Obsidian import's walk, batch commits, idempotency and no-clobber rules. Frontmatter, observation
+  lines and relation lines are copied verbatim; a `[[wikilink]]` that does not already resolve but matches the
+  frontmatter `title` or `permalink` of exactly one imported note becomes `[[path/without-ext|Original]]`, so it
+  resolves in the graph while reading the same. Ambiguous or unmatched links are left as-is. CLI only: no App
+  API or contract change.
+
 ### Added — Mem0 export import
 
 - `POST /api/v1/import` takes an optional `format` (`obsidian`, the default, or `mem0`; contract 0.41.0,

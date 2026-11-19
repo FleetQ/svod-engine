@@ -39,6 +39,13 @@ class MainCliTest {
     }
 
     @Test
+    fun `import-basic-memory is parsed and listed in the usage`() {
+        assertEquals(Command.ImportBasicMemory(listOf("c", "d")), parseCommand(arrayOf("import-basic-memory", "c", "d")))
+        val u = usageText()
+        assertTrue("svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]" in u, u)
+    }
+
+    @Test
     fun `version names the engine and the contract`() {
         assertEquals(
             "svod-engine ${SvodNode.ENGINE_VERSION} (App API contract ${ApiCompatibility.CURRENT_CONTRACT_VERSION})",
