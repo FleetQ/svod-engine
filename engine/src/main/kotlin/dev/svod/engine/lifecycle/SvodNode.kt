@@ -115,9 +115,16 @@ class SvodNode private constructor(
                 // Mutable: a vault created at runtime gets its tool set here, or the MCP layer answers
                 // not_found for a vault that GET /vaults happily lists.
                 val toolsByVault = java.util.concurrent.ConcurrentHashMap<String, SvodTools>()
+                // Built once; constructing it does no network I/O, so a stopped model cannot affect startup.
+                val extractionConfig = config.toMemoryExtractorConfig()
+                val extractor = dev.svod.engine.memory.MemoryExtractors.create(extractionConfig)
                 fun toolsFor(vc: VaultContext): SvodTools {
                     val audit = AuditLog(vc.engine.root.resolve(".svod").resolve("audit").resolve("audit.log"))
-                    return SvodTools(vc.engine, vc.index, audit, rateLimiter, eventBus, graph = vc.graph, vaultId = vc.id, requireReview = config.memory.requireReview)
+                    return SvodTools(
+                        vc.engine, vc.index, audit, rateLimiter, eventBus, graph = vc.graph, vaultId = vc.id,
+                        requireReview = config.memory.requireReview,
+                        extractor = extractor, maxTranscriptChars = extractionConfig.maxTranscriptChars,
+                    )
                 }
                 for (vc in vaults.contexts()) toolsByVault[vc.id] = toolsFor(vc)
 

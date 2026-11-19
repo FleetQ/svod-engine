@@ -22,7 +22,7 @@ with a conflict, never silently overwritten.
 [Why Svod](#why-svod-exists) ·
 [Feature tour](#what-it-does-feature-tour) ·
 [Architecture](#how-it-works-90-second-architecture) ·
-[Agent interface (20 MCP tools)](#the-agent-interface--20-mcp-tools) ·
+[Agent interface (21 MCP tools)](#the-agent-interface--21-mcp-tools) ·
 [Connecting an LLM agent](#connecting-an-llm-agent) ·
 [App API for UIs](#the-ui-interface--local-app-api) ·
 [Download & install](#download--install) ·
@@ -72,7 +72,7 @@ index. The result:
 | **Hybrid search** | Lucene BM25 (lexical) + optional HNSW kNN vectors (semantic), fused with Reciprocal Rank Fusion. Heading-aware chunking. Filters by tag / path / date; fuzzy / prefix / phrase / field-scoped queries. |
 | **Pluggable embeddings** | Default `onnx-local` runs `multilingual-e5-small` (MIT) in-process via ONNX Runtime — no server, no Python, no network at query time. Or `local-ollama` (a local Ollama server), `remote-openai` (any OpenAI-compatible `/v1/embeddings` endpoint, API key as a Secrets ref), or `none` for a guaranteed BM25-only baseline. Switchable at runtime via `PUT /api/v1/embedder`; `POST /api/v1/embedder/models` lists what a provider can serve. |
 | **Optional reranking** | A second-stage cross-encoder re-scores the fused candidates for a relevance lift — opt-in, default off, degrades to the fused order on any failure. Configured under `reranker` and reported in `GET /settings`. |
-| **MCP server for agents** | 20 tools over streamable HTTP, per-agent bearer tokens → git author (or the bound person, see team sharing), read-only/write roles, token-bucket rate limiting, append-only audit log, optional TLS. Memory review is chosen per agent (`requireReview`). |
+| **MCP server for agents** | 21 tools over streamable HTTP, per-agent bearer tokens → git author (or the bound person, see team sharing), read-only/write roles, token-bucket rate limiting, append-only audit log, optional TLS. Memory review is chosen per agent (`requireReview`). |
 | **Typed memory + review** | `remember` turns an observation into a typed memory note (policy / preference / fact / episode) with a lifecycle; `context_pack` recalls it (ranked, or the whole rule book with `enumerate=true`). Review is per agent via `agents[].requireReview` (agents without one follow `memory.requireReview`) and **off by default since 1.30.0**; an agent that opts in has its fact/policy wait `provisional` in the review queue (`GET`/`POST /api/v1/memory/review`, the viewer's Memory review pane) until a person approves it. See [ADR-0018](docs/adr/0018-memory-fact-classification.md). |
 | **Local App API + WebSocket** | A loopback-only HTTP/JSON API for UIs, plus a live `/api/v1/events` stream (agent activity, commits, index updates, conflicts) so a UI feels alive. |
 | **Wikilink graph + thematic graph** | `[[wikilinks]]` parsed into a backlink/outlink graph. Moving or renaming a note **rewrites every backlink in a single commit** — link integrity for free. Optionally (`graph.enabled`), a derived note graph (wikilinks + kNN similarity over the stored vectors) is clustered by Louvain into thematic communities, with optional build-time summaries: MCP `graph_communities` / `graph_community` / `graph_status`, App API `graph/communities` / `graph/community` / `graph/status` / `graph/rebuild`. |
@@ -125,14 +125,14 @@ Full detail: [`docs/architecture.md`](docs/architecture.md) and the ADRs in
 
 ---
 
-## The agent interface — 20 MCP tools
+## The agent interface — 21 MCP tools
 
 Per-agent bearer token authenticates and **becomes the git commit author**. Roles are
 enforced *before* the engine is touched.
 
 **Read (any role):** `read` · `list` · `tree` · `grep` · `search` · `context_pack` · `history` ·
 `diff` · `get_revision` · `link` · `graph_query` · `graph_communities` · `graph_community` · `graph_status`
-**Write (WRITE role):** `write` · `edit` · `delete` · `move` · `promote` · `remember`
+**Write (WRITE role):** `write` · `edit` · `delete` · `move` · `promote` · `remember` · `extract_memories`
 
 - `tree` shows the folder structure with recursive file counts; `grep` finds exact text or a regex
   and returns line hits. `grep` obeys recall's visibility: captured sessions never, `messy/` drafts
@@ -159,6 +159,13 @@ enforced *before* the engine is touched.
   `POST /api/v1/memory/review`. Agents without their own setting follow `"memory": { "requireReview": … }` (default
   `false`). Each agent's MCP instructions and tool descriptions say what applies to it, and
   `GET /api/v1/settings` reports the engine-wide default as `memory.requireReview`.
+- `extract_memories` is **opt-in**: given a finished conversation transcript, a configured local
+  model (`"memory": { "extractionProvider": "ollama", "extractionModel": … }`, endpoint defaulting to
+  the embedder's Ollama endpoint) proposes candidate memories, and each goes through the `remember`
+  gate. Its output is **always `provisional`**, whatever `requireReview` says, so it waits in the
+  Memory review queue and stays out of recall until a person approves it. A transcript with secrets
+  is refused before any model sees it. With no provider configured (the default) the tool answers
+  "not configured" and writes nothing.
 - `write` / `delete` / `move` take an optional `expectedRevision` for optimistic concurrency —
   a mismatch returns a structured `conflict` (with current content), not a protocol error.
 - `move` rewrites all backlinks atomically.
@@ -459,7 +466,7 @@ a working, dependency-free reference you can crib from.)
 | **Conflict surfaced, not auto-merged** | ✅ | ❌ | ❌ | ❌ | n/a | ❌ |
 | **Hybrid search (BM25 + vectors)** | ✅ RRF | ⚠️ vector-first | ⚠️ | ✅ | ⚠️ plugins | ⚠️ vector-only |
 | **Runs fully local, no Python/server** | ✅ single JVM, in-proc embeddings | ⚠️ | ⚠️ | ⚠️ | ✅ | ⚠️ |
-| **Agent protocol** | ✅ MCP (20 tools) | SDK | SDK | SDK | ❌ | ❌ (DIY) |
+| **Agent protocol** | ✅ MCP (21 tools) | SDK | SDK | SDK | ❌ | ❌ (DIY) |
 | **Multi-host replication** | ✅ git transport | ⚠️ hosted | ⚠️ | ⚠️ hosted | ⚠️ sync apps | ⚠️ |
 | **Lock-in** | None (git clone) | High | Medium | High | None | High |
 

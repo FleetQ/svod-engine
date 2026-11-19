@@ -428,6 +428,20 @@ class SvodMcpServer(
             val (t, d) = routed(req, "remember")
             d ?: t!!.remember(agent, req.str("content") ?: "", req.str("type"), req.str("subject"), req.double("confidence"), req.str("source"), req.str("status"), req.str("into"), req.str("supersedes"), req.str("expiresAt")).toCallToolResult()
         }
+        tool(
+            "extract_memories",
+            "Optional (needs memory.extractionProvider): hand a FINISHED conversation transcript to the configured model and " +
+                "store the durable memories it finds, each through the same gate as 'remember' (dedup, classification, " +
+                "contradiction/supersede links). Every result is stored 'provisional': hidden from search and context_pack " +
+                "until a person approves it in the Svod app's review queue. A transcript containing secrets is refused before " +
+                "any model sees it. Not for scratch notes: write those under messy/. 'maxMemories' defaults to 10 (max 20). " +
+                "Without a configured model it returns an error and writes nothing.",
+            mapOf("transcript" to "string", "source" to "string", "maxMemories" to "integer"),
+            listOf("transcript"),
+        ) { req ->
+            val (t, d) = routed(req, "extract_memories")
+            d ?: t!!.extractMemories(agent, req.str("transcript") ?: "", req.str("source"), req.int("maxMemories", 10)).toCallToolResult()
+        }
         tool("list", "List every note path (optionally filtered by prefix). On a real vault that is thousands of paths: use tree to orient and search or grep to find a note.", mapOf("pathPrefix" to "string"), emptyList()) { req ->
             val (t, d) = routed(req, "list"); d ?: t!!.list(agent, req.str("pathPrefix")).toCallToolResult()
         }
@@ -535,6 +549,8 @@ class SvodMcpServer(
                     "Your memories are stored 'active' and are found by search at once, without a person's review; one " +
                         "classified UNCERTAIN carries 'needs-review: true' and a CONTRADICTION keeps a 'contradicts' link to the other side. "
                 }) +
+                "'extract_memories' (optional, needs a configured model) turns a finished conversation transcript into " +
+                "candidate memories, always stored 'provisional' until a person approves them. " +
                 "The review queue has no tool here, and 'promote' does not change a memory's status. Write changes with 'edit' or " +
                 "'write' and pass expectedRevision from your last read."
 

@@ -62,6 +62,10 @@ class SvodTools(
      * default only applies to code that builds SvodTools directly.
      */
     private val requireReview: Boolean = true,
+    /** Model behind `extract_memories`; the default keeps the tool answering "not configured". */
+    private val extractor: dev.svod.engine.memory.MemoryExtractor = dev.svod.engine.memory.NoneMemoryExtractor,
+    /** Longest transcript `extract_memories` accepts; a longer one is refused, not truncated. */
+    private val maxTranscriptChars: Int = 20_000,
 ) {
     /** Classifies an incoming memory against existing memory of the same type/subject. */
     private val classifier = FactClassifier(engine, index, adjudicator)
@@ -686,14 +690,71 @@ class SvodTools(
         /** ISO instant or date (start of day UTC); must be in the future. Stored as `expires_at`. */
         expiresAt: String? = null,
     ): ToolResult = guarded(agent, "remember", write = true) {
-        if (content.isBlank()) return@guarded ToolResult.badRequest("content must not be blank")
+        rememberUnguarded(agent, content, type, subject, confidence, source, status, into, supersedes, expiresAt)
+    }
+
+    /**
+     * Turn a finished conversation [transcript] into memories: the configured [MemoryExtractor] proposes
+     * candidates and each goes through the same gate as [remember]. Every candidate is stored
+     * `provisional` whatever `requireReview` says — a model-extracted memory is never trusted without a
+     * person's review. A transcript with secrets is refused before any model sees it.
+     */
+    suspend fun extractMemories(
+        agent: AgentIdentity, transcript: String, source: String?, maxMemories: Int = 10,
+    ): ToolResult = guarded(agent, "extract_memories", write = true) {
+        if (transcript.isBlank()) return@guarded ToolResult.badRequest("transcript must not be blank")
+        if (transcript.length > maxTranscriptChars) {
+            return@guarded ToolResult.badRequest("transcript is ${transcript.length} characters; the limit is $maxTranscriptChars (memory.extractionMaxTranscriptChars)")
+        }
+        val secrets = engine.scanSecrets(transcript)
+        if (secrets.isNotEmpty()) {
+            audit.record(agent.agentId, "extract_memories", "blocked", detail = secrets.joinToString(", "))
+            return@guarded ToolResult.blocked("transcript", secrets)
+        }
+        if (!extractor.isActive) {
+            audit.record(agent.agentId, "extract_memories", "not_configured")
+            return@guarded ToolResult("not_configured", buildJsonObject {
+                put("status", "not_configured")
+                put("message", "memory extraction is not configured (memory.extractionProvider)")
+            }, isError = true)
+        }
+        val max = maxMemories.coerceIn(1, EXTRACT_MAX_MEMORIES)
+        val candidates = extractor.extract(transcript, max)
+            ?: run {
+                audit.record(agent.agentId, "extract_memories", "internal_error", detail = "extraction failed")
+                return@guarded ToolResult.internalError("extraction model unavailable or returned unparseable output")
+            }
+        val src = source?.trim()?.takeIf { it.isNotEmpty() } ?: "extract_memories"
+        val results = candidates.take(max).map { c ->
+            rememberUnguarded(agent, c.content, c.type, c.subject, confidence = null, source = src, status = "provisional", into = null, supersedes = null)
+        }
+        audit.record(agent.agentId, "extract_memories", "ok", detail = "${results.size} candidate(s)")
+        ToolResult.ok {
+            put("extracted", results.size)
+            putJsonArray("memories") {
+                results.forEach { r ->
+                    addJsonObject {
+                        r.data.forEach { (k, v) -> put(k, v) }
+                        if (r.isError) put("error", true)
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun rememberUnguarded(
+        agent: AgentIdentity, content: String, type: String?, subject: String?, confidence: Double?,
+        source: String?, status: String?, into: String?, supersedes: String?,
+        expiresAt: String? = null,
+    ): ToolResult {
+        if (content.isBlank()) return ToolResult.badRequest("content must not be blank")
         val expires = expiresAt?.trim()?.takeIf { it.isNotEmpty() }?.let { raw ->
             val instant = runCatching { java.time.Instant.parse(raw) }
                 .recoverCatching { java.time.LocalDate.parse(raw).atStartOfDay(java.time.ZoneOffset.UTC).toInstant() }
                 .getOrNull()
-                ?: return@guarded ToolResult.badRequest("expiresAt must be an ISO-8601 instant or date, got '$raw'")
+                ?: return ToolResult.badRequest("expiresAt must be an ISO-8601 instant or date, got '$raw'")
             // A past expiry would write a memory that recall hides the moment it lands.
-            if (!instant.isAfter(java.time.Instant.now())) return@guarded ToolResult.badRequest("expiresAt must be in the future, got '$raw'")
+            if (!instant.isAfter(java.time.Instant.now())) return ToolResult.badRequest("expiresAt must be in the future, got '$raw'")
             instant
         }
         val t = type?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "fact"
@@ -709,7 +770,7 @@ class SvodTools(
         val secrets = engine.scanSecrets(content)
         if (secrets.isNotEmpty()) {
             audit.record(agent.agentId, "remember", "blocked", path, detail = secrets.joinToString(", "))
-            return@guarded ToolResult.blocked(path, secrets)
+            return ToolResult.blocked(path, secrets)
         }
 
         // Plan off the actor, apply inside it. If a candidate moved in between, the apply is refused
@@ -721,7 +782,7 @@ class SvodTools(
             // Same content+type ⇒ same deterministic path: an exact restatement is a no-op write.
             if (existing != null && bodyOf(existing.text).trim() == content.trim()) {
                 audit.record(agent.agentId, "remember", "deduped", path)
-                return@guarded ToolResult.ok {
+                return ToolResult.ok {
                     put("status", "deduped"); put("path", path); put("type", t)
                     put("memoryStatus", statusOf(existing.text) ?: st)
                     put("classification", Classification.DUPLICATE.name)
@@ -732,7 +793,7 @@ class SvodTools(
             val plan = if (!supersedes.isNullOrBlank()) {
                 // The caller already declared the relationship; inferring one would only second-guess it.
                 val old = engine.read(supersedes)
-                    ?: return@guarded ToolResult.notFound(supersedes)
+                    ?: return ToolResult.notFound(supersedes)
                 ClassificationPlan(
                     Classification.UPDATE,
                     MemoryCandidate(supersedes, old.revision, bodyOf(old.text).trim(), subject),
@@ -746,7 +807,7 @@ class SvodTools(
                 val dup = plan.related
                 val dupStatus = engine.read(dup.path)?.let { statusOf(it.text) } ?: st
                 audit.record(agent.agentId, "remember", "deduped", dup.path)
-                return@guarded ToolResult.ok {
+                return ToolResult.ok {
                     put("status", "deduped"); put("path", dup.path); put("type", t)
                     put("memoryStatus", dupStatus)
                     put("classification", Classification.DUPLICATE.name)
@@ -779,7 +840,7 @@ class SvodTools(
                     audit.record(agent.agentId, "remember", "ok", path, revision = outcome.revisions[path], detail = outcome.commit)
                     eventBus.publish(EventTypes.AGENT_ACTIVITY) { put("agentId", agent.agentId); put("tool", "remember"); put("path", path); put("commit", outcome.commit); putVault() }
                     eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", outcome.commit); put("path", path); put("author", agent.author.name); put("agentId", agent.agentId); putVault() }
-                    return@guarded ToolResult.ok {
+                    return ToolResult.ok {
                         put("status", "written"); put("path", path); put("type", t); put("memoryStatus", noteStatus)
                         put("revision", outcome.revisions[path]); put("commit", outcome.commit)
                         put("classification", plan.classification.name)
@@ -795,19 +856,19 @@ class SvodTools(
                 }
                 is GuardedWrite.Blocked -> {
                     audit.record(agent.agentId, "remember", "blocked", outcome.path, detail = outcome.findings.joinToString(", "))
-                    return@guarded ToolResult.blocked(outcome.path, outcome.findings)
+                    return ToolResult.blocked(outcome.path, outcome.findings)
                 }
                 // Live state moved under the plan — loop and re-classify against what is there now.
                 is GuardedWrite.Stale -> if (attempt == 1) {
                     audit.record(agent.agentId, "remember", "conflict", outcome.path, detail = "classification state moved twice")
-                    return@guarded ToolResult.conflict {
+                    return ToolResult.conflict {
                         put("path", outcome.path); put("expected", outcome.expected); put("current", outcome.current)
                         put("message", "memory changed while it was being classified; retry")
                     }
                 }
             }
         }
-        ToolResult.internalError("remember: classification did not converge")
+        return ToolResult.internalError("remember: classification did not converge")
     }
 
     /**
@@ -942,6 +1003,9 @@ class SvodTools(
          * every hit would fill the budget with notes the query never matched.
          */
         const val EXPAND_SEEDS = 3
+
+        /** Upper bound on `extract_memories`' maxMemories. */
+        const val EXTRACT_MAX_MEMORIES = 20
 
     }
 }

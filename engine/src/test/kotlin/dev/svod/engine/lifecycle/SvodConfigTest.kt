@@ -63,6 +63,48 @@ class SvodConfigTest {
         Files.writeString(file, SvodConfig.toJson(cfg))
         assertEquals(cfg, SvodConfig.loadOrThrowValidated(file))
     }
+
+    @Test
+    fun `memory extraction defaults to none`() {
+        val cfg = base()
+        assertEquals("none", cfg.memory.extractionProvider)
+        val ex = cfg.toMemoryExtractorConfig()
+        assertEquals(dev.svod.engine.memory.MemoryExtractionProvider.NONE, ex.provider)
+        assertEquals(20000, ex.maxTranscriptChars)
+        assertEquals(false, dev.svod.engine.memory.MemoryExtractors.create(ex).isActive)
+    }
+
+    @Test
+    fun `memory extraction provider parses from JSON and reuses the embedder endpoint`() {
+        val file = Files.createTempFile("svod-config-extract", ".json")
+        Files.writeString(
+            file,
+            """{"vaultPath": "/tmp/vault", "agents": [{"token": "tok", "agentId": "a1", "role": "WRITE"}],
+               "embedder": {"provider": "none", "endpoint": "http://127.0.0.1:12345"},
+               "memory": {"extractionProvider": "ollama", "extractionModel": "small-model"}}""",
+        )
+        val cfg = SvodConfig.load(file)
+        assertEquals(false, cfg.memory.requireReview, "old keys keep their defaults")
+        val ex = cfg.toMemoryExtractorConfig()
+        assertEquals(dev.svod.engine.memory.MemoryExtractionProvider.OLLAMA, ex.provider)
+        assertEquals("small-model", ex.model)
+        assertEquals("http://127.0.0.1:12345", ex.endpoint)
+        assertTrue(dev.svod.engine.memory.MemoryExtractors.create(ex).isActive)
+    }
+
+    @Test
+    fun `a config without the new memory keys still loads`() {
+        val file = Files.createTempFile("svod-config-old-memory", ".json")
+        Files.writeString(
+            file,
+            """{"vaultPath": "/tmp/vault", "agents": [{"token": "tok", "agentId": "a1", "role": "WRITE"}],
+               "memory": {"requireReview": true}}""",
+        )
+        val cfg = SvodConfig.load(file)
+        assertTrue(cfg.memory.requireReview)
+        assertEquals("none", cfg.memory.extractionProvider)
+        assertEquals(cfg.embedder.ollamaEndpoint, cfg.toMemoryExtractorConfig().endpoint)
+    }
 }
 
 class AdminKeyWarningTest {

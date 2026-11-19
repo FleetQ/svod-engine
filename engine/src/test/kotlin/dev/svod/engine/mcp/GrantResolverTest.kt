@@ -16,7 +16,7 @@ class GrantResolverTest {
 
     private val reads = listOf("read", "search", "context_pack", "list", "tree", "grep", "history", "diff", "get_revision", "link",
         "graph_query", "graph_communities", "graph_community", "graph_status")
-    private val writes = listOf("write", "edit", "move", "delete", "remember")
+    private val writes = listOf("write", "edit", "move", "delete", "remember", "extract_memories")
 
     @Test
     fun `table has exactly the ADR tools`() {
