@@ -455,20 +455,22 @@ a working, dependency-free reference you can crib from.)
 
 ## How it compares
 
-| | **Svod** | Mem0 | Letta / MemGPT | Zep | Plain Obsidian | Vector DB + RAG |
-|---|---|---|---|---|---|---|
-| **Store of record** | Git repo of Markdown | Vector + KV store | DB + vector store | DB + vector store | Markdown files | Embeddings |
-| **Human-readable / editable** | ✅ any editor | ❌ opaque | ⚠️ via API | ❌ opaque | ✅ | ❌ |
-| **Full version history / diff** | ✅ git | ❌ | ❌ | ⚠️ partial | ❌ (last save) | ❌ |
-| **Per-change provenance (who/when)** | ✅ commit author | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ |
-| **Never-lose-files guarantee** | ✅ atomic + soft-delete + recovery | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Concurrency control** | ✅ single writer + optimistic revision | ⚠️ | ⚠️ | ⚠️ | ❌ | ⚠️ |
-| **Conflict surfaced, not auto-merged** | ✅ | ❌ | ❌ | ❌ | n/a | ❌ |
-| **Hybrid search (BM25 + vectors)** | ✅ RRF | ⚠️ vector-first | ⚠️ | ✅ | ⚠️ plugins | ⚠️ vector-only |
-| **Runs fully local, no Python/server** | ✅ single JVM, in-proc embeddings | ⚠️ | ⚠️ | ⚠️ | ✅ | ⚠️ |
-| **Agent protocol** | ✅ MCP (21 tools) | SDK | SDK | SDK | ❌ | ❌ (DIY) |
-| **Multi-host replication** | ✅ git transport | ⚠️ hosted | ⚠️ | ⚠️ hosted | ⚠️ sync apps | ⚠️ |
-| **Lock-in** | None (git clone) | High | Medium | High | None | High |
+| | **Svod** | Mem0 | Letta / MemGPT | Basic Memory | Zep | Plain Obsidian | Vector DB + RAG |
+|---|---|---|---|---|---|---|---|
+| **Store of record** | Git repo of Markdown | Vector + KV store | DB + vector store; ⚠️ git-backed Context Repositories (newer) | Markdown files + SQLite index | DB + vector store | Markdown files | Embeddings |
+| **Human-readable / editable** | ✅ any editor | ❌ opaque | ⚠️ via API | ✅ any editor | ❌ opaque | ✅ | ❌ |
+| **Full version history / diff** | ✅ git | ❌ | ❌ | ⚠️ DIY (your own git/sync) | ⚠️ partial | ❌ (last save) | ❌ |
+| **Per-change provenance (who/when)** | ✅ commit author | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ |
+| **Never-lose-files guarantee** | ✅ atomic + soft-delete + recovery | ❌ | ❌ | ⚠️ | ❌ | ❌ | ❌ |
+| **Concurrency control** | ✅ single writer + optimistic revision | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ⚠️ |
+| **Conflict surfaced, not auto-merged** | ✅ | ❌ | ❌ | ⚠️ | ❌ | n/a | ❌ |
+| **Hybrid search (BM25 + vectors)** | ✅ RRF | ⚠️ vector-first | ⚠️ | ⚠️ full-text first | ✅ | ⚠️ plugins | ⚠️ vector-only |
+| **Runs fully local, no Python/server** | ✅ single JVM, in-proc embeddings | ⚠️ | ⚠️ | ⚠️ local, needs Python | ⚠️ | ✅ | ⚠️ |
+| **Agent protocol** | ✅ MCP (21 tools) | SDK | SDK | ✅ MCP | SDK | ❌ | ❌ (DIY) |
+| **Multi-host replication** | ✅ git transport | ⚠️ hosted | ⚠️ | ⚠️ cloud sync | ⚠️ hosted | ⚠️ sync apps | ⚠️ |
+| **Lock-in** | None (git clone) | High | Medium | Low | High | None | High |
+| **Licence** | Apache-2.0 | Apache-2.0 | Apache-2.0 | AGPL-3.0 | — | Proprietary (free app) | Varies |
+| **Hosted tier** | ❌ self-host only (no hosted product yet) | ✅ platform (paid) | ✅ cloud | ✅ cloud (paid) | ✅ cloud | ⚠️ paid Sync/Publish add-ons | Varies |
 
 **Where Svod wins:** auditability, durability, and provenance — memory as a *substrate you own
 and can inspect*, not a service you query and trust. **Where the others may fit better:** if
@@ -477,6 +479,8 @@ store is less setup. Svod's bet is that for serious, long-lived agent memory, "y
 restore it" beats "it's someone else's database."
 
 *(Comparison reflects each tool's typical/default posture; specific configurations vary.)*
+
+Choosing between Markdown + MCP memory tools? See [Svod vs Basic Memory](docs/compare-basic-memory.md).
 
 ---
 

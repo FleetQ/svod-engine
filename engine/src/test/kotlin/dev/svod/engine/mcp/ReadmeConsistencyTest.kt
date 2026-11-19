@@ -167,4 +167,40 @@ class ReadmeConsistencyTest {
             "README feature tour has no row linking docs/adr/0020-team-sharing-users-and-roles.md",
         )
     }
+
+    /** The '## How it compares' table as rows of trimmed cells, header first, separator line skipped. */
+    private fun comparisonTable(): List<List<String>> =
+        section("How it compares").lines()
+            .filter { it.startsWith("|") }
+            .filterNot { Regex("""^\|(\s*:?-+:?\s*\|)+\s*$""").matches(it) }
+            .map { line -> line.split('|').drop(1).dropLast(1).map { it.trim() } }
+
+    @Test
+    fun `the comparison table rows all have as many cells as the header`() {
+        val table = comparisonTable()
+        assertTrue(table.size > 1, "README '## How it compares' has no table")
+        val width = table.first().size
+        val bad = table.drop(1).filter { it.size != width }.map { "${it.size} cells: '${it.joinToString(" | ")}'" }
+        assertTrue(bad.isEmpty(), "comparison table rows must have $width cells like the header: $bad")
+        val separator = section("How it compares").lines().firstOrNull { it.startsWith("|---") }
+        assertTrue(separator != null, "comparison table has no separator line")
+        assertEquals(width, separator.split('|').drop(1).dropLast(1).size, "separator line '$separator' must have $width cells")
+    }
+
+    @Test
+    fun `the comparison table has a Basic Memory column and Licence and Hosted rows`() {
+        val table = comparisonTable()
+        assertTrue(table.first().any { "Basic Memory" in it }, "comparison table header has no Basic Memory column: ${table.first()}")
+        assertTrue(table.any { "Licence" in it.first() }, "comparison table has no Licence row")
+        assertTrue(table.any { "Hosted" in it.first() }, "comparison table has no Hosted tier row")
+    }
+
+    @Test
+    fun `How it compares links to the Basic Memory page and the file exists`() {
+        assertTrue(
+            "](docs/compare-basic-memory.md)" in section("How it compares"),
+            "README '## How it compares' has no link to docs/compare-basic-memory.md",
+        )
+        assertTrue(Files.exists(repoRoot.resolve("docs/compare-basic-memory.md")), "docs/compare-basic-memory.md does not exist")
+    }
 }
