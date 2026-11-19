@@ -17,13 +17,25 @@
 
   let ws = null;
   let reconnectTimer = null;
-  const agentColors = new Map();
   const shownCommits = new Set(); // de-dupe agent.activity vs commit.created for the same commit
-  let colorN = 0;
 
+  // Hash the name, so an agent keeps its colour across reloads and in every pane.
   function colorFor(agent) {
-    if (!agentColors.has(agent)) agentColors.set(agent, "c" + (colorN++ % 5));
-    return agentColors.get(agent);
+    let h = 0;
+    for (const ch of String(agent ?? "")) h = (h * 31 + ch.codePointAt(0)) >>> 0;
+    return "c" + (h % 5);
+  }
+
+  // Lets a clickable row be reached with Tab and opened with Enter or Space. No role="button":
+  // it would replace the row's listitem role, and a search result also holds its own tag buttons.
+  function activatable(li, onActivate) {
+    li.tabIndex = 0;
+    li.addEventListener("click", onActivate);
+    li.addEventListener("keydown", (ev) => {
+      if (ev.target !== li || (ev.key !== "Enter" && ev.key !== " ")) return;
+      ev.preventDefault();
+      onActivate(ev);
+    });
   }
 
   function setConnected(on) {
@@ -54,15 +66,17 @@
 
     feedEmpty?.remove();
     const li = document.createElement("li");
-    li.className = "item" + (ev.type === "conflict" ? " conflict" : "");
+    const conflict = ev.type === "conflict";
+    li.className = "item" + (conflict ? " conflict" : "");
     if (commit) { li.classList.add("has-diff"); li.dataset.commit = commit; li.dataset.path = path; }
 
     li.innerHTML =
       `<span class="agent ${colorFor(agent)}">${esc(agent)}</span>` +
-      `<span><span class="verb">${esc(VERBS[tool] || tool)}</span> <span class="path">${esc(path)}</span></span>` +
+      `<span>${conflict ? `<span class="flag">conflict</span>` : ""}` +
+      `<span class="verb">${esc(VERBS[tool] || tool)}</span> <span class="path">${esc(path)}</span></span>` +
       `<span class="when">${fmtTime(ev.ts)}</span>`;
 
-    if (commit) li.addEventListener("click", () => selectItem(li, path, commit));
+    if (commit) activatable(li, () => selectItem(li, path, commit));
     feed.prepend(li);
     while (feed.children.length > 200) feed.lastChild.remove();
   }
@@ -105,7 +119,9 @@
   }
 
   function renderDiff(text, added) {
-    const out = text.split("\n").map((line) => {
+    // The pane head already names the file and commit, so git's own header lines are noise.
+    const lines = text.split("\n").filter((l) => !l.startsWith("diff --git ") && !l.startsWith("index "));
+    const out = lines.map((line) => {
       const c = esc(line);
       if (line.startsWith("@@")) return `<span class="hunk">${c}</span>`;
       if (line.startsWith("+") && !line.startsWith("+++")) return `<span class="add">${c}</span>`;
@@ -196,7 +212,7 @@
         (h.heading ? `<div class="heading">${esc(h.heading)}</div>` : "") +
         `<div class="snippet">${esc(h.snippet || "")}</div>` +
         (chips ? `<div class="chips">${chips}</div>` : "");
-      li.addEventListener("click", (ev) => {
+      activatable(li, (ev) => {
         const chip = ev.target.closest(".tag-chip");
         if (chip) {
           ev.stopPropagation();
@@ -251,7 +267,7 @@
           `<span class="agent ${colorFor(c.agent || c.author)}">${esc(c.agent || c.author)}</span>` +
           `<span class="when">${esc(when)}</span>` +
           `<span class="msg">${esc(c.message)}</span>`;
-        li.addEventListener("click", () => selectItem(li, path, c.commit));
+        activatable(li, () => selectItem(li, path, c.commit));
         history.append(li);
       }
     } catch (err) {
