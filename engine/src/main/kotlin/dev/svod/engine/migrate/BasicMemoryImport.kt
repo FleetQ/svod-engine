@@ -3,9 +3,12 @@ package dev.svod.engine.migrate
 import dev.svod.engine.core.Author
 import dev.svod.engine.core.SvodEngine
 import dev.svod.engine.graph.WikiLinks
+import org.yaml.snakeyaml.DumperOptions
 import org.yaml.snakeyaml.LoaderOptions
 import org.yaml.snakeyaml.Yaml
 import org.yaml.snakeyaml.constructor.SafeConstructor
+import org.yaml.snakeyaml.representer.Representer
+import org.yaml.snakeyaml.resolver.Resolver
 import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.Path
@@ -48,7 +51,8 @@ object BasicMemoryImport {
             if (!rel.endsWith(".md")) continue
             val fm = runCatching { frontmatter(String(Files.readAllBytes(file), UTF_8)) }.getOrNull() ?: continue
             for (key in listOf("title", "permalink")) {
-                val v = fm[key]?.takeIf { it is String || it is Number }?.toString()?.trim()?.lowercase()
+                // Scalars load as the literal text (see [yaml]), so `title: 2024-01-05` or `permalink: 007` match as written.
+                val v = (fm[key] as? String)?.trim()?.lowercase()
                 if (!v.isNullOrEmpty()) byName.getOrPut(v) { sortedSetOf() }.add(rel)
             }
         }
@@ -63,21 +67,35 @@ object BasicMemoryImport {
             return byBasename[target.substringAfterLast('/').removeSuffix(".md").lowercase()]?.size == 1
         }
 
-        // Pass 2: the shared import with the link rewrite applied to markdown.
-        return ObsidianImport.importWith(source, engine, author, into, followSymlinks) { _, text ->
-            LINK.replace(text) { m ->
+        // Pass 2: the shared import (over the same walk) with the link rewrite applied to the
+        // markdown body; the frontmatter block is copied verbatim.
+        return ObsidianImport.importWith(source, engine, author, into, followSymlinks, walk) { _, text ->
+            val bodyStart = FRONTMATTER.find(text)?.range?.last?.plus(1) ?: 0
+            text.substring(0, bodyStart) + LINK.replace(text.substring(bodyStart)) { m ->
                 val inner = m.groupValues[1]
                 val target = WikiLinks.clean(inner)
                 if (target.isEmpty() || resolves(target)) return@replace m.value
-                val hash = target.indexOf('#')
-                val name = (if (hash < 0) target else target.substring(0, hash)).trim().lowercase()
-                val heading = if (hash < 0) "" else target.substring(hash)
+                val alias = aliasOf(inner)
+                // A table cell writes `[[Target\|Alias]]`; clean() unescapes that pipe into the target.
+                val tableEscaped = alias == null && "\\|" in inner
+                val linkPart = if (tableEscaped) target.substringBefore('|') else target
+                val hash = linkPart.indexOf('#')
+                val name = (if (hash < 0) linkPart else linkPart.substring(0, hash)).trim().lowercase()
+                val heading = if (hash < 0) "" else linkPart.substring(hash)
                 val match = byName[name]?.singleOrNull() ?: return@replace m.value
-                val display = aliasOf(inner) ?: inner.trim()
-                "[[${match.removeSuffix(".md")}$heading|$display]]"
+                // A path with `#`, `|`, `[` or `]` cannot be written as a wikilink target that resolves back to it.
+                if (match.any { it in UNLINKABLE }) return@replace m.value
+                val (sep, display) = when {
+                    alias != null -> "|" to alias
+                    tableEscaped -> "\\|" to inner.substringAfter("\\|")
+                    else -> "|" to inner.trim()
+                }
+                "[[${match.removeSuffix(".md")}$heading$sep$display]]"
             }
         }
     }
+
+    private const val UNLINKABLE = "#|[]"
 
     /** The `|alias` part of a wikilink's inner text (after the first unescaped `|`), or null. */
     private fun aliasOf(inner: String): String? {
@@ -91,16 +109,31 @@ object BasicMemoryImport {
         return null
     }
 
+    /** The leading `---` frontmatter block (optional BOM, YAML in group 1, closing fence line included). */
+    private val FRONTMATTER = Regex("^\\uFEFF?---[ \\t]*\\r?\\n(?:(.*?)\\r?\\n)?---[ \\t]*(?:\\r?\\n|$)", RegexOption.DOT_MATCHES_ALL)
+
     /** The leading `---` YAML frontmatter as a map; null when absent or unparseable. */
     private fun frontmatter(text: String): Map<*, *>? {
-        val lines = text.removePrefix("﻿").lines()
-        if (lines.firstOrNull()?.trimEnd() != "---") return null
-        val end = (1 until lines.size).firstOrNull { lines[it].trimEnd() == "---" } ?: return null
-        val yaml = lines.subList(1, end).joinToString("\n")
+        val m = FRONTMATTER.find(text) ?: return null
         return try {
-            Yaml(SafeConstructor(LoaderOptions())).load<Any?>(yaml) as? Map<*, *>
+            yaml().load<Any?>(m.groupValues[1]) as? Map<*, *>
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * A safe loader with no implicit scalar resolvers: every plain scalar loads as its literal text,
+     * so a date- or number-looking `title`/`permalink` (`2024-01-05`, `007`, `1.10`) keeps the exact
+     * spelling a `[[wikilink]]` uses instead of becoming a Date or a reformatted number.
+     */
+    private fun yaml(): Yaml {
+        val loader = LoaderOptions()
+        val dumper = DumperOptions()
+        return Yaml(SafeConstructor(loader), Representer(dumper), dumper, loader, LiteralResolver())
+    }
+
+    private class LiteralResolver : Resolver() {
+        override fun addImplicitResolvers() {}
     }
 }

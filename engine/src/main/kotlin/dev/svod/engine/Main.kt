@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.runBlocking
+import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.concurrent.CountDownLatch
@@ -189,6 +190,8 @@ private fun runImportBasicMemory(args: List<String>) {
 private fun runImportWith(args: List<String>, run: suspend (Path, SvodEngine, String) -> ObsidianImport.Result) {
     val config = SvodConfig.loadOrThrowValidated(Paths.get(args[0]))
     val source = Paths.get(args[1])
+    // Same guard as POST /api/v1/import: a mistyped path must fail loudly, not report "1 skipped".
+    require(Files.isDirectory(source)) { "source is not a directory: ${args[1]}" }
     val into = args.getOrNull(2) ?: ""
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     SvodEngine.open(config.vault(), scope, SecretScanner(config.secretScanning)).use { engine ->

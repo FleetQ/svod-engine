@@ -58,7 +58,9 @@ object ObsidianImport {
 
     /**
      * The shared import core. [transform] is applied to each markdown file's text (vault-relative
-     * path, content) before it is written; attachments are never transformed.
+     * path, content) before it is written; attachments are never transformed. A caller that already
+     * walked the source (to pre-scan it) passes that [walk] so the tree is not walked twice and the
+     * written file set is exactly the one it scanned.
      */
     internal suspend fun importWith(
         source: Path,
@@ -66,11 +68,11 @@ object ObsidianImport {
         author: Author,
         into: String,
         followSymlinks: Boolean,
+        walk: Walk = collectFiles(source.normalize(), prefixOf(into), followSymlinks),
         transform: (rel: String, text: String) -> String,
     ): Result {
         val base = source.normalize()
         val prefix = prefixOf(into)
-        val walk = collectFiles(base, prefix, followSymlinks)
         val imported = ArrayList<String>()
         val unchanged = ArrayList<String>()
         val skipped = ArrayList(walk.skipped)
@@ -123,7 +125,7 @@ object ObsidianImport {
                 if (name.startsWith(".")) return FileVisitResult.CONTINUE
                 if (!followSymlinks && (attrs.isSymbolicLink() || Files.isSymbolicLink(file))) {
                     log.info("import: skipping symlink {}", file)
-                    skipped += prefix + base.relativize(file).toString().replace('\\', '/')
+                    skipped += relPath(base, prefix, file)
                     return FileVisitResult.CONTINUE
                 }
                 out.add(file)
@@ -134,7 +136,7 @@ object ObsidianImport {
             // abort the walk — record it and continue.
             override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult {
                 log.warn("import: skipping inaccessible entry {}: {}", file, exc.message)
-                skipped += prefix + base.relativize(file).toString().replace('\\', '/')
+                skipped += relPath(base, prefix, file)
                 return FileVisitResult.CONTINUE
             }
         })

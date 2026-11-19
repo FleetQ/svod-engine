@@ -95,6 +95,23 @@ class BasicMemoryImportTest {
     }
 
     @Test
+    fun `frontmatter stays verbatim, date-like permalinks match, table links keep the escaped pipe`(): Unit = runBlocking {
+        val source = Files.createTempDirectory("basic-memory-")
+        write(source, "daily/day.md", "---\ntitle: 2024-01-05\npermalink: 2024-01-05\n---\n# day\n")
+        write(source, "odd/c#.md", "---\ntitle: Sharp\n---\n# sharp\n")
+        val text = "---\ntitle: Index\nsee: \"[[2024-01-05]]\"\n---\n" +
+            "- on [[2024-01-05]]\n| a | [[2024-01-05\\|that day]] |\n- uses [[Sharp]]\n"
+        write(source, "index.md", text)
+
+        engineOn().use { engine ->
+            BasicMemoryImport.import(source, engine)
+            val expected = "---\ntitle: Index\nsee: \"[[2024-01-05]]\"\n---\n" +
+                "- on [[daily/day|2024-01-05]]\n| a | [[daily/day\\|that day]] |\n- uses [[Sharp]]\n"
+            assertEquals(expected, engine.read("index.md")!!.text)
+        }
+    }
+
+    @Test
     fun `re-import is unchanged and never clobbers a local edit`(): Unit = runBlocking {
         val source = basicMemoryProject()
         engineOn().use { engine ->
