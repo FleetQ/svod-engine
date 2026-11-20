@@ -3,7 +3,18 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
-## v1.34.1 — unreleased (App API contract 0.42.0, unchanged)
+## v1.34.1 — unreleased (App API contract 0.42.0, additive)
+
+### Added — Notion export import
+
+- `svod-engine import-notion <config.json> <notion-export-dir> [into]` (engine stopped) and `POST /api/v1/import`
+  with `format: notion` (contract 0.42.0, additive: `notion` joins the `format` enum) import an unzipped Notion
+  "Markdown & CSV" export under `into` (default `notion`). Same walk, batch commits, idempotency and
+  no-overwrite rules as the Obsidian import, plus: the 32-hex page id is removed from every file and folder
+  name (siblings whose cleaned names would collide keep their original names); relative links to exported
+  pages (percent-encoded, `../` too) become `[[path|text]]` wikilinks, with any `#block` fragment dropped;
+  links to attachments point at the renamed paths. Database CSV files are not imported and are listed in
+  `skipped`. Not an MCP tool.
 
 ### Fixed — the native binary starts and serves a vault
 

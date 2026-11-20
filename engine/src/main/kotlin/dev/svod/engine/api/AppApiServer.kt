@@ -777,6 +777,12 @@ class AppApiServer(
                         }
                         call.respond(ImportResultDto(r.imported, r.unchanged, r.skipped))
                     }
+                    "notion" -> {
+                        // `source` is an unzipped Notion Markdown & CSV export; written under `into` (default notion/).
+                        if (!java.nio.file.Files.isDirectory(src)) return@post call.badRequest("source is not a directory: ${req.source}")
+                        val r = dev.svod.engine.migrate.NotionImport.import(src, vc.engine, into = req.into ?: "notion", followSymlinks = req.followSymlinks)
+                        call.respond(ImportResultDto(r.imported, r.unchanged, r.skipped))
+                    }
                     else -> call.badRequest("unknown import format: $format")
                 }
             }
