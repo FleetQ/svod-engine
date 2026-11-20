@@ -3,7 +3,30 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
-## v1.34.1 — unreleased (App API contract 0.42.0, unchanged)
+## v1.34.2 — unreleased (App API contract 0.42.0, unchanged)
+
+### Fixed — native binary: slow note reads, and SIGTERM killed it without a shutdown
+
+- **Every child process cost ~7 ms in the native binary.** GraalVM CE 23 sets
+  `jdk.lang.Process.launchMechanism=FORK` at startup (overwriting `-D`), because the JDK's `posix_spawn`
+  path needs the `jspawnhelper` executable. A full `fork` copies the page tables of the whole engine
+  (strace: `clone` 3.1 ms and the child's `execve` 4.8 ms, vs 0.5 ms and 0.07 ms on the JVM). A note read
+  runs `git log` twice (author and last editor), so it took 13.4 ms against 7.6 ms on the JVM. On Linux the
+  native binary now uses `VFORK` (the address space is shared until `exec`): note read 5.5 ms, file
+  history 3.0 ms (JVM 7.6 / 4.0). macOS keeps `FORK`; JDK 23 rejects `VFORK` there. The JVM is unchanged.
+- **SIGTERM killed the native binary at once.** A native image installs no SIGTERM/SIGINT handlers unless it
+  is built with `--install-exit-handlers`, so `systemctl stop` and `docker stop` ended it with exit -15 and
+  the shutdown hook (vault close, index flush, write queue) never ran. Now it exits 143 after the hook, as
+  the JVM does.
+- The native smoke test now fails when SIGTERM does not shut the engine down cleanly, and prints the cost of
+  a `git` spawn.
+
+Measured on Friday (5 000-note vault, `embedder: none`, p50 of 200 calls). Remaining native gap with
+GraalVM CE: tree 1.5×, write 1.3×, multi-word search 1.4× slower than the JVM (no JIT). A Profile-Guided
+Optimization build with Oracle GraalVM closed it in a local test (search 2.9 ms vs JVM 4.0, tree 26.0 vs 24.6,
+RSS 125 MB); not adopted here, because it needs Oracle GraalVM (GFTC licence) in the release.
+
+## v1.34.1 — 2026-11-20 (App API contract 0.42.0, unchanged)
 
 ### Fixed — the native binary starts and serves a vault
 

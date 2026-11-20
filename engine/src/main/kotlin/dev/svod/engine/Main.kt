@@ -48,6 +48,14 @@ fun main(args: Array<String>) {
     // path instead; the JVM keeps memory segments. Must be set before Lucene's MMapDirectory loads.
     if (System.getProperty("org.graalvm.nativeimage.imagecode") != null) {
         System.setProperty("org.apache.lucene.store.MMapDirectory.enableMemorySegments", "false")
+        // GraalVM CE 23 native-image sets jdk.lang.Process.launchMechanism=FORK at startup,
+        // overwriting -D (fixed upstream later), because the JDK's posix_spawn path needs the
+        // jspawnhelper executable. A full fork copies the page tables of the whole engine: measured
+        // ~7 ms per `git` spawn vs <1 ms on the JVM, and every note read spawns git twice. VFORK
+        // shares the address space until exec. JDK 23 accepts VFORK on Linux only (macOS throws).
+        if (System.getProperty("os.name").lowercase().startsWith("linux")) {
+            System.setProperty("jdk.lang.Process.launchMechanism", "VFORK")
+        }
     }
     val configPath = when (val cmd = parseCommand(args)) {
         Command.Help -> return println(usageText())

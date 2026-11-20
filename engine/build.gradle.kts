@@ -14,7 +14,7 @@ plugins {
 }
 
 group = "dev.svod"
-version = "1.34.1"
+version = "1.34.2"
 
 repositories {
     mavenCentral()
@@ -107,6 +107,9 @@ graalvmNative {
             // --no-fallback: fail the build rather than silently embedding a JVM fallback image.
             buildArgs.add("--no-fallback")
             buildArgs.add("-H:+ReportExceptionStackTraces")
+            // Without this a native image does not handle SIGTERM/SIGINT: systemd and docker stop kill it at once and
+            // the shutdown hook (vault close, index flush, write queue drain) never runs. The JVM installs them itself.
+            buildArgs.add("--install-exit-handlers")
             // logback + the bundled web viewer assets must be embedded as resources.
             buildArgs.add("-H:IncludeResources=logback.xml")
             // Defer static init of libraries that touch native libs / the filesystem to run time,

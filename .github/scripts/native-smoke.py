@@ -234,6 +234,28 @@ def main():
         tool(17, "move", {"from": "notes/mcp-note.md", "to": "notes/mcp-moved.md"}, "conflict")  # no expectedRevision
         tool(10, "read", {"path": "notes/does-not-exist.md"}, "")  # an error result still has to serialise
         print("ok  MCP tools/call write, read, edit, search, grep, history, list, tree, link, graph, context_pack, remember, move")
+
+        # Informational: a note's history runs `git log` in a child process. With FORK (GraalVM's default in a
+        # native image) each spawn copied the engine's page tables, ~7 ms; VFORK on Linux brings it under 1 ms.
+        def p50(path, n=20):
+            ts = []
+            for _ in range(n):
+                t = time.time()
+                call(path)
+                ts.append((time.time() - t) * 1000)
+            return sorted(ts)[n // 2]
+        rev = p50("/api/v1/file/revision?revision=HEAD&path=notes/seed-1.md")
+        hist = p50("/api/v1/file/history?max=1&path=notes/seed-1.md")
+        print("info git spawn cost: history p50 %.1f ms vs revision p50 %.1f ms" % (hist, rev))
+
+        # SIGTERM (systemd stop, docker stop) must run the shutdown hook, as on the JVM. A native image without
+        # --install-exit-handlers is killed outright (returncode -15). Windows has no SIGTERM.
+        if os.name != "nt":
+            proc.terminate()
+            rc = proc.wait(timeout=60)
+            if rc != 143:
+                fail("SIGTERM did not shut the engine down cleanly (returncode %s, expected 143)" % rc, log_path)
+            print("ok  SIGTERM runs the shutdown hook (exit 143)")
     except urllib.error.URLError as e:
         fail("HTTP error: %r" % e, log_path)
     finally:
