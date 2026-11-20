@@ -3,6 +3,7 @@ package dev.svod.engine
 import dev.svod.engine.core.SvodEngine
 import dev.svod.engine.lifecycle.ApiCompatibility
 import dev.svod.engine.lifecycle.ConfigInit
+import dev.svod.engine.lifecycle.Doctor
 import dev.svod.engine.lifecycle.EngineDiscovery
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
@@ -34,6 +35,10 @@ import kotlin.system.exitProcess
  * (default `~/svod`, one WRITE agent with a random token; never overwrites) and prints the MCP
  * client snippets and system prompt, then exits.
  *
+ * Setup check: `svod-engine doctor [config.json]` checks the config, secret refs, vault folders,
+ * ports and the embedder model without changing anything, prints one line per check and exits 1
+ * when any check fails.
+ *
  * `svod-engine --help` (`-h`) prints usage and `svod-engine --version` (`-V`) prints the engine
  * and App API contract versions; both exit before any config is read.
  */
@@ -50,6 +55,7 @@ fun main(args: Array<String>) {
         is Command.ImportBasicMemory -> return runImportBasicMemory(cmd.args)
         is Command.Clone -> return runClone(cmd.args)
         is Command.Init -> return runInit(cmd.args)
+        is Command.Doctor -> return runDoctor(cmd.args)
         is Command.Run -> cmd.configPath
     }
     val config = configPath
@@ -79,6 +85,7 @@ internal sealed interface Command {
     data class ImportBasicMemory(val args: List<String>) : Command
     data class Clone(val args: List<String>) : Command
     data class Init(val args: List<String>) : Command
+    data class Doctor(val args: List<String>) : Command
     data class Unknown(val flag: String) : Command
 }
 
@@ -94,6 +101,7 @@ internal fun parseCommand(args: Array<String>): Command {
         first == "import-basic-memory" -> Command.ImportBasicMemory(args.drop(1))
         first == "clone" -> Command.Clone(args.drop(1))
         first == "init" -> Command.Init(args.drop(1))
+        first == "doctor" -> Command.Doctor(args.drop(1))
         first.startsWith("-") -> Command.Unknown(first)
         else -> Command.Run(Paths.get(first))
     }
@@ -105,6 +113,8 @@ internal fun usageText(): String = """
     |      start the engine (default vault ~/svod-vault when no config is given)
     |  svod-engine init [dir] [--embedder none|onnx-local]
     |      write a new config.json in dir (default ~/svod) and print how to connect an agent
+    |  svod-engine doctor [config.json]
+    |      check the setup (config, secrets, vault, ports, model) without changing anything; exits 1 on any failure
     |  svod-engine import <config.json> <obsidian-dir> [into]
     |      import an Obsidian vault into the configured vault, then exit (engine stopped)
     |  svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]
@@ -175,6 +185,22 @@ private fun runInit(argv: List<String>) {
     println("  the agent token below is a secret; it is kept in that file (owner-only where supported)")
     println()
     println(ConfigInit.clientSetup(result.config, result.token))
+}
+
+/** `svod-engine doctor [config.json]`: read-only setup check; exits 1 when any check fails. */
+private fun runDoctor(args: List<String>) {
+    if (args.size > 1 || args.any { it.startsWith("-") }) {
+        System.err.println("usage: svod-engine doctor [config.json]")
+        exitProcess(2)
+    }
+    val checks = if (args.isEmpty()) {
+        Doctor.run(SvodConfig.default(Paths.get(System.getProperty("user.home"), "svod-vault")))
+    } else {
+        val (config, fileChecks) = Doctor.checkConfigFile(Paths.get(args[0]))
+        if (config == null) fileChecks else fileChecks + Doctor.run(config)
+    }
+    Doctor.format(checks).forEach(::println)
+    exitProcess(Doctor.exitCode(checks))
 }
 
 private fun runImport(args: List<String>) {

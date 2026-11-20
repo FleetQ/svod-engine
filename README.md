@@ -363,6 +363,7 @@ Fastest start: let the engine write the config for you, then run with it.
 ```sh
 svod-engine init ~/svod                    # writes ~/svod/config.json (never overwrites); add --embedder onnx-local for semantic search
 svod-engine ~/svod/config.json             # start the engine with it
+svod-engine doctor ~/svod/config.json      # check the setup without changing anything (exits 1 on a failure)
 ```
 
 From source, the same is `cd engine && ./gradlew run --args="init $HOME/svod"`.
@@ -415,6 +416,22 @@ Switch `"embedder"` to `{ "provider": "onnx-local" }` for semantic search (downl
 `SvodEngine.app` with [`dist/package.sh`](dist/package.sh). Run it under launchd with the
 plist in [`dist/`](dist/). Build & test:
 `cd engine && JAVA_HOME=$(/usr/libexec/java_home -v 20) ./gradlew test`.
+
+### Troubleshooting
+
+Run `svod-engine doctor <config.json>` (no argument checks the default `~/svod-vault` setup) and paste its
+output when you ask for help. It only reads: it never writes to the vault, the config, the discovery file or
+the model cache, and it never prints a secret, only the ref and who owns it. Each line is `ok`, `warn` or
+`FAIL`, a warn or fail with a one-line fix, and it exits 1 when any check fails. It checks:
+
+- **config**: the file exists and parses, and every validation error (all of them, not only the first).
+- **agents**: at least one agent, or every MCP client is rejected.
+- **secrets / tls**: `env:`, `file:` and `keychain:` refs for agent tokens, user keys, embedder/reranker API
+  keys and TLS passwords resolve (`keychain:` is macOS only), and TLS keystores exist.
+- **vault**: each vault folder is writable; a missing folder or one that is not yet a git repo is a warn, as
+  the engine creates both on first start.
+- **engine / ports**: `appApiPort` and `mcpPort` are free, and whether an engine is already running.
+- **embedder**: with `onnx-local`, whether the model is already downloaded (it is fetched on first start).
 
 ---
 

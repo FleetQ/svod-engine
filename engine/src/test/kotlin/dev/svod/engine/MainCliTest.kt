@@ -46,6 +46,14 @@ class MainCliTest {
     }
 
     @Test
+    fun `doctor is parsed with or without a config and listed in the usage`() {
+        assertEquals(Command.Doctor(emptyList()), parseCommand(arrayOf("doctor")))
+        assertEquals(Command.Doctor(listOf("/x/cfg.json")), parseCommand(arrayOf("doctor", "/x/cfg.json")))
+        val u = usageText()
+        assertTrue("svod-engine doctor [config.json]" in u, u)
+    }
+
+    @Test
     fun `version names the engine and the contract`() {
         assertEquals(
             "svod-engine ${SvodNode.ENGINE_VERSION} (App API contract ${ApiCompatibility.CURRENT_CONTRACT_VERSION})",
