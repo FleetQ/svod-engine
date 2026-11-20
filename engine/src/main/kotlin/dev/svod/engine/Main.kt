@@ -43,6 +43,12 @@ import kotlin.system.exitProcess
  * and App API contract versions; both exit before any config is read.
  */
 fun main(args: Array<String>) {
+    // Lucene's memory-segment MMapDirectory needs Arena.ofShared(), which GraalVM CE native-image
+    // (JDK 23) does not support (GR-52276). In the native binary use Lucene's MappedByteBuffer mmap
+    // path instead; the JVM keeps memory segments. Must be set before Lucene's MMapDirectory loads.
+    if (System.getProperty("org.graalvm.nativeimage.imagecode") != null) {
+        System.setProperty("org.apache.lucene.store.MMapDirectory.enableMemorySegments", "false")
+    }
     val configPath = when (val cmd = parseCommand(args)) {
         Command.Help -> return println(usageText())
         Command.Version -> return println(versionText())

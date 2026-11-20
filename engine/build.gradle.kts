@@ -1,3 +1,5 @@
+import java.util.zip.ZipFile
+
 plugins {
     // Bumped to 2.3.21 to read the MCP Kotlin SDK 0.13.0 bytecode metadata.
     kotlin("jvm") version "2.3.21"
@@ -12,7 +14,7 @@ plugins {
 }
 
 group = "dev.svod"
-version = "1.34.0"
+version = "1.34.1"
 
 repositories {
     mavenCentral()
@@ -158,6 +160,62 @@ configurations.named("nativeImageClasspath") {
     exclude(group = "ai.djl.onnxruntime")
     exclude(group = "com.microsoft.onnxruntime")
 }
+
+// kotlinx.serialization finds serializers reflectively when the type is only known at run time (Ktor's
+// content negotiation, the MCP SDK's polymorphic messages): `Class.Companion.serializer()`. A native image
+// needs each such class registered, and a hand-kept list rots the first time someone adds a DTO. So the
+// entries are generated from the compiled classes: every class annotated @Serializable in this project and
+// in the MCP SDK and kotlinx-serialization-json jars gets its Companion, its generated `$$serializer` and its fields registered.
+val generateSerializationMetadata by tasks.registering {
+    val classDirs = sourceSets.main.get().output.classesDirs
+    val sdkJars = configurations.runtimeClasspath.map { cp -> cp.filter { it.name.startsWith("kotlin-sdk") || it.name.startsWith("kotlinx-serialization-json") } }
+    val outDir = layout.buildDirectory.dir("generated/native-metadata")
+    inputs.files(classDirs)
+    inputs.files(sdkJars)
+    outputs.dir(outDir)
+    dependsOn("compileKotlin")
+    doLast {
+        val marker = "Lkotlinx/serialization/Serializable;".toByteArray()
+        fun hasMarker(b: ByteArray): Boolean {
+            outer@ for (i in 0..b.size - marker.size) {
+                if (b[i] != marker[0]) continue
+                for (j in 1 until marker.size) if (b[i + j] != marker[j]) continue@outer
+                return true
+            }
+            return false
+        }
+        val all = HashSet<String>()
+        val annotated = sortedSetOf<String>()
+        fun visit(name: String, read: () -> ByteArray) {
+            if (!name.endsWith(".class")) return
+            val cls = name.removeSuffix(".class").replace('/', '.')
+            all += cls
+            if (!cls.endsWith("\$\$serializer") && !cls.endsWith("\$Companion") && hasMarker(read())) annotated += cls
+        }
+        classDirs.files.filter { it.isDirectory }.forEach { d ->
+            d.walkTopDown().filter { it.isFile }.forEach { f -> visit(f.relativeTo(d).invariantSeparatorsPath) { f.readBytes() } }
+        }
+        sdkJars.get().files.forEach { jar ->
+            ZipFile(jar).use { z ->
+                for (e in z.entries().toList()) if (!e.isDirectory) visit(e.name) { z.getInputStream(e).readBytes() }
+            }
+        }
+        val entries = sortedSetOf<String>()
+        val dl = "\$"
+        fun entry(type: String) = "{\"type\":\"$type\",\"allDeclaredFields\":true,\"allDeclaredMethods\":true}"
+        for (c in annotated) {
+            entries += entry(c)
+            if ("$c${dl}Companion" in all) entries += entry("$c${dl}Companion")
+            if ("$c${dl}${dl}serializer" in all) entries += entry("$c${dl}${dl}serializer")
+        }
+        val f = outDir.get().file("META-INF/native-image/dev.svod/svod-engine-serialization/reachability-metadata.json").asFile
+        f.parentFile.mkdirs()
+        f.writeText("{\"reflection\":[\n" + entries.joinToString(",\n") + "\n]}\n")
+        println("generateSerializationMetadata: ${annotated.size} @Serializable classes, ${entries.size} entries")
+    }
+}
+sourceSets.main { resources.srcDir(layout.buildDirectory.dir("generated/native-metadata")) }
+tasks.processResources { dependsOn(generateSerializationMetadata) }
 
 tasks.test {
     useJUnitPlatform()
