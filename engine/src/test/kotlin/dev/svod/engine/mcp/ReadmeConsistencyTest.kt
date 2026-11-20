@@ -177,4 +177,14 @@ class ReadmeConsistencyTest {
         )
         assertTrue(Files.exists(repoRoot.resolve("docs/compare-basic-memory.md")), "docs/compare-basic-memory.md does not exist")
     }
+
+    @Test
+    fun `README has a Find Svod in MCP directories section that links server json`() {
+        val text = section("Find Svod in MCP directories")
+        assertTrue("`server.json`" in text, "README '## Find Svod in MCP directories' does not name `server.json`")
+        assertTrue(
+            "https://github.com/FleetQ/svod-engine/releases/latest" in text,
+            "README '## Find Svod in MCP directories' does not link the Releases page",
+        )
+    }
 }

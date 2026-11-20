@@ -1,5 +1,6 @@
 package dev.svod.engine.mcp
 
+import dev.svod.engine.lifecycle.ConfigInit
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
 import kotlinx.serialization.json.Json
@@ -34,15 +35,6 @@ class McpDirectoryManifestTest {
 
     private fun JsonObject.str(key: String): String? = this[key]?.jsonPrimitive?.content
 
-    /** The README text from the `## <heading>` line up to the next `## ` heading. */
-    private fun section(heading: String): String {
-        val lines = Files.readString(repoRoot.resolve("README.md")).lines()
-        val start = lines.indexOfFirst { it.startsWith("## ") && it.removePrefix("## ").trim().startsWith(heading) }
-        assertTrue(start >= 0, "README has no '## $heading' section")
-        val end = (start + 1 until lines.size).firstOrNull { lines[it].startsWith("## ") } ?: lines.size
-        return lines.subList(start, end).joinToString("\n")
-    }
-
     @Test
     fun `server json exists and its version equals the engine version`() {
         assertEquals(
@@ -57,7 +49,7 @@ class McpDirectoryManifestTest {
         assertTrue(remotes != null && remotes.isNotEmpty(), "server.json has no remotes entry")
         val remote = remotes[0].jsonObject
         assertEquals("streamable-http", remote.str("type"))
-        assertEquals("http://127.0.0.1:${SvodConfig(vaultPath = "/tmp/x").mcpPort}/mcp", remote.str("url"))
+        assertEquals(ConfigInit.mcpUrl(SvodConfig()), remote.str("url"))
         val auth = remote["headers"]?.jsonArray?.map { it.jsonObject }?.firstOrNull { it.str("name") == "Authorization" }
         assertTrue(auth != null, "server.json remote has no Authorization header")
         assertTrue(auth.str("description").orEmpty().startsWith("Bearer"), "Authorization header description must describe a Bearer token")
@@ -82,20 +74,10 @@ class McpDirectoryManifestTest {
 
     @Test
     fun `any tool count in the manifest equals tools list`() {
+        val matches = Regex("""(\d+)(?:[\s-]+MCP)?[\s-]+tools\b""", RegexOption.IGNORE_CASE).findAll(manifestText()).toList()
+        if (matches.isEmpty()) return // no stated count: skip starting an MCP server just to compare nothing
         val count = fetchAdvertisedToolNames().size
-        val text = manifestText()
-        val wrong = Regex("""(\d+)(?:[\s-]+MCP)?[\s-]+tools\b""", RegexOption.IGNORE_CASE).findAll(text)
-            .filter { it.groupValues[1].toInt() != count }.map { it.value }.toList()
+        val wrong = matches.filter { it.groupValues[1].toInt() != count }.map { it.value }
         assertTrue(wrong.isEmpty(), "server.json tool counts must be $count (tools/list): $wrong")
-    }
-
-    @Test
-    fun `README has a Find Svod in MCP directories section that links server json`() {
-        val text = section("Find Svod in MCP directories")
-        assertTrue("`server.json`" in text, "README '## Find Svod in MCP directories' does not name `server.json`")
-        assertTrue(
-            "https://github.com/FleetQ/svod-engine/releases/latest" in text,
-            "README '## Find Svod in MCP directories' does not link the Releases page",
-        )
     }
 }
