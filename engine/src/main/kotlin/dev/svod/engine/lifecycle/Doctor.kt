@@ -48,7 +48,10 @@ object Doctor {
         val modelCacheDir: Path = ModelManager.sharedCacheDir(),
         val pidAlive: (Long) -> Boolean = { pid -> ProcessHandle.of(pid).isPresent },
         val osName: String = System.getProperty("os.name") ?: "",
-    )
+    ) {
+        // The generated toString would dump [env] — the whole process environment, secrets included.
+        override fun toString() = "Doctor.Env(discoveryFile=$discoveryFile, modelCacheDir=$modelCacheDir, osName=$osName)"
+    }
 
     /** Loads [path]; a missing or malformed file is one FAIL and no config (so no other check runs). */
     fun checkConfigFile(path: Path): Pair<SvodConfig?, List<Check>> {
@@ -113,7 +116,11 @@ object Doctor {
             else add(Check(Status.OK, "secrets", "agent '${a.agentId}' token is set inline"))
         }
         for (u in config.users) if (isRef(u.keyRef)) add(secretRef("user '${u.userId}' keyRef", u.keyRef, env))
-        config.embedder.apiKeyRef?.takeIf(::isRef)?.let { add(secretRef("embedder.apiKeyRef", it, env)) }
+        // The engine resolves embedder.apiKeyRef only for the OpenAI provider (Embedders.create);
+        // a leftover ref under another provider is never read, so it must not fail the check.
+        if (config.embedder.provider.lowercase() in setOf("openai", "remote-openai")) {
+            config.embedder.apiKeyRef?.takeIf(::isRef)?.let { add(secretRef("embedder.apiKeyRef", it, env)) }
+        }
         config.reranker.apiKeyRef?.takeIf(::isRef)?.let { add(secretRef("reranker.apiKeyRef", it, env)) }
         for ((field, tls) in listOf("mcpTls" to config.mcpTls, "appApiTls" to config.appApiTls)) {
             if (tls == null) continue
@@ -182,8 +189,12 @@ object Doctor {
     )
 
     // (f) the configured ports must be free; port 0 (any free port) is skipped.
-    internal fun ports(config: SvodConfig, env: Env, engine: RunningEngine?): List<Check> =
-        listOf("appApiPort" to config.appApiPort, "mcpPort" to config.mcpPort).filter { it.second in 1..65535 }.map { (field, port) ->
+    internal fun ports(config: SvodConfig, env: Env, engine: RunningEngine?): List<Check> {
+        // An unresolvable host fails every bind; say so rather than calling each port "in use".
+        if (runCatching { InetAddress.getByName(config.host) }.isFailure) {
+            return listOf(Check(Status.FAIL, "ports", "host '${config.host}' does not resolve", "fix host in the config"))
+        }
+        return listOf("appApiPort" to config.appApiPort, "mcpPort" to config.mcpPort).filter { it.second in 1..65535 }.map { (field, port) ->
             when {
                 env.portFree(config.host, port) -> Check(Status.OK, "ports", "$field $port free")
                 engine != null && port in setOf(engine.appApiPort, engine.mcpPort) ->
@@ -191,6 +202,7 @@ object Doctor {
                 else -> Check(Status.FAIL, "ports", "$field $port in use", "stop the process using it or change appApiPort/mcpPort")
             }
         }
+    }
 
     // (g) the onnx-local model: files only, never a download.
     internal fun embedder(config: SvodConfig, env: Env): List<Check> {
@@ -203,13 +215,27 @@ object Doctor {
             else listOf(Check(Status.FAIL, "embedder", "onnxLocalPath $dir must contain ${ModelManager.MODEL_FILE} and ${ModelManager.TOKENIZER_FILE}", "fix embedder.onnxLocalPath or remove it to use the bundled model"))
         }
         val id = config.embedder.onnxModelId
-        val candidates = buildList {
-            runCatching { config.vault() }.getOrNull()?.let { add(it.resolve(".svod").resolve("models").resolve(id)) }
-            add(env.modelCacheDir.resolve(id))
+        // Every vault loads the model (ModelManager.resolve): its own legacy .svod/models copy, else the
+        // shared cache. So it is ready only if the shared cache has it or every vault has its own copy.
+        val shared = env.modelCacheDir.resolve(id)
+        val legacy = config.resolvedVaults().filter { it.path.isNotBlank() }
+            .mapNotNull { v -> runCatching { Paths.get(v.path).resolve(".svod").resolve("models").resolve(id) }.getOrNull() }
+        val found = when {
+            hasModel(shared) -> shared
+            legacy.isNotEmpty() && legacy.all(::hasModel) -> legacy.first()
+            else -> null
         }
-        val found = candidates.firstOrNull(::hasModel)
-        return if (found != null) listOf(Check(Status.OK, "embedder", "onnx-local model '$id' at $found"))
-        else listOf(
+        if (found != null) return listOf(Check(Status.OK, "embedder", "onnx-local model '$id' at $found"))
+        // Only bundled models have a pinned download; any other id makes the first start fail.
+        if (id !in ModelManager.BUNDLED) {
+            return listOf(
+                Check(
+                    Status.FAIL, "embedder", "model '$id' is not downloaded and has no pinned download",
+                    "set embedder.onnxLocalPath to a folder with ${ModelManager.MODEL_FILE} and ${ModelManager.TOKENIZER_FILE}, or use a bundled model (${ModelManager.BUNDLED.keys.joinToString()})",
+                ),
+            )
+        }
+        return listOf(
             Check(
                 Status.WARN, "embedder", "model not downloaded; it will be fetched on first start (~120 MB)",
                 "let the first start download it, or set embedder.provider to none",

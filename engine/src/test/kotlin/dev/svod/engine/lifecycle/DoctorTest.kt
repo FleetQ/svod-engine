@@ -206,6 +206,21 @@ class DoctorTest {
     }
 
     @Test
+    fun `an onnx-local model with no pinned download fails`() {
+        val config = validConfig().copy(embedder = SvodConfig.EmbedderSettings(provider = "onnx-local", onnxModelId = "not-bundled"))
+        val checks = Doctor.run(config, env())
+        assertTrue(checks.fails().any { it.name == "embedder" && "not-bundled" in it.message }, checks.text())
+    }
+
+    @Test
+    fun `an embedder apiKeyRef the provider never reads is not checked`() {
+        val unused = validConfig().copy(embedder = SvodConfig.EmbedderSettings(provider = "none", apiKeyRef = "env:SVOD_UNSET_KEY"))
+        assertTrue(Doctor.run(unused, env()).fails().isEmpty())
+        val used = unused.copy(embedder = unused.embedder.copy(provider = "openai"))
+        assertTrue(Doctor.run(used, env()).fails().any { "embedder.apiKeyRef" in it.message })
+    }
+
+    @Test
     fun `config file problems are one failure`() {
         val (none, missing) = Doctor.checkConfigFile(tmp.resolve("absent.json"))
         assertEquals(null, none)
