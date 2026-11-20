@@ -44,6 +44,12 @@ class ReadmeConsistencyTest {
     private fun advertisedTools(): List<String> = ADVERTISED_TOOLS
 
     private companion object {
+        /** A Markdown table cell boundary: a `|` not escaped as `\|`. */
+        val UNESCAPED_PIPE = Regex("""(?<!\\)\|""")
+
+        /** One cell of a table's header separator row, e.g. `---`, `:---`, `---:` or `:---:`. */
+        val SEPARATOR_CELL = Regex(""":?-+:?""")
+
         fun meta(): String =
             """"_meta":{"${McpProtocol.META_PROTOCOL_VERSION}":"${McpProtocol.V2026_07_28}",""" +
                 """"${McpProtocol.META_CLIENT_INFO}":{"name":"readme-test","version":"1.0.0"},""" +
@@ -166,5 +172,47 @@ class ReadmeConsistencyTest {
             "](docs/adr/0020-team-sharing-users-and-roles.md)" in tour,
             "README feature tour has no row linking docs/adr/0020-team-sharing-users-and-roles.md",
         )
+    }
+
+    /**
+     * The '## How it compares' table as rows of trimmed cells, in file order (header, separator, body).
+     * Cells split on unescaped `|` only, so a `\|` inside a cell (as in `[[path\|Original]]`) stays one cell.
+     */
+    private fun comparisonRows(): List<List<String>> =
+        section("How it compares").lines()
+            .filter { it.trimStart().startsWith("|") }
+            .map { line -> line.trim().removePrefix("|").removeSuffix("|").split(UNESCAPED_PIPE).map { it.trim() } }
+
+    /** [comparisonRows] without the `|---|` separator row. */
+    private fun comparisonTable(): List<List<String>> = comparisonRows().filterNot(::isSeparator)
+
+    private fun isSeparator(row: List<String>): Boolean = row.all { SEPARATOR_CELL.matches(it) }
+
+    @Test
+    fun `the comparison table rows all have as many cells as the header`() {
+        val rows = comparisonRows()
+        assertTrue(rows.size > 2, "README '## How it compares' has no table")
+        assertTrue(isSeparator(rows[1]), "comparison table has no separator line under the header: ${rows[1]}")
+        val width = rows.first().size
+        val bad = rows.drop(1).filter { it.size != width }.map { "${it.size} cells: '${it.joinToString(" | ")}'" }
+        assertTrue(bad.isEmpty(), "comparison table rows (and separator) must have $width cells like the header: $bad")
+    }
+
+    @Test
+    fun `the comparison table has a Basic Memory column and Licence and Hosted rows`() {
+        val table = comparisonTable()
+        assertTrue(table.isNotEmpty(), "README '## How it compares' has no table")
+        assertTrue(table.first().any { "Basic Memory" in it }, "comparison table header has no Basic Memory column: ${table.first()}")
+        assertTrue(table.any { "Licence" in it.firstOrNull().orEmpty() }, "comparison table has no Licence row")
+        assertTrue(table.any { "Hosted" in it.firstOrNull().orEmpty() }, "comparison table has no Hosted tier row")
+    }
+
+    @Test
+    fun `How it compares links to the Basic Memory page and the file exists`() {
+        assertTrue(
+            "](docs/compare-basic-memory.md)" in section("How it compares"),
+            "README '## How it compares' has no link to docs/compare-basic-memory.md",
+        )
+        assertTrue(Files.exists(repoRoot.resolve("docs/compare-basic-memory.md")), "docs/compare-basic-memory.md does not exist")
     }
 }
