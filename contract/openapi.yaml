@@ -2399,7 +2399,7 @@ components:
           description: >
             What `source` holds. `mem0` accepts a top-level array or an object with a `results` or
             `memories` array of Mem0 memories. `notion` is an unzipped Notion "Markdown & CSV" export
-            directory. Since 0.41.0.
+            directory. Since 0.41.0 (`notion` since 0.42.0).
         into: { type: string, nullable: true, description: "Optional subfolder prefix within the target vault (mem0 default: mem0; notion default: notion)." }
         vault: { type: string, nullable: true, description: Target vault id; omitted ⇒ default vault. }
         followSymlinks:

@@ -128,6 +128,18 @@ class NotionImportTest {
     }
 
     @Test
+    fun `an encoded hash in a name is part of the path and such pages stay markdown links`(): Unit = runBlocking {
+        val source = Files.createTempDirectory("notion-export-")
+        write(source, "Home $wikiId.md", "[C#](C%23%20Notes%20$decId.md#x) ![](C%23%20pic%20$taskId.png)\n")
+        write(source, "C# Notes $decId.md", "# C#\n")
+        Files.write(source.resolve("C# pic $taskId.png"), png)
+        engineOn().use { engine ->
+            NotionImport.import(source, engine)
+            assertEquals("[C#](C%23%20Notes.md) ![](C%23%20pic.png)\n", engine.read("notion/Home.md")!!.text)
+        }
+    }
+
+    @Test
     fun `re-import is unchanged and never overwrites a local edit`(): Unit = runBlocking {
         val source = notionExport()
         engineOn().use { engine ->

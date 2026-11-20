@@ -17,7 +17,8 @@ import java.nio.file.Paths
  *   case-insensitively): those keep their original names;
  * - relative markdown links to other exported pages (percent-encoded, possibly `../`) become
  *   `[[vault/path|text]]` wikilinks; a `#fragment` is dropped;
- * - links to exported attachments keep their markdown form but point at the renamed paths.
+ * - links to exported attachments (and to pages whose path cannot be a wikilink target) keep their
+ *   markdown form but point at the renamed paths.
  *
  * Database CSV files are not imported; each is listed in `skipped` under its renamed path. External
  * links, in-page anchors and links to anything not in the export are copied verbatim. The output
@@ -69,24 +70,26 @@ object NotionImport {
     private fun rewrite(m: MatchResult, file: Path, rel: String, byPath: Map<Path, Path>, newRel: Map<Path, String>): String? {
         val (bang, text, target) = m.destructured
         if (target.startsWith("#") || SCHEME.containsMatchIn(target)) return null
+        // Split off the fragment before decoding: an encoded `%23` is part of the file name.
         val decoded = try {
-            URLDecoder.decode(target.replace("+", "%2B"), UTF_8)
+            URLDecoder.decode(target.substringBefore('#').replace("+", "%2B"), UTF_8)
         } catch (e: IllegalArgumentException) {
             return null
-        }.substringBefore('#')
+        }
         if (decoded.isEmpty()) return null
         val resolved = try {
-            file.parent.resolve(decoded).normalize()
+            // A note at the top of a relative, normalized-to-empty source (`.`) has no parent.
+            (file.parent ?: Paths.get("")).resolve(decoded).normalize()
         } catch (e: InvalidPathException) {
             return null
         }
         val hit = byPath[resolved] ?: return null
         val hitRel = newRel.getValue(hit)
-        return if (hitRel.endsWith(".md")) {
-            if (bang.isNotEmpty() || hitRel.any { it in UNLINKABLE }) return null
+        return if (hitRel.endsWith(".md") && bang.isEmpty() && hitRel.none { it in UNLINKABLE }) {
             val path = hitRel.removeSuffix(".md")
             if (text.isBlank()) "[[$path]]" else "[[$path|$text]]"
         } else {
+            // Attachments, and pages that cannot be a wikilink, keep the markdown form at the renamed path.
             val from = Paths.get(rel).parent ?: Paths.get("")
             val relative = from.relativize(Paths.get(hitRel)).toString().replace('\\', '/')
             "$bang[$text](${relative.split('/').joinToString("/") { encode(it) }})"
@@ -96,6 +99,7 @@ object NotionImport {
     /** Percent-encodes the characters that would break or change a markdown link target. */
     private fun encode(segment: String): String =
         segment.replace("%", "%25").replace(" ", "%20").replace("(", "%28").replace(")", "%29")
+            .replace("#", "%23").replace("?", "%3F")
 
     /**
      * Each file's vault path with the Notion ids removed from every segment. Within one original

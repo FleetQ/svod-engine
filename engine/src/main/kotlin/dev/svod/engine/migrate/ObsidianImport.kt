@@ -70,7 +70,7 @@ object ObsidianImport {
         into: String,
         followSymlinks: Boolean,
         walk: Walk = collectFiles(source.normalize(), prefixOf(into), followSymlinks),
-        pathOf: (Path) -> String = { relPath(source.normalize(), prefixOf(into), it) },
+        pathOf: (Path) -> String = source.normalize().let { base -> prefixOf(into).let { prefix -> { f: Path -> relPath(base, prefix, f) } } },
         transform: (rel: String, text: String) -> String,
     ): Result {
         val imported = ArrayList<String>()
