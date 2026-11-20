@@ -68,17 +68,24 @@ GraalVM has no JDK 20 build, so `kotlin.jvmToolchain` reads `-Psvod.jdk` (defaul
   plus `ilammy/msvc-dev-cmd` on Windows) builds the native binary; the native step stays
   `continue-on-error` so a transient native failure never blocks the app-image release.
 
-## Addendum (v1.34.1) — the Linux binary shipped broken from v1.30.0 to v1.34.0
+## Addendum (v1.34.1) — the Linux binary built since v1.30.0 did not work
 
-The item (4) above ("on JDK 23 FFM is complete") was wrong for Lucene: with `-H:+ForeignAPISupport`
-the downcall to `posix_madvise` also needs a registered stub, and memory-segment `MMapDirectory`
-needs `Arena.ofShared()`, which GraalVM CE 23 rejects (GR-52276). Nobody ran the binary, because the
-native step is `continue-on-error`. Fix: the native binary uses Lucene's `MappedByteBuffer` mmap path
-(`enableMemorySegments=false`, set in `main`), the tracing-agent metadata is committed, class-initializer
-simulation is off, and a smoke test (`.github/scripts/native-smoke.py`) runs the binary in `ci.yml` and in
-the release job before upload. To refresh the metadata after a dependency change, run the engine on a JVM
-with `-agentlib:native-image-agent=config-merge-dir=<dir>` while the smoke script drives it, and copy
-`reachability-metadata.json` into `engine/src/main/resources/META-INF/native-image/dev.svod/svod-engine/`.
+Item (4) above ("on JDK 23 FFM is complete") did not hold for Lucene. With `-H:+ForeignAPISupport` the
+`posix_madvise` downcall needs a registered stub, and memory-segment `MMapDirectory` then fails on
+`Arena.ofShared` (`GR-52276`, GraalVM CE 23). Nobody ran the binary, because the native step is
+`continue-on-error`. What v1.34.1 does:
+
+- The native binary sets `MMapDirectory.enableMemorySegments=false` in `main`, so Lucene uses its
+  `MappedByteBuffer` mmap path. The JVM keeps memory segments.
+- Reflection metadata comes from two places. `reachability-metadata.json` under `src/main/resources` was
+  recorded with the tracing agent (refresh: run the engine on a JVM with
+  `-agentlib:native-image-agent=config-merge-dir=<dir>` while `.github/scripts/native-smoke.py` drives it).
+  The kotlinx.serialization entries are generated at build time by `generateSerializationMetadata` from every
+  `@Serializable` class, so they cannot fall behind the DTOs.
+- A smoke test (`.github/scripts/native-smoke.py`) runs the built binary in `ci.yml` and in the release job
+  before upload.
+- Without `-H:-SimulateClassInitializer` the build passed once the generated metadata was in place. That flag
+  had been tried while only a partial hand-recorded list existed and is not used.
 
 ## Alternatives considered
 - **native-only releases** — rejected: a metadata failure would leave no downloadable build. The

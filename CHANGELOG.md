@@ -8,25 +8,29 @@ independently of the engine; each entry notes the contract version it ships.
 ### Fixed — the native binary starts and serves a vault
 
 - The Linux native binary (`svod-engine-linux-x64`, built since v1.30.0) crashed at startup: Lucene's
-  memory-segment `MMapDirectory` needs the Foreign Function API (`UnsupportedFeatureError ... ForeignAPISupport`)
-  and `Arena.ofShared()`, which GraalVM CE 23 does not support (GR-52276). The native binary now sets
-  `org.apache.lucene.store.MMapDirectory.enableMemorySegments=false` at startup, so Lucene memory-maps its
-  files through `MappedByteBuffer`. The JVM build and the app-image keep memory segments.
-- Reflection and resource metadata was missing for classes that are only loaded by name
-  (`ConcurrentMergeScheduler`, `io.sentry.logback.SentryAppender`, Lucene codecs, jgit, logback, the
-  kotlinx.serialization lookups of the MCP SDK and the App API DTOs). It is now committed as
+  memory-segment `MMapDirectory` needs the Foreign Function API (`UnsupportedFeatureError ... ForeignAPISupport`);
+  with FFM enabled it still failed on `Arena.ofShared not supported` (GR-52276) on GraalVM CE 23. The native
+  binary now sets `org.apache.lucene.store.MMapDirectory.enableMemorySegments=false` at startup, so Lucene
+  memory-maps its files through `MappedByteBuffer`. The JVM build and the app-image keep memory segments.
+- Classes that are only loaded by name had no reflection metadata (`ConcurrentMergeScheduler`,
+  `io.sentry.logback.SentryAppender`, Lucene codecs, jgit, logback). That part is committed as
   `META-INF/native-image/dev.svod/svod-engine/reachability-metadata.json`, recorded with the tracing agent
-  over a real start, search, write and MCP session. The build also passes `-H:-SimulateClassInitializer`:
-  with the metadata in place, native-image's class-initializer simulation failed the build
-  ("Initializing type after analysis") on the MCP SDK's serializer companions.
+  over a start, search, write and MCP session on a JVM.
+- Ktor and the MCP SDK look kotlinx.serialization serializers up reflectively, so every `@Serializable` DTO
+  needs reflection metadata; the committed file covered 6 of them and most endpoints failed with
+  `Serializer for class 'X' is not found`. The Gradle task `generateSerializationMetadata` now generates the
+  entries from the compiled classes on every build: each `@Serializable` class in the engine, the MCP SDK and
+  kotlinx-serialization-json, with its `Companion` and `$$serializer`. A new DTO needs no manual step.
 
 ### Added — a native smoke test that runs the built binary
 
 - `.github/scripts/native-smoke.py` starts a native binary on a real vault (`embedder: none`), waits for
-  `/ready`, runs a keyword search, writes and reads back a note, searches for it, calls MCP `initialize`,
-  `tools/list` and `tools/call`, and fails on `UnsupportedFeatureError` or `ClassNotFoundException` in the log.
-  The release workflow runs it right after the native build and deletes a binary that fails it before the
-  upload step, so a broken binary cannot be published; `ci.yml` has a `native-smoke` job that builds and runs it.
+  `/ready`, then checks keyword search, write/read-back/search, 30 App API GET endpoints (including the
+  reference viewer's first calls), a 404 error body, a 409 conflict body, a file move, memory capture,
+  reindex, the `/api/v1/events` WebSocket upgrade and 13 MCP tool calls, and fails on `UnsupportedFeatureError`,
+  `ClassNotFoundException` or `SerializationException` in the log. The release workflow runs it right after
+  the native build and deletes a binary that fails it before the upload step; `ci.yml` has a `native-smoke`
+  job that builds and runs it. Not yet checked on macOS and Windows binaries.
 
 ## v1.34.0 — unreleased (App API contract 0.42.0, additive)
 

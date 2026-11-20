@@ -28,7 +28,22 @@ AGENT_TOKEN = "smoke-agent-token"
 # Strings that mean a native-image reachability/feature problem even when the process stays up
 # (a missing logback appender class is only logged, not fatal).
 BAD_LOG = ("UnsupportedFeatureError", "ClassNotFoundException", "NoClassDefFoundError",
-           "MissingReflectionRegistrationError", "MissingResourceRegistrationError")
+           "MissingReflectionRegistrationError", "MissingResourceRegistrationError",
+           "SerializationException", "Serializer for class", "Failed to convert request body")
+# GET endpoints that must answer 200 on a one-vault config. Each response body goes through
+# kotlinx.serialization, which a native image resolves by reflection: a DTO missing from the reflection
+# metadata fails only when its endpoint is called (v1.34.0 broke 33 of 41 endpoints and tools this way).
+API_GETS = [
+    "/health", "/api/v1/tree", "/api/v1/trash", "/api/v1/file/history?path=notes/seed-0.md",
+    "/api/v1/file/links?path=notes/seed-0.md", "/api/v1/graph", "/api/v1/graph/status",
+    "/api/v1/graph/communities", "/api/v1/tags", "/api/v1/settings", "/api/v1/index/status", "/api/v1/metrics",
+    "/api/v1/conflicts", "/api/v1/vaults", "/api/v1/agents", "/api/v1/me", "/api/v1/stats", "/api/v1/users",
+    "/api/v1/sync/config", "/api/v1/sync/status", "/api/v1/sources", "/api/v1/memory/sessions",
+    "/api/v1/memory/proposals", "/api/v1/memory/dashboard", "/api/v1/memory/review", "/api/v1/memory/rulebook",
+    # the reference web viewer's first calls (examples/web-viewer/app.js)
+    "/api/v1/index/status", "/api/v1/memory/review", "/api/v1/search?q=zebracrossing&mode=keyword",
+    "/api/v1/file?path=notes/seed-0.md",
+]
 
 
 def free_port():
@@ -78,15 +93,21 @@ def main():
                SVOD_LOG_DIR=os.path.join(work, "logs"))
     base = "http://127.0.0.1:%d" % api
 
-    def call(path, method="GET", body=None, timeout=30):
+    def call(path, method="GET", body=None, timeout=30, expect=(200,)):
         h = {"Authorization": "Bearer " + KEY}
         data = None
         if body is not None:
             data = json.dumps(body).encode()
             h["Content-Type"] = "application/json"
         req = urllib.request.Request(base + path, data=data, method=method, headers=h)
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.read().decode("utf-8", "replace")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                status, text = r.status, r.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            status, text = e.code, e.read().decode("utf-8", "replace")
+        if status not in expect:
+            fail("%s %s returned %s (wanted %s): %s" % (method, path, status, expect, text[:200]), log_path)
+        return status, text
 
     def search(q):
         _, body = call("/api/v1/search?mode=keyword&q=" + urllib.parse.quote(q))
@@ -122,14 +143,45 @@ def main():
         note = "notes/smoke-write.md"
         status, body = call("/api/v1/file?path=" + urllib.parse.quote(note), "PUT",
                             {"content": "# Written by smoke\n\nUnique marker quokkaparade.\n"})
-        if status != 200:
-            fail("PUT file returned %s: %s" % (status, body), log_path)
         status, body = call("/api/v1/file?path=" + urllib.parse.quote(note))
         if "quokkaparade" not in body:
             fail("read-back of the written file lacks its content: " + body[:200], log_path)
         print("ok  PUT + read back")
         search_until("quokkaparade", "smoke-write")
         print("ok  written note is searchable")
+
+        for g in API_GETS:
+            call(g)
+        print("ok  %d App API GET endpoints answer 200" % len(API_GETS))
+
+        # typed error bodies (ErrorDto, ConflictBodyDto) and request bodies (MoveRequestDto, CaptureRequestDto)
+        _, text = call("/api/v1/file?path=notes/no-such-note.md", expect=(404,))
+        if "error" not in text:
+            fail("404 body is not an ErrorDto: " + text[:200], log_path)
+        _, text = call("/api/v1/file?path=%s&expectedRevision=%s" % (urllib.parse.quote(note), "0" * 40), "DELETE",
+                       expect=(409,))
+        if "current" not in text:
+            fail("conflict body lacks `current`: " + text[:200], log_path)
+        _, cur = call("/api/v1/file?path=" + urllib.parse.quote(note))
+        rev = json.loads(cur)["revision"]
+        call("/api/v1/file/move", "POST", {"from": note, "to": "notes/smoke-moved.md", "expectedRevision": rev})
+        call("/api/v1/file?path=notes/smoke-moved.md")
+        now = int(time.time() * 1000)
+        call("/api/v1/memory/capture", "POST", {"sessionId": "smoke", "transcript": "user prefers tabs",
+                                                "startedAt": now - 1000, "endedAt": now}, expect=(200, 201, 202))
+        call("/api/v1/maintenance/reindex", "POST", {})
+        print("ok  404 ErrorDto, 409 conflict body, move, memory capture, reindex")
+
+        # the viewer follows /api/v1/events over a WebSocket: check the upgrade is accepted
+        with socket.create_connection(("127.0.0.1", api), timeout=10) as sk:
+            sk.sendall(("GET /api/v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n"
+                        "Connection: Upgrade\r\nSec-WebSocket-Key: c21va2VzbW9rZXNtb2tlcw==\r\n"
+                        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: svod.events, svod.key.%s\r\n\r\n"
+                        % KEY).encode())
+            head = sk.recv(256).decode("latin-1")
+        if " 101 " not in head.split("\r\n")[0]:
+            fail("WebSocket /api/v1/events not upgraded: " + head[:120], log_path)
+        print("ok  /api/v1/events WebSocket upgrade")
 
         mcp_url = "http://127.0.0.1:%d/mcp" % mcp
         hdr = {"Authorization": "Bearer " + AGENT_TOKEN, "Accept": "application/json, text/event-stream",
@@ -173,8 +225,15 @@ def main():
         tool(7, "grep", {"pattern": "zebracrossing"}, "seed-")
         tool(8, "history", {"path": "notes/mcp-note.md"}, "mcp-note")
         tool(9, "list", {}, "seed-0")
+        tool(11, "tree", {}, "folders")
+        tool(12, "link", {"path": "notes/mcp-note.md"}, "mcp-note")
+        tool(13, "graph_query", {"path": "notes/mcp-note.md"}, "mcp-note")
+        tool(14, "graph_status", {}, "state")
+        tool(15, "context_pack", {"query": "zebracrossing"}, "seed-")
+        tool(16, "remember", {"content": "Smoke prefers dark mode", "type": "preference"}, "written")
+        tool(17, "move", {"from": "notes/mcp-note.md", "to": "notes/mcp-moved.md"}, "conflict")  # no expectedRevision
         tool(10, "read", {"path": "notes/does-not-exist.md"}, "")  # an error result still has to serialise
-        print("ok  MCP tools/call write, read, edit, search, grep, history, list")
+        print("ok  MCP tools/call write, read, edit, search, grep, history, list, tree, link, graph, context_pack, remember, move")
     except urllib.error.URLError as e:
         fail("HTTP error: %r" % e, log_path)
     finally:
