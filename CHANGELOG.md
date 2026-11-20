@@ -5,6 +5,16 @@ independently of the engine; each entry notes the contract version it ships.
 
 ## v1.34.0 — unreleased (App API contract 0.42.0, additive)
 
+### Added — `svod-engine doctor`
+
+- `svod-engine doctor [config.json]` checks a setup without changing anything and prints one `ok` / `warn` /
+  `FAIL` line per check, each warn or fail with a one-line fix; it exits 1 when any check fails. It covers a
+  missing or malformed config, every validation error, no agents, secret refs (`env:`/`file:`/`keychain:`)
+  that don't resolve, missing TLS keystores, vault folders that are missing, not writable or not yet git
+  repos, busy App API / MCP ports and an engine that is already running, and an `onnx-local` model that is
+  not downloaded yet. It never writes to the vault, the config, the discovery file or the model cache, and
+  never prints a secret value. CLI only, no contract change.
+
 ### Added — the reference web viewer works against a shared engine
 
 - `GET /api/v1/events` also takes the personal key as an offered WebSocket subprotocol,
