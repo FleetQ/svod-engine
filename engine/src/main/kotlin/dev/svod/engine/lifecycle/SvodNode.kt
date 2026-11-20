@@ -73,7 +73,7 @@ class SvodNode private constructor(
 
     companion object {
         /** The engine version; kept equal to the Gradle `version` by VersionConsistencyTest. */
-        const val ENGINE_VERSION = "1.33.0"
+        const val ENGINE_VERSION = "1.34.0"
 
         /**
          * Run one reconcile cycle for [id] when it is a synced vault (its remote resolves), recording

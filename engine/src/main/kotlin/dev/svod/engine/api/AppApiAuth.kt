@@ -18,7 +18,8 @@ import java.net.URLDecoder
  * Authentication + authorization for every call under `/api/`, in ONE place so no route can forget it
  * (ADR-0019). Three decisions per call, in order:
  *
- *  1. **Who** — `Authorization: Bearer <key>` resolves through the [UserRegistry]. No header is the
+ *  1. **Who** — `Authorization: Bearer <key>` resolves through the [UserRegistry] (on the events
+ *     WebSocket also an offered `svod.key.<key>` subprotocol, see [protocolKey]). No header is the
  *     local UI (admin) only when `localAdmin` is on, the peer address is loopback, the `Host`
  *     header names a loopback host and there is no foreign `Origin` — see [hostAllowed] and
  *     [originAllowed] for why a browser on the same machine would otherwise qualify. Anything
@@ -194,7 +195,7 @@ object AppApiAuth {
             val principal = authenticate(call, users, localAdmin, localPrincipal, activity)
             if (principal == null) {
                 val reason = when {
-                    call.request.headers[HttpHeaders.Authorization] != null -> "key not accepted"
+                    call.request.headers[HttpHeaders.Authorization] != null || protocolKey(call) != null -> "key not accepted"
                     localAdmin && isLoopback(call) && !hostAllowed(call) -> "keyless loopback request with non-loopback Host '${call.request.headers[HttpHeaders.Host]}'"
                     localAdmin && isLoopback(call) -> "keyless loopback request from a foreign Origin '${call.request.headers[HttpHeaders.Origin]}'"
                     else -> "no key"
@@ -247,7 +248,26 @@ object AppApiAuth {
             val key = header.trim().let { if (it.startsWith("Bearer ", ignoreCase = true)) it.substring(7).trim() else it }
             return users?.authenticate(key)?.also { activity?.touch(it.userId) }
         }
+        protocolKey(call)?.let { key -> return users?.authenticate(key)?.also { activity?.touch(it.userId) } }
         return if (localAdmin && isLoopback(call) && hostAllowed(call) && originAllowed(call)) localPrincipal else null
+    }
+
+    /** The subprotocol a browser offers next to [protocolKey]'s; the events route answers with it. */
+    const val EVENTS_PROTOCOL = "svod.events"
+    private const val KEY_PROTOCOL_PREFIX = "svod.key."
+
+    /**
+     * A browser cannot set `Authorization` on a WebSocket, so the events stream also takes the key
+     * as an offered subprotocol: `new WebSocket(url, ["svod.events", "svod.key.<key>"])`. Only on
+     * `/api/v1/events` — every other route has a header. Keys are base64url, which is a valid
+     * subprotocol token. Not logged: [denied] prints the reason, never a header.
+     */
+    internal fun protocolKey(call: ApplicationCall): String? {
+        if (canonicalPath(call.request.path()) != "/api/v1/events") return null
+        val offered = call.request.headers.getAll(HttpHeaders.SecWebSocketProtocol) ?: return null
+        return offered.asSequence().flatMap { it.split(',') }.map { it.trim() }
+            .firstOrNull { it.startsWith(KEY_PROTOCOL_PREFIX) }
+            ?.removePrefix(KEY_PROTOCOL_PREFIX)?.takeIf { it.isNotEmpty() }
     }
 
     /**

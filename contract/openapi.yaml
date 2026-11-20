@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.41.0
+  version: 0.42.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -1208,6 +1208,10 @@ paths:
         sync.finished { vault, trigger, status, head, conflicts, lastSyncedAt?, durationMs, pending }
         (status = inSync | conflicts | offline | error; pending=true ⇒ a trailing cycle follows).
         A cycle cancelled by engine shutdown sends no sync.finished.
+        Authentication (0.42.0): a browser cannot set Authorization on a WebSocket, so the personal
+        key may instead be offered as a subprotocol, `new WebSocket(url, ["svod.events",
+        "svod.key.<key>"])`; the server then answers with the `svod.events` subprotocol. Accepted on
+        this route only. A client that sends Authorization and offers no subprotocol is unchanged.
       responses:
         "101": { description: Switching Protocols (WebSocket) }
 

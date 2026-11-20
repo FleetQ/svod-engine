@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "dev.svod"
-version = "1.33.0"
+version = "1.34.0"
 
 repositories {
     mavenCentral()
@@ -81,6 +81,16 @@ kotlin {
 
 application {
     mainClass.set("dev.svod.engine.MainKt")
+}
+
+// The reference web viewer ships in the install as `web-viewer/`, so a hosted engine can point
+// `webViewerPath` at `<install>/web-viewer` without a checkout of this repo.
+distributions {
+    main {
+        contents {
+            from(file("../examples/web-viewer")) { into("web-viewer") }
+        }
+    }
 }
 
 graalvmNative {

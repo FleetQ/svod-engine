@@ -88,6 +88,7 @@ body {
   font-family: var(--mono); font-size: 12px;
 }
 .endpoint:focus { border-color: var(--accent); color: var(--ink); }
+.endpoint.key { width: 120px; }
 .status {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px;
   padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line);
@@ -121,6 +122,7 @@ body {
   .tag { display: none; }
   .conn { flex: 1; justify-content: flex-end; }
   .endpoint { width: auto; flex: 1; min-width: 0; }
+  .endpoint.key { flex: 0 1 72px; }
 }
 .pane-head {
   display: flex; align-items: baseline; justify-content: space-between;

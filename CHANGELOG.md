@@ -3,7 +3,21 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
-## v1.33.0 — unreleased (App API contract 0.41.0, additive)
+## v1.34.0 — unreleased (App API contract 0.42.0, additive)
+
+### Added — the reference web viewer works against a shared engine
+
+- `GET /api/v1/events` also takes the personal key as an offered WebSocket subprotocol,
+  `["svod.events", "svod.key.<key>"]`, and answers with `svod.events` (contract 0.42.0, additive). A browser
+  cannot set `Authorization` on a WebSocket, so before this the viewer could not follow a shared engine
+  (`localAdmin: false`). Only on this route; a wrong key is 401 and audited like a wrong header.
+- The viewer has an API key field (kept in `sessionStorage`, this tab only, per engine URL) and sends the key on every call. It
+  says "API key needed" or "key rejected" instead of reconnecting forever. Its default engine URL keeps the
+  page's path prefix, so a viewer served under `/t/<team>/` talks to that engine.
+- The install (`installDist`, release archives) carries the viewer as `web-viewer/`, so a hosted engine can set
+  `webViewerPath` to `<install>/web-viewer` without a checkout. svod-web serves it at `/t/<team>/`.
+
+## v1.33.0 (App API contract 0.41.0, additive)
 
 ### Fixed — reference web viewer usability and accessibility
 
