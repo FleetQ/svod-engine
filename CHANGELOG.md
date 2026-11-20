@@ -3,6 +3,31 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.34.1 — unreleased (App API contract 0.42.0, unchanged)
+
+### Fixed — the native binary starts and serves a vault
+
+- The Linux native binary (`svod-engine-linux-x64`, built since v1.30.0) crashed at startup: Lucene's
+  memory-segment `MMapDirectory` needs the Foreign Function API (`UnsupportedFeatureError ... ForeignAPISupport`)
+  and `Arena.ofShared()`, which GraalVM CE 23 does not support (GR-52276). The native binary now sets
+  `org.apache.lucene.store.MMapDirectory.enableMemorySegments=false` at startup, so Lucene memory-maps its
+  files through `MappedByteBuffer`. The JVM build and the app-image keep memory segments.
+- Reflection and resource metadata was missing for classes that are only loaded by name
+  (`ConcurrentMergeScheduler`, `io.sentry.logback.SentryAppender`, Lucene codecs, jgit, logback, the
+  kotlinx.serialization lookups of the MCP SDK and the App API DTOs). It is now committed as
+  `META-INF/native-image/dev.svod/svod-engine/reachability-metadata.json`, recorded with the tracing agent
+  over a real start, search, write and MCP session. The build also passes `-H:-SimulateClassInitializer`:
+  with the metadata in place, native-image's class-initializer simulation failed the build
+  ("Initializing type after analysis") on the MCP SDK's serializer companions.
+
+### Added — a native smoke test that runs the built binary
+
+- `.github/scripts/native-smoke.py` starts a native binary on a real vault (`embedder: none`), waits for
+  `/ready`, runs a keyword search, writes and reads back a note, searches for it, calls MCP `initialize`,
+  `tools/list` and `tools/call`, and fails on `UnsupportedFeatureError` or `ClassNotFoundException` in the log.
+  The release workflow runs it right after the native build and deletes a binary that fails it before the
+  upload step, so a broken binary cannot be published; `ci.yml` has a `native-smoke` job that builds and runs it.
+
 ## v1.34.0 — unreleased (App API contract 0.42.0, additive)
 
 ### Added — the reference web viewer works against a shared engine

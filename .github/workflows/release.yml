@@ -117,6 +117,24 @@ jobs:
           BIN="build/native/nativeCompile/svod-engine${{ matrix.exe }}"
           test -f "$BIN" && cp "$BIN" "svod-engine-${{ matrix.label }}${{ matrix.exe }}"
 
+      # A native build that compiles proves nothing: v1.30.0 shipped a Linux binary that crashed at
+      # startup (Lucene FFM, missing reflection metadata) because nobody ever ran it. Start the built
+      # binary on a real vault and use it; a binary that fails here is deleted so the upload step
+      # below (which skips files that do not exist) can never publish it. The app-image is unaffected.
+      - name: Smoke-test native-image
+        id: smoke
+        if: steps.native.outcome == 'success'
+        continue-on-error: true
+        run: |
+          PY="$(command -v python3 || command -v python)"
+          "$PY" ../.github/scripts/native-smoke.py "svod-engine-${{ matrix.label }}${{ matrix.exe }}"
+
+      - name: Drop the native binary if it failed its smoke test
+        if: steps.native.outcome == 'success' && steps.smoke.outcome != 'success'
+        run: |
+          echo "::warning::native-image smoke test failed; svod-engine-${{ matrix.label }}${{ matrix.exe }} is NOT uploaded (the app-image still ships)"
+          rm -f "svod-engine-${{ matrix.label }}${{ matrix.exe }}"
+
       # Uploads one file at a time and retries: GitHub drops these 100-220 MB uploads often
       # enough ("Error saving asset", "other side closed") that one attempt is not a release.
       # The notes come from `prepare`, so no job regenerates them (three matrix jobs generating

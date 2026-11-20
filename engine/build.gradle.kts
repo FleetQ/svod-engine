@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "dev.svod"
-version = "1.34.0"
+version = "1.34.1"
 
 repositories {
     mavenCentral()
@@ -105,6 +105,11 @@ graalvmNative {
             // --no-fallback: fail the build rather than silently embedding a JVM fallback image.
             buildArgs.add("--no-fallback")
             buildArgs.add("-H:+ReportExceptionStackTraces")
+            // With the committed reachability metadata (it makes the MCP SDK's serializer lookups
+            // reflective), class-initializer simulation fails the build in the heap verifier with
+            // "Initializing type after analysis: ...NotificationParams$Companion". Run those initializers
+            // at run time instead. Metadata: src/main/resources/META-INF/native-image, see ADR-0015.
+            buildArgs.add("-H:-SimulateClassInitializer")
             // logback + the bundled web viewer assets must be embedded as resources.
             buildArgs.add("-H:IncludeResources=logback.xml")
             // Defer static init of libraries that touch native libs / the filesystem to run time,

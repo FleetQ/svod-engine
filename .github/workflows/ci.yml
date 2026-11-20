@@ -32,3 +32,28 @@ jobs:
           name: engine-test-report
           path: engine/build/reports/tests/test
           if-no-files-found: warn
+
+  # Builds the Linux native binary and runs it on a real vault. The release workflow's native step
+  # is best-effort, so without this a change that breaks the binary (metadata, Lucene, FFM) is only
+  # noticed by whoever downloads it. ~5 min on a hosted ubuntu runner.
+  native-smoke:
+    name: native-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up GraalVM CE 23
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '23'
+          distribution: graalvm-community
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: gradle
+
+      - name: Build native-image
+        working-directory: engine
+        run: ./gradlew -Psvod.jdk=23 nativeCompile --no-daemon
+
+      - name: Smoke-test the binary
+        run: python3 .github/scripts/native-smoke.py engine/build/native/nativeCompile/svod-engine
