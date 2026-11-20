@@ -866,7 +866,10 @@ paths:
       summary: >
         One-shot import through the single writer: an existing Obsidian vault (markdown + attachments,
         `format: obsidian`, the default) or a Mem0 memory export (`format: mem0`, one note per memory
-        at `‹into›/‹mem0 id›.md`). Idempotent — re-running reconciles rather than duplicating; a
+        at `‹into›/‹mem0 id›.md`) or an unzipped Notion "Markdown & CSV" export (`format: notion`: the
+        32-hex page id is removed from file and folder names unless that makes two siblings collide,
+        relative page links become `[[path|text]]` wikilinks, attachment links follow the renamed paths,
+        database CSV files are not imported and are listed in `skipped`). Idempotent — re-running reconciles rather than duplicating; a
         present-but-differing file is skipped (never clobbered). For obsidian, `.obsidian/` and dot-dirs
         are skipped, as are symlinks (file and directory) and any unreadable entry; for mem0, a malformed
         entry is reported as `entry i: reason`. Each is listed in `skipped` and the import continues.
@@ -2386,17 +2389,18 @@ components:
     ImportRequest:
       type: object
       required: [source]
-      description: Import an Obsidian vault directory or a Mem0 export file (local path) into a Svod vault.
+      description: Import an Obsidian vault directory, a Mem0 export file or an unzipped Notion export directory (local path) into a Svod vault.
       properties:
-        source: { type: string, description: "Local filesystem path: the Obsidian vault directory (obsidian) or the Mem0 JSON export file (mem0)." }
+        source: { type: string, description: "Local filesystem path: the Obsidian vault directory (obsidian), the Mem0 JSON export file (mem0) or the unzipped Notion export directory (notion)." }
         format:
           type: string
-          enum: [obsidian, mem0]
+          enum: [obsidian, mem0, notion]
           default: obsidian
           description: >
             What `source` holds. `mem0` accepts a top-level array or an object with a `results` or
-            `memories` array of Mem0 memories. Since 0.41.0.
-        into: { type: string, nullable: true, description: "Optional subfolder prefix within the target vault (mem0 default: mem0)." }
+            `memories` array of Mem0 memories. `notion` is an unzipped Notion "Markdown & CSV" export
+            directory. Since 0.41.0.
+        into: { type: string, nullable: true, description: "Optional subfolder prefix within the target vault (mem0 default: mem0; notion default: notion)." }
         vault: { type: string, nullable: true, description: Target vault id; omitted ⇒ default vault. }
         followSymlinks:
           type: boolean
