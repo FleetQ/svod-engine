@@ -1,0 +1,26 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.FleetQ/svod-engine",
+  "title": "Svod",
+  "description": "Auditable git-backed memory for AI agents: plain Markdown, every write an attributed git commit",
+  "version": "1.34.0",
+  "repository": {
+    "url": "https://github.com/FleetQ/svod-engine",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/FleetQ/svod-engine/releases/latest",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "http://127.0.0.1:7518/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Bearer <agent token from your svod config agents list>",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}
