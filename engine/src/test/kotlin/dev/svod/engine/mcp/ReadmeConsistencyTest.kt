@@ -1,19 +1,5 @@
 package dev.svod.engine.mcp
 
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO as ClientCIO
-import io.ktor.client.request.header
-import io.ktor.client.request.post
-import io.ktor.client.request.setBody
-import io.ktor.client.statement.bodyAsText
-import io.ktor.http.ContentType
-import io.ktor.http.HttpHeaders
-import io.ktor.http.contentType
-import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -50,32 +36,8 @@ class ReadmeConsistencyTest {
         /** One cell of a table's header separator row, e.g. `---`, `:---`, `---:` or `:---:`. */
         val SEPARATOR_CELL = Regex(""":?-+:?""")
 
-        fun meta(): String =
-            """"_meta":{"${McpProtocol.META_PROTOCOL_VERSION}":"${McpProtocol.V2026_07_28}",""" +
-                """"${McpProtocol.META_CLIENT_INFO}":{"name":"readme-test","version":"1.0.0"},""" +
-                """"${McpProtocol.META_CLIENT_CAPABILITIES}":{}}"""
-
         /** The tool names a WRITE agent sees over a stateless tools/list, fetched once per test class. */
-        val ADVERTISED_TOOLS: List<String> by lazy { fetchAdvertisedTools() }
-
-        fun fetchAdvertisedTools(): List<String> = runBlocking {
-            McpFixture().use { fx ->
-                val server = SvodMcpServer(fx.tools, fx.registry).start(0)
-                try {
-                    HttpClient(ClientCIO).use { http ->
-                        val res = http.post("http://127.0.0.1:${server.port}/mcp") {
-                            header(HttpHeaders.Authorization, "Bearer ${WRITE_AGENT.token}")
-                            header(McpProtocol.HEADER_PROTOCOL_VERSION, McpProtocol.V2026_07_28)
-                            header(McpProtocol.HEADER_METHOD, "tools/list")
-                            contentType(ContentType.Application.Json)
-                            setBody("""{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{${meta()}}}""")
-                        }
-                        Json.parseToJsonElement(res.bodyAsText()).jsonObject["result"]!!.jsonObject["tools"]!!.jsonArray
-                            .map { it.jsonObject["name"]!!.jsonPrimitive.content }
-                    }
-                } finally { server.stop() }
-            }
-        }
+        val ADVERTISED_TOOLS: List<String> by lazy { fetchAdvertisedToolNames() }
     }
 
     @Test

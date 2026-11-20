@@ -495,6 +495,22 @@ FleetQ is **one MCP client** — a first-party reference integration, not an emb
 dependency. The engine stays vendor-agnostic (see
 [ADR-0002](docs/adr/0002-repo-split-and-license.md)).
 
+## Find Svod in MCP directories
+
+[`server.json`](server.json) at the repo root is the manifest for the official
+[MCP Registry](https://registry.modelcontextprotocol.io). Publishing is a manual step for the
+maintainer: install `mcp-publisher`, run `mcp-publisher login github`, then `mcp-publisher publish`
+from the repo root. The same title, description and links can be reused when listing Svod on
+glama.ai, mcpservers.org and mcp.directory.
+
+The manifest describes the local endpoint `http://127.0.0.1:7518/mcp` (streamable HTTP) with an
+`Authorization: Bearer <agent token>` header; tokens come from the `agents` list in your svod config
+and are never stored in the manifest. Binaries are on the
+[Releases page](https://github.com/FleetQ/svod-engine/releases/latest).
+
+When bumping `SvodNode.ENGINE_VERSION`, bump `version` in `server.json` too —
+`McpDirectoryManifestTest` fails until they match.
+
 ## Layout
 
 | Dir | What |
