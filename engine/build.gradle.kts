@@ -110,6 +110,10 @@ graalvmNative {
             // Without this a native image does not handle SIGTERM/SIGINT: systemd and docker stop kill it at once and
             // the shutdown hook (vault close, index flush, write queue drain) never runs. The JVM installs them itself.
             buildArgs.add("--install-exit-handlers")
+            // Extra native-image arguments from the release workflow: the Profile-Guided Optimization passes of
+            // Oracle GraalVM (`--pgo-instrument`, then `--pgo=<profile>`), or `-O3` where no profile can be
+            // recorded (Windows). `-Psvod.nativeArgs="..."`, space-separated; absent = a plain build.
+            (findProperty("svod.nativeArgs") as String?)?.split(' ')?.filter { it.isNotBlank() }?.forEach { buildArgs.add(it) }
             // logback + the bundled web viewer assets must be embedded as resources.
             buildArgs.add("-H:IncludeResources=logback.xml")
             // Defer static init of libraries that touch native libs / the filesystem to run time,

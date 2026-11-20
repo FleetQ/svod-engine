@@ -349,8 +349,11 @@ include in-process `onnx-local` semantic search (DJL/ONNX are JVM-only — use t
 | **Linux** (x64) | `svod-engine-linux-x64` | `chmod +x svod-engine-linux-x64 && ./svod-engine-linux-x64 config.json` |
 | **Windows** (x64) | `svod-engine-windows-x64.exe` | `svod-engine-windows-x64.exe config.json` |
 
-Built on GraalVM CE for JDK 23 (the app-images stay on JDK 21); see
-[ADR-0015](docs/adr/0015-native-image-and-cross-platform-releases.md) for the closed-world build details.
+Built on **Oracle GraalVM** for JDK 23 with Profile-Guided Optimization on Linux and macOS (`-O3` on Windows);
+the app-images stay on GraalVM CE / JDK 21. Oracle GraalVM is licensed under the
+[GraalVM Free Terms and Conditions](https://www.oracle.com/downloads/licenses/graal-free-license.html)
+(free, production use allowed); the parts of it inside the native binaries are under that licence, the engine
+code stays Apache-2.0. See [ADR-0015](docs/adr/0015-native-image-and-cross-platform-releases.md).
 
 Build from source instead? Read on.
 
@@ -561,7 +564,7 @@ binaries for macOS / Linux / Windows (see **Download & install**). App API **con
 (versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0020) for the decision record.
 
 Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption).
-The GraalVM `native-image` binary now ships for all three OSes (built on GraalVM CE/JDK 23; serves
+The GraalVM `native-image` binary now ships for all three OSes (built on Oracle GraalVM/JDK 23; serves
 BM25/Ollama, not in-process onnx-local — see
 [ADR-0015](docs/adr/0015-native-image-and-cross-platform-releases.md)).
 

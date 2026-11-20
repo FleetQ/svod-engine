@@ -252,7 +252,10 @@ def main():
         # --install-exit-handlers is killed outright (returncode -15). Windows has no SIGTERM.
         if os.name != "nt":
             proc.terminate()
-            rc = proc.wait(timeout=60)
+            try:
+                rc = proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                fail("SIGTERM did not stop the engine within 60 s", log_path)
             if rc != 143:
                 fail("SIGTERM did not shut the engine down cleanly (returncode %s, expected 143)" % rc, log_path)
             print("ok  SIGTERM runs the shutdown hook (exit 143)")

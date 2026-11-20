@@ -21,10 +21,21 @@ independently of the engine; each entry notes the contract version it ships.
 - The native smoke test now fails when SIGTERM does not shut the engine down cleanly, and prints the cost of
   a `git` spawn.
 
-Measured on Friday (5 000-note vault, `embedder: none`, p50 of 200 calls). Remaining native gap with
-GraalVM CE: tree 1.5×, write 1.3×, multi-word search 1.4× slower than the JVM (no JIT). A Profile-Guided
-Optimization build with Oracle GraalVM closed it in a local test (search 2.9 ms vs JVM 4.0, tree 26.0 vs 24.6,
-RSS 125 MB); not adopted here, because it needs Oracle GraalVM (GFTC licence) in the release.
+### Changed — native binaries are built with Oracle GraalVM and Profile-Guided Optimization
+
+- With the two fixes above, the rest of the native gap was compiled code quality without a JIT (tree 1.5×,
+  write 1.3×, multi-word search 1.4× slower than the JVM on GraalVM CE). The release now builds the native
+  binaries with **Oracle GraalVM 23**. On Linux and macOS it builds an instrumented binary, runs
+  `.github/scripts/pgo-workload.py` on it to record a profile, and builds the shipped binary with `--pgo`.
+  Windows gets `-O3`, because it has no SIGTERM to make the instrumented binary write its profile.
+- Licence: Oracle GraalVM is under the GraalVM Free Terms and Conditions (free, production use allowed,
+  redistribution allowed if not for a fee). The native binaries carry GFTC-licensed parts; the engine source stays
+  Apache-2.0 and the app-image (GraalVM CE 21) is unchanged.
+- `-Psvod.nativeArgs="..."` passes extra arguments to native-image.
+
+Measured on Friday (5 000-note vault, `embedder: none`, p50 of 200 calls; JVM in brackets): note read 5.5 ms
+(7.6), file history 3.0 (4.0). With PGO in a local test: search 2.6–2.9 ms (4.0–4.3), tree 26.0 (24.6),
+write 20.4 (18.5), RSS 125 MB (352).
 
 ## v1.34.1 — 2026-11-20 (App API contract 0.42.0, unchanged)
 
