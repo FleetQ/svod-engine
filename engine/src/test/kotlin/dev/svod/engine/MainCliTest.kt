@@ -46,6 +46,13 @@ class MainCliTest {
     }
 
     @Test
+    fun `import-claude-memory is parsed and listed in the usage`() {
+        assertEquals(Command.ImportClaudeMemory(listOf("c", "d")), parseCommand(arrayOf("import-claude-memory", "c", "d")))
+        val u = usageText()
+        assertTrue("svod-engine import-claude-memory <config.json> <memory-dir> [into]" in u, u)
+    }
+
+    @Test
     fun `import-notion is parsed and listed in the usage`() {
         assertEquals(Command.ImportNotion(listOf("c", "d")), parseCommand(arrayOf("import-notion", "c", "d")))
         val u = usageText()
