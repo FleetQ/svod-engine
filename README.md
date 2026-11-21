@@ -545,7 +545,7 @@ When bumping `SvodNode.ENGINE_VERSION`, bump `version` in `server.json` too —
 
 ## Status
 
-**v1.34.2 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
+**v1.34.3 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/
 watcher → lifecycle → reference viewer → multi-host sync → hardening → multi-vault + Obsidian
 import → backup/DR + ops surface → external sources (prune + auto-sync) → non-blocking keyword-first
 indexing + pluggable embedders (local-onnx / local-ollama / remote-openai) → restart robustness

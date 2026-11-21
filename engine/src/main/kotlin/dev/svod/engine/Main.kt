@@ -46,6 +46,12 @@ import kotlin.system.exitProcess
  * and App API contract versions; both exit before any config is read.
  */
 fun main(args: Array<String>) {
+    // A process whose uid has no passwd entry (a container run with --user <uid>) gets user.home "?" from a native
+    // image; the JVM falls back to $HOME there. "?" broke logback's rolling file path and JGit's config save, and
+    // would put ~/.svod paths under "?/". Do what the JVM does, before anything reads user.home.
+    if (System.getProperty("user.home").let { it.isNullOrBlank() || it == "?" }) {
+        System.getenv("HOME")?.takeIf { it.isNotBlank() }?.let { System.setProperty("user.home", it) }
+    }
     // Lucene's memory-segment MMapDirectory needs Arena.ofShared(), which GraalVM CE native-image
     // (JDK 23) does not support (GR-52276). In the native binary use Lucene's MappedByteBuffer mmap
     // path instead; the JVM keeps memory segments. Must be set before Lucene's MMapDirectory loads.
