@@ -179,6 +179,20 @@ class ReadmeConsistencyTest {
     }
 
     @Test
+    fun `the Connecting an LLM agent section links the agent-framework page`() {
+        val lines = readme.lines()
+        val start = lines.indexOfFirst { it.trim() == "### Connecting an LLM agent" }
+        assertTrue(start >= 0, "README has no '### Connecting an LLM agent' section")
+        val end = (start + 1 until lines.size).firstOrNull { lines[it].startsWith("#### ") || lines[it].startsWith("## ") } ?: lines.size
+        val text = lines.subList(start, end).joinToString("\n")
+        assertTrue(
+            "](docs/integrations-agent-frameworks.md)" in text,
+            "README '### Connecting an LLM agent' does not link docs/integrations-agent-frameworks.md",
+        )
+        assertTrue(Files.exists(repoRoot.resolve("docs/integrations-agent-frameworks.md")), "docs/integrations-agent-frameworks.md does not exist")
+    }
+
+    @Test
     fun `README has a Find Svod in MCP directories section that links server json`() {
         val text = section("Find Svod in MCP directories")
         assertTrue("`server.json`" in text, "README '## Find Svod in MCP directories' does not name `server.json`")
