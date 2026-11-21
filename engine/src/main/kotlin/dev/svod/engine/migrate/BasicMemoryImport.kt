@@ -41,8 +41,19 @@ object BasicMemoryImport {
         val base = source.normalize()
         val prefix = ObsidianImport.prefixOf(into)
         val walk = ObsidianImport.collectFiles(base, prefix, followSymlinks)
+        val rewrite = linkRewriter(base, prefix, walk, listOf("title", "permalink"))
 
-        // Pass 1: the imported path set (for "already resolves") and title/permalink → paths.
+        // Pass 2: the shared import (over the same walk) with the link rewrite applied to the
+        // markdown body; the frontmatter block is copied verbatim.
+        return ObsidianImport.importWith(source, engine, author, into, followSymlinks, walk) { _, text -> rewrite(text) }
+    }
+
+    /**
+     * Pass 1 over [walk]: the imported path set (for "already resolves") and frontmatter [keys] → paths.
+     * Returns a function that rewrites the wikilinks in a note's body (after the [FRONTMATTER] block,
+     * which is kept verbatim) whose target matches one of those keys of exactly one imported note.
+     */
+    internal fun linkRewriter(base: Path, prefix: String, walk: ObsidianImport.Walk, keys: List<String>): (String) -> String {
         val paths = HashSet<String>()
         val byName = HashMap<String, MutableSet<String>>()
         for (file in walk.files) {
@@ -50,7 +61,7 @@ object BasicMemoryImport {
             paths += rel
             if (!rel.endsWith(".md")) continue
             val fm = runCatching { frontmatter(String(Files.readAllBytes(file), UTF_8)) }.getOrNull() ?: continue
-            for (key in listOf("title", "permalink")) {
+            for (key in keys) {
                 // Scalars load as the literal text (see [yaml]), so `title: 2024-01-05` or `permalink: 007` match as written.
                 val v = (fm[key] as? String)?.trim()?.lowercase()
                 if (!v.isNullOrEmpty()) byName.getOrPut(v) { sortedSetOf() }.add(rel)
@@ -67,9 +78,7 @@ object BasicMemoryImport {
             return byBasename[target.substringAfterLast('/').removeSuffix(".md").lowercase()]?.size == 1
         }
 
-        // Pass 2: the shared import (over the same walk) with the link rewrite applied to the
-        // markdown body; the frontmatter block is copied verbatim.
-        return ObsidianImport.importWith(source, engine, author, into, followSymlinks, walk) { _, text ->
+        return { text ->
             val bodyStart = FRONTMATTER.find(text)?.range?.last?.plus(1) ?: 0
             text.substring(0, bodyStart) + LINK.replace(text.substring(bodyStart)) { m ->
                 val inner = m.groupValues[1]
@@ -110,11 +119,13 @@ object BasicMemoryImport {
     }
 
     /** The leading `---` frontmatter block (optional BOM, YAML in group 1, closing fence line included). */
-    private val FRONTMATTER = Regex("^\\uFEFF?---[ \\t]*\\r?\\n(?:(.*?)\\r?\\n)?---[ \\t]*(?:\\r?\\n|$)", RegexOption.DOT_MATCHES_ALL)
+    internal val FRONTMATTER = Regex("^\\uFEFF?---[ \\t]*\\r?\\n(?:(.*?)\\r?\\n)?---[ \\t]*(?:\\r?\\n|$)", RegexOption.DOT_MATCHES_ALL)
 
     /** The leading `---` YAML frontmatter as a map; null when absent or unparseable. */
-    private fun frontmatter(text: String): Map<*, *>? {
-        val m = FRONTMATTER.find(text) ?: return null
+    internal fun frontmatter(text: String): Map<*, *>? = FRONTMATTER.find(text)?.let { frontmatter(it) }
+
+    /** The YAML of an already-found [FRONTMATTER] match as a map; null when unparseable. */
+    internal fun frontmatter(m: MatchResult): Map<*, *>? {
         return try {
             yaml().load<Any?>(m.groupValues[1]) as? Map<*, *>
         } catch (e: Exception) {
