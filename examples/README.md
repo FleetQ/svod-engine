@@ -33,6 +33,12 @@ The engine serves it **same-origin** (so its WebSocket + fetch need no CORS). It
 unless `webViewerPath` is set. You can also point the endpoint box at any reachable engine.
 See [ADR-0008](../docs/adr/0008-reference-web-viewer.md).
 
+## Agent frameworks
+
+Copy-paste MCP setups for LangGraph / LangChain, the OpenAI Agents SDK, the Vercel AI SDK and Mastra
+live in [Use Svod from your agent framework](../docs/integrations-agent-frameworks.md). Each one
+connects to the engine's MCP endpoint with a bearer token and calls `search` and `remember`.
+
 ## FleetQ integration
 
 FleetQ attaches to Svod like any other MCP client — a first-party *reference* integration

@@ -180,8 +180,10 @@ enforced *before* the engine is touched.
 
 ### Connecting an LLM agent
 
-Point any MCP-capable client (Claude Desktop/Code, Cursor, your own SDK) at the engine's **MCP
-endpoint** and authenticate with one of the bearer tokens from your config's `agents` list:
+Point any MCP-capable client (Claude Desktop/Code, Cursor, or an agent framework such as LangGraph,
+the OpenAI Agents SDK, the Vercel AI SDK or Mastra) at the engine's **MCP endpoint** and authenticate
+with one of the bearer tokens from your config's `agents` list. For copy-paste framework setups, see
+[Use Svod from your agent framework](docs/integrations-agent-frameworks.md).
 
 - **URL:** `http://127.0.0.1:7518/mcp` (streamable HTTP; HTTPS when `mcpTls` is configured — required
   for any non-loopback access).
