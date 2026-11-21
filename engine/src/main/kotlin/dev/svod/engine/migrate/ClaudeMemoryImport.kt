@@ -23,6 +23,14 @@ object ClaudeMemoryImport {
     const val TAG = "claude-memory"
     private const val INDEX = "MEMORY.md"
 
+    /**
+     * True for the top-level `MEMORY.md` index directly under [base]. Compares the path relative to
+     * [base] rather than `file.parent == base`: for a source of `.` the base normalizes to the empty
+     * path, the walk yields a bare `MEMORY.md`, and its `parent` is null.
+     */
+    internal fun isTopLevelIndex(base: Path, file: Path): Boolean =
+        base.relativize(file).normalize().toString() == INDEX
+
     suspend fun import(
         source: Path,
         engine: SvodEngine,
@@ -34,7 +42,7 @@ object ClaudeMemoryImport {
         val prefix = ObsidianImport.prefixOf(into)
         val all = ObsidianImport.collectFiles(base, prefix, followSymlinks)
         val walk = ObsidianImport.Walk(
-            all.files.filterNot { it.parent?.normalize() == base && it.fileName?.toString() == INDEX },
+            all.files.filterNot { isTopLevelIndex(base, it) },
             all.skipped,
         )
         val rewrite = BasicMemoryImport.linkRewriter(base, prefix, walk, listOf("name"))

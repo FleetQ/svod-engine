@@ -95,6 +95,24 @@ class ClaudeMemoryImportTest {
     }
 
     @Test
+    fun `MEMORY md index is recognised for a relative or dot source`(): Unit = runBlocking {
+        // `import-claude-memory cfg.json .` run from inside the memory folder: "." normalizes to the
+        // empty path and the walk yields a bare "MEMORY.md", whose parent is null.
+        val dot = Path.of(".").normalize()
+        assertTrue(ClaudeMemoryImport.isTopLevelIndex(dot, dot.resolve("MEMORY.md")))
+        assertTrue(!ClaudeMemoryImport.isTopLevelIndex(dot, dot.resolve("sub/MEMORY.md")))
+        assertTrue(!ClaudeMemoryImport.isTopLevelIndex(dot, dot.resolve("user_role.md")))
+
+        // A relative source path given to the full import still drops the index.
+        val source = memoryDir()
+        val relative = Path.of("").toAbsolutePath().relativize(source)
+        engineOn().use { engine ->
+            val r = ClaudeMemoryImport.import(relative, engine)
+            assertEquals(listOf("claude-memory/feedback_testing.md", "claude-memory/user_role.md"), r.imported)
+        }
+    }
+
+    @Test
     fun `re-import is idempotent`(): Unit = runBlocking {
         val source = memoryDir()
         engineOn().use { engine ->
