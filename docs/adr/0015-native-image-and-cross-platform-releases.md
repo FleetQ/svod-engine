@@ -87,6 +87,37 @@ Item (4) above ("on JDK 23 FFM is complete") did not hold for Lucene. With `-H:+
 - Without `-H:-SimulateClassInitializer` the build passed once the generated metadata was in place. That flag
   had been tried while only a partial hand-recorded list existed and is not used.
 
+## Addendum (v1.34.2) — speed and shutdown; Oracle GraalVM with PGO
+
+Measured on a 5 000-note vault after v1.34.1 (p50): note reads 13.4 ms native vs 7.6 ms JVM, and SIGTERM
+killed the native binary (exit -15, no shutdown hook). Causes and fixes:
+
+- **Process spawn.** GraalVM CE 23 forces `jdk.lang.Process.launchMechanism=FORK` at startup, overwriting `-D`
+  (`PosixNativeLibraryFeature`, tag `jdk-23.0.2`). A full fork copies the engine's page tables: strace shows
+  `clone` 3.1 ms + child `execve` 4.8 ms per `git` spawn, against 0.5 + 0.07 ms on the JVM (posix_spawn). A
+  note read spawns `git log` twice. `main` sets `VFORK` in the native binary on Linux (JDK 23 rejects it on
+  macOS). Note read 5.5 ms, history 3.0 ms.
+- **Exit handlers.** A native image handles SIGTERM/SIGINT only when built with `--install-exit-handlers`; now
+  it is, and the smoke test fails if SIGTERM does not exit 143.
+- **No JIT.** With the two fixes, the rest of the gap (tree 1.5x, write 1.3x, multi-word search 1.4x) is
+  compiled code quality. GC was ruled out (about 3 % of the time), as were the open-files limit and Lucene.
+  Oracle GraalVM's Profile-Guided Optimization closed it in a local test: search 2.9 ms (JVM 4.0), tree 26.0
+  (24.6), write 20.4 (18.5), RSS 125 MB (JVM 352). The profile came from the same workload, so this is the
+  optimistic end.
+
+Decision (owner, 2026-11-20): build the native binaries with **Oracle GraalVM 23**. Linux takes three passes:
+`--pgo-instrument`, then `.github/scripts/pgo-workload.py` (search, reads, tree, history, writes, links, MCP)
+writes a profile on SIGTERM, then `--pgo=<profile>`. Windows cannot write the profile (no SIGTERM) and gets
+`-O3`. macOS gets a plain build: in v1.34.2-rc1 its instrumented build filled the 7 GB macos-15 runner (heap
+6054 MB, watchdog abort after 70 min). Linux is where the hosted service runs, so that is where PGO matters. CI's `native-smoke` uses the same toolchain without PGO. Extra arguments reach the build as
+`-Psvod.nativeArgs="..."`.
+
+Licence: Oracle GraalVM is under the GraalVM Free Terms and Conditions (GFTC): free, production use allowed,
+redistribution allowed if not for a fee. Output of Native Image counts as part of the unmodified Program, so the
+native binaries carry GFTC-licensed parts; the engine source stays Apache-2.0. The app-image (GraalVM CE 21) is
+unaffected. Redistributors must keep these binaries free of charge: GFTC allows redistribution only under its own terms and with no fee for products or services that include or use them (the Apache-2.0 source and the app-images have no such condition). The release notes say so (finalize job). If GFTC ever stops fitting, switching back is one line (`distribution: graalvm-community`) and the
+two passes; the binaries then lose the PGO speed-up, nothing else.
+
 ## Alternatives considered
 - **native-only releases** — rejected: a metadata failure would leave no downloadable build. The
   app-image fallback guarantees a working release.

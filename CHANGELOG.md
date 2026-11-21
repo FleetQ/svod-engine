@@ -3,7 +3,7 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
-## v1.34.1 — unreleased (App API contract 0.42.0, additive)
+## v1.34.2 — unreleased (App API contract 0.42.0, additive)
 
 ### Added — Notion export import
 
@@ -15,6 +15,43 @@ independently of the engine; each entry notes the contract version it ships.
   pages (percent-encoded, `../` too) become `[[path|text]]` wikilinks, with any `#block` fragment dropped;
   links to attachments point at the renamed paths. Database CSV files are not imported and are listed in
   `skipped`. Not an MCP tool.
+
+### Fixed — native binary: slow note reads, and SIGTERM killed it without a shutdown
+
+- **Every child process cost ~7 ms in the native binary.** GraalVM CE 23 sets
+  `jdk.lang.Process.launchMechanism=FORK` at startup (overwriting `-D`), because the JDK's `posix_spawn`
+  path needs the `jspawnhelper` executable. A full `fork` copies the page tables of the whole engine
+  (strace: `clone` 3.1 ms and the child's `execve` 4.8 ms, vs 0.5 ms and 0.07 ms on the JVM). A note read
+  runs `git log` twice (author and last editor), so it took 13.4 ms against 7.6 ms on the JVM. On Linux the
+  native binary now uses `VFORK` (the address space is shared until `exec`): note read 5.5 ms, file
+  history 3.0 ms (JVM 7.6 / 4.0). macOS keeps `FORK`; JDK 23 rejects `VFORK` there. The JVM is unchanged.
+- **SIGTERM killed the native binary at once.** A native image installs no SIGTERM/SIGINT handlers unless it
+  is built with `--install-exit-handlers`, so `systemctl stop` and `docker stop` ended it with exit -15 and
+  the shutdown hook (vault close, index flush, write queue) never ran. Now it exits 143 after the hook, as
+  the JVM does.
+- The native smoke test now fails when SIGTERM does not shut the engine down cleanly, and prints the cost of
+  a `git` spawn.
+
+### Changed — native binaries are built with Oracle GraalVM and Profile-Guided Optimization
+
+- With the two fixes above, the rest of the native gap was compiled code quality without a JIT (tree 1.5×,
+  write 1.3×, multi-word search 1.4× slower than the JVM on GraalVM CE). The release now builds the native
+  binaries with **Oracle GraalVM 23**. On Linux it builds an instrumented binary, runs
+  `.github/scripts/pgo-workload.py` on it to record a profile, and builds the shipped binary with `--pgo`.
+  Windows gets `-O3`, because it has no SIGTERM to make the instrumented binary write its profile. macOS gets a
+  plain build: the instrumented build ran out of the macOS CI runner's 7 GB memory in v1.34.2-rc1.
+- Licence: Oracle GraalVM is under the GraalVM Free Terms and Conditions (free, production use allowed,
+  redistribution allowed if not for a fee). The native binaries carry GFTC-licensed parts; the engine source stays
+  Apache-2.0 and the app-image (GraalVM CE 21) is unchanged.
+- `-Psvod.nativeArgs="..."` passes extra arguments to native-image.
+
+Measured on Friday (5 000-note vault, `embedder: none`, p50 of 200 calls; JVM in brackets). VFORK alone (CE):
+note read 5.5 ms (7.6), file history 3.0 (4.0). The shipped pipeline (profile from `pgo-workload.py`, measured
+with a different workload): search 2.6–3.1 ms (4.0–4.3), note read 5.2 (7.6), tree 29.1 (24.6), write 20.9
+(18.5), RSS 115 MB (352). One host, single runs; an independent re-run on a busier host saw the same direction
+(PGO faster on search, reads and tree, slower on writes, about a third of the memory).
+
+## v1.34.1 — 2026-11-20 (App API contract 0.42.0, unchanged)
 
 ### Fixed — the native binary starts and serves a vault
 

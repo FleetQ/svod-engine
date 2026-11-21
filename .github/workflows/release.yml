@@ -85,16 +85,22 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path out/SvodEngine -DestinationPath SvodEngine-${{ matrix.label }}.zip
 
-      # --- Toolchain 2: GraalVM/JDK 23 — builds the native-image single binary. ---
+      # --- Toolchain 2: Oracle GraalVM/JDK 23 — builds the native-image single binary. ---
       # GraalVM CE for JDK 21 is permanently stuck at 21.0.2 (no community 21.0.3+), whose link stage
       # is a dead-end: macOS Xcode 15 ld rejects its objects, Linux libjava.a lacks
       # ScopedMemoryAccess.closeScope0, and FFM is incomplete. GraalVM CE for JDK 23 fixes all three
       # (complete FFM + modern linkers). This second setup-graalvm puts JDK 23 on PATH; the app-image
       # above already ran on JDK 21 and is unaffected. The native step builds with -Psvod.jdk=23.
+      #
+      # Oracle GraalVM, not CE, since 1.34.2: its Profile-Guided Optimization closes most of the gap to the JVM
+      # that a native image has without a JIT (5 000-note vault, CE -> PGO: multi-word search 5.5 -> 3.1 ms,
+      # tree 37.7 -> 29.1 ms, RSS 177 -> 115 MB; see CHANGELOG 1.34.2). Licence: GraalVM Free Terms and Conditions (GFTC): free, production use
+      # allowed, redistribution allowed if not for a fee. Only the native binaries are built with it; the
+      # app-image keeps GraalVM CE 21 above.
       - uses: graalvm/setup-graalvm@v1
         with:
           java-version: "23"
-          distribution: graalvm-community
+          distribution: graalvm
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       # Native-image links via the host C toolchain; on Windows that means MSVC. setup-graalvm does not
@@ -109,12 +115,29 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       # --- Best-effort artifact: native-image single binary (BM25 / Ollama; not onnx-local) ---
+      # Linux: three passes. An instrumented build runs .github/scripts/pgo-workload.py (search, reads, tree,
+      # history, writes, MCP) and writes a profile on SIGTERM; the shipped build is optimized with it.
+      # macOS: a plain build. The instrumented build ran out of the 7 GB macos-15 runner's memory (heap 6054 MB
+      # full, watchdog abort after 70 min, v1.34.2-rc1). Windows has no SIGTERM to make the instrumented binary
+      # write its profile, so it gets -O3.
       - name: Build native-image
         id: native
         continue-on-error: true
+        # Two native builds and a workload: a hang must end the step, not hold the release for the 6 h job limit.
+        timeout-minutes: 75
         run: |
-          ./gradlew -Psvod.jdk=23 nativeCompile --no-daemon
           BIN="build/native/nativeCompile/svod-engine${{ matrix.exe }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./gradlew -Psvod.jdk=23 "-Psvod.nativeArgs=-O3" nativeCompile --no-daemon
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            ./gradlew -Psvod.jdk=23 nativeCompile --no-daemon
+          else
+            PROFILE="$RUNNER_TEMP/svod-engine.iprof"
+            ./gradlew -Psvod.jdk=23 "-Psvod.nativeArgs=--pgo-instrument" nativeCompile --no-daemon
+            cp "$BIN" "$RUNNER_TEMP/svod-engine-instrumented"
+            python3 ../.github/scripts/pgo-workload.py "$RUNNER_TEMP/svod-engine-instrumented" "$PROFILE"
+            ./gradlew -Psvod.jdk=23 "-Psvod.nativeArgs=--pgo=$PROFILE" nativeCompile --no-daemon
+          fi
           test -f "$BIN" && cp "$BIN" "svod-engine-${{ matrix.label }}${{ matrix.exe }}"
 
       # A native build that compiles proves nothing: v1.30.0 shipped a Linux binary that crashed at
@@ -161,6 +184,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The native binaries are built with Oracle GraalVM (GFTC); say so where people download them.
+      - name: Note the native binaries' licence in the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          body="$(gh release view "$TAG" --json body -q .body)"
+          case "$body" in *"GraalVM Free Terms"*) exit 0 ;; esac
+          note='The `svod-engine-*` native binaries are built with Oracle GraalVM and include parts licensed under the [GraalVM Free Terms and Conditions](https://www.oracle.com/downloads/licenses/graal-free-license.html): free to use, including in production; redistribution only free of charge. The source code and the `SvodEngine-*` app-images are Apache-2.0.'
+          gh release edit "$TAG" --notes "$(printf '%s\n\n%s\n' "$body" "$note")"
+
       - name: Attach the self-update script
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
