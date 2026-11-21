@@ -122,8 +122,10 @@ object BasicMemoryImport {
     internal val FRONTMATTER = Regex("^\\uFEFF?---[ \\t]*\\r?\\n(?:(.*?)\\r?\\n)?---[ \\t]*(?:\\r?\\n|$)", RegexOption.DOT_MATCHES_ALL)
 
     /** The leading `---` YAML frontmatter as a map; null when absent or unparseable. */
-    internal fun frontmatter(text: String): Map<*, *>? {
-        val m = FRONTMATTER.find(text) ?: return null
+    internal fun frontmatter(text: String): Map<*, *>? = FRONTMATTER.find(text)?.let { frontmatter(it) }
+
+    /** The YAML of an already-found [FRONTMATTER] match as a map; null when unparseable. */
+    internal fun frontmatter(m: MatchResult): Map<*, *>? {
         return try {
             yaml().load<Any?>(m.groupValues[1]) as? Map<*, *>
         } catch (e: Exception) {

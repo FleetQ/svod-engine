@@ -29,7 +29,7 @@ object ClaudeMemoryImport {
      * path, the walk yields a bare `MEMORY.md`, and its `parent` is null.
      */
     internal fun isTopLevelIndex(base: Path, file: Path): Boolean =
-        base.relativize(file).normalize().toString() == INDEX
+        ObsidianImport.relPath(base, "", file) == INDEX
 
     suspend fun import(
         source: Path,
@@ -41,9 +41,10 @@ object ClaudeMemoryImport {
         val base = source.normalize()
         val prefix = ObsidianImport.prefixOf(into)
         val all = ObsidianImport.collectFiles(base, prefix, followSymlinks)
+        // The index is never imported, so a symlinked or unreadable one is not reported as skipped either.
         val walk = ObsidianImport.Walk(
             all.files.filterNot { isTopLevelIndex(base, it) },
-            all.skipped,
+            all.skipped.filterNot { it == prefix + INDEX },
         )
         val rewrite = BasicMemoryImport.linkRewriter(base, prefix, walk, listOf("name"))
         return ObsidianImport.importWith(source, engine, author, into, followSymlinks, walk) { _, text ->
@@ -54,15 +55,19 @@ object ClaudeMemoryImport {
     /** [text] with a `tags:` line added before the closing frontmatter fence, or unchanged (see the class doc). */
     internal fun withTags(text: String): String {
         val m = BasicMemoryImport.FRONTMATTER.find(text) ?: return text
-        val fm = BasicMemoryImport.frontmatter(text) ?: return text
+        val fm = BasicMemoryImport.frontmatter(m) ?: return text
         if ("tags" in fm || "tag" in fm) return text
+        // Scalars load as literal text (no implicit resolvers), so `type: null` arrives as "null".
         val type = ((fm["metadata"] as? Map<*, *>)?.get("type") as? String ?: fm["type"] as? String)
             ?.lowercase()?.filter { it in 'a'..'z' || it in '0'..'9' || it == '_' || it == '-' }
-            ?.takeIf { it.isNotEmpty() }
+            ?.takeIf { it.isNotEmpty() && it != "null" }
         val tags = listOfNotNull(TAG, type).distinct().joinToString(", ")
         val fence = m.range.first + m.value.lastIndexOf("---")
         val firstLineEnd = text.indexOf('\n')
         val eol = if (firstLineEnd > 0 && text[firstLineEnd - 1] == '\r') "\r\n" else "\n"
-        return text.substring(0, fence) + "tags: [$tags]$eol" + text.substring(fence)
+        val out = text.substring(0, fence) + "tags: [$tags]$eol" + text.substring(fence)
+        // A column-0 key cannot extend a flow-style (`{name: x}`) or indented top-level mapping: the
+        // result would be unparseable frontmatter, so such a note is kept byte for byte instead.
+        return if (BasicMemoryImport.frontmatter(out)?.get("tags") is List<*>) out else text
     }
 }

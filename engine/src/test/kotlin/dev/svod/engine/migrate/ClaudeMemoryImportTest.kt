@@ -68,6 +68,18 @@ class ClaudeMemoryImportTest {
     }
 
     @Test
+    fun `frontmatter that cannot take a tags line is kept and a null type is not a tag`() {
+        val flow = "---\n{name: flow, type: user}\n---\nbody\n"
+        assertEquals(flow, ClaudeMemoryImport.withTags(flow))
+        val indented = "---\n  name: indented\n  type: user\n---\nbody\n"
+        assertEquals(indented, ClaudeMemoryImport.withTags(indented))
+        assertEquals(
+            "---\nname: n\ntype: null\ntags: [claude-memory]\n---\nbody\n",
+            ClaudeMemoryImport.withTags("---\nname: n\ntype: null\n---\nbody\n"),
+        )
+    }
+
+    @Test
     fun `name links to another memory become path links`(): Unit = runBlocking {
         val source = memoryDir()
         engineOn().use { engine ->

@@ -256,19 +256,15 @@ private fun runImportNotion(args: List<String>) {
 
 private fun runImportClaudeMemory(args: List<String>) {
     require(args.size >= 2) { "usage: svod-engine import-claude-memory <config.json> <memory-dir> [into]" }
-    runImportWith(args, defaultInto = "claude-memory") { source, engine, into -> ClaudeMemoryImport.import(source, engine, into = into) }
+    runImportWith(args) { source, engine, into -> ClaudeMemoryImport.import(source, engine, into = into.ifEmpty { "claude-memory" }) }
 }
 
-private fun runImportWith(
-    args: List<String>,
-    defaultInto: String = "",
-    run: suspend (Path, SvodEngine, String) -> ObsidianImport.Result,
-) {
+private fun runImportWith(args: List<String>, run: suspend (Path, SvodEngine, String) -> ObsidianImport.Result) {
     val config = SvodConfig.loadOrThrowValidated(Paths.get(args[0]))
     val source = Paths.get(args[1])
     // Same guard as POST /api/v1/import: a mistyped path must fail loudly, not report "1 skipped".
     require(Files.isDirectory(source)) { "source is not a directory: ${args[1]}" }
-    val into = args.getOrNull(2) ?: defaultInto
+    val into = args.getOrNull(2) ?: ""
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     SvodEngine.open(config.vault(), scope, SecretScanner(config.secretScanning)).use { engine ->
         val r = runBlocking { run(source, engine, into) }

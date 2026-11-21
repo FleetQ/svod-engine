@@ -9,7 +9,7 @@ independently of the engine; each entry notes the contract version it ships.
 
 - `svod-engine import-claude-memory <config.json> <memory-dir> [into]` (engine stopped) imports a Claude Code
   auto-memory folder under `into` (default `claude-memory`), one note per memory file. Frontmatter is kept; when
-  it has no `tags` key, a `tags: [claude-memory, <type>]` line is added, the type taken from `metadata.type` or
+  it has no `tags`/`tag` key, a `tags: [claude-memory, <type>]` line is added, the type taken from `metadata.type` or
   `type`. `[[name]]` links to another memory's frontmatter `name` become resolvable `[[path|name]]` wikilinks.
   The top-level `MEMORY.md` index is not imported. Same walk, batch commits, idempotency and no-overwrite rules
   as the other imports. No contract change.
