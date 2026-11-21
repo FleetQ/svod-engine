@@ -349,7 +349,8 @@ include in-process `onnx-local` semantic search (DJL/ONNX are JVM-only — use t
 | **Linux** (x64) | `svod-engine-linux-x64` | `chmod +x svod-engine-linux-x64 && ./svod-engine-linux-x64 config.json` |
 | **Windows** (x64) | `svod-engine-windows-x64.exe` | `svod-engine-windows-x64.exe config.json` |
 
-Built on **Oracle GraalVM** for JDK 23 with Profile-Guided Optimization on Linux and macOS (`-O3` on Windows);
+Built on **Oracle GraalVM** for JDK 23: with Profile-Guided Optimization on Linux, `-O3` on Windows, a plain
+build on macOS (the PGO build does not fit the macOS CI runner's memory);
 the app-images stay on GraalVM CE / JDK 21. Oracle GraalVM is licensed under the
 [GraalVM Free Terms and Conditions](https://www.oracle.com/downloads/licenses/graal-free-license.html)
 (free, production use allowed); the parts of it inside the native binaries are under that licence, the engine

@@ -111,8 +111,7 @@ graalvmNative {
             // the shutdown hook (vault close, index flush, write queue drain) never runs. The JVM installs them itself.
             buildArgs.add("--install-exit-handlers")
             // Extra native-image arguments from the release workflow: the Profile-Guided Optimization passes of
-            // Oracle GraalVM (`--pgo-instrument`, then `--pgo=<profile>`), or `-O3` where no profile can be
-            // recorded (Windows). `-Psvod.nativeArgs="..."`, space-separated; absent = a plain build.
+            // Oracle GraalVM on Linux (`--pgo-instrument`, then `--pgo=<profile>`), or `-O3` on Windows. `-Psvod.nativeArgs="..."`, space-separated; absent = a plain build.
             (findProperty("svod.nativeArgs") as String?)?.split(' ')?.filter { it.isNotBlank() }?.forEach { buildArgs.add(it) }
             // logback + the bundled web viewer assets must be embedded as resources.
             buildArgs.add("-H:IncludeResources=logback.xml")

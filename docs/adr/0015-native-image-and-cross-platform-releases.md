@@ -105,10 +105,11 @@ killed the native binary (exit -15, no shutdown hook). Causes and fixes:
   (24.6), write 20.4 (18.5), RSS 125 MB (JVM 352). The profile came from the same workload, so this is the
   optimistic end.
 
-Decision (owner, 2026-11-20): build the native binaries with **Oracle GraalVM 23**. Linux and macOS take three
-passes: `--pgo-instrument`, then `.github/scripts/pgo-workload.py` (search, reads, tree, history, writes,
-links, MCP) writes a profile on SIGTERM, then `--pgo=<profile>`. Windows cannot write the profile (no SIGTERM)
-and gets `-O3`. CI's `native-smoke` uses the same toolchain without PGO. Extra arguments reach the build as
+Decision (owner, 2026-11-20): build the native binaries with **Oracle GraalVM 23**. Linux takes three passes:
+`--pgo-instrument`, then `.github/scripts/pgo-workload.py` (search, reads, tree, history, writes, links, MCP)
+writes a profile on SIGTERM, then `--pgo=<profile>`. Windows cannot write the profile (no SIGTERM) and gets
+`-O3`. macOS gets a plain build: in v1.34.2-rc1 its instrumented build filled the 7 GB macos-15 runner (heap
+6054 MB, watchdog abort after 70 min). Linux is where the hosted service runs, so that is where PGO matters. CI's `native-smoke` uses the same toolchain without PGO. Extra arguments reach the build as
 `-Psvod.nativeArgs="..."`.
 
 Licence: Oracle GraalVM is under the GraalVM Free Terms and Conditions (GFTC): free, production use allowed,

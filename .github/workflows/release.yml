@@ -115,9 +115,11 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       # --- Best-effort artifact: native-image single binary (BM25 / Ollama; not onnx-local) ---
-      # Linux and macOS: three passes. An instrumented build runs .github/scripts/pgo-workload.py (search, reads,
-      # tree, history, writes, MCP) and writes a profile on SIGTERM; the shipped build is optimized with it.
-      # Windows has no SIGTERM to make the instrumented binary write its profile, so it gets -O3 instead.
+      # Linux: three passes. An instrumented build runs .github/scripts/pgo-workload.py (search, reads, tree,
+      # history, writes, MCP) and writes a profile on SIGTERM; the shipped build is optimized with it.
+      # macOS: a plain build. The instrumented build ran out of the 7 GB macos-15 runner's memory (heap 6054 MB
+      # full, watchdog abort after 70 min, v1.34.2-rc1). Windows has no SIGTERM to make the instrumented binary
+      # write its profile, so it gets -O3.
       - name: Build native-image
         id: native
         continue-on-error: true
@@ -127,6 +129,8 @@ jobs:
           BIN="build/native/nativeCompile/svod-engine${{ matrix.exe }}"
           if [ "${{ runner.os }}" = "Windows" ]; then
             ./gradlew -Psvod.jdk=23 "-Psvod.nativeArgs=-O3" nativeCompile --no-daemon
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            ./gradlew -Psvod.jdk=23 nativeCompile --no-daemon
           else
             PROFILE="$RUNNER_TEMP/svod-engine.iprof"
             ./gradlew -Psvod.jdk=23 "-Psvod.nativeArgs=--pgo-instrument" nativeCompile --no-daemon

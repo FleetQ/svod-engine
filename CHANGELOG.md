@@ -25,9 +25,10 @@ independently of the engine; each entry notes the contract version it ships.
 
 - With the two fixes above, the rest of the native gap was compiled code quality without a JIT (tree 1.5×,
   write 1.3×, multi-word search 1.4× slower than the JVM on GraalVM CE). The release now builds the native
-  binaries with **Oracle GraalVM 23**. On Linux and macOS it builds an instrumented binary, runs
+  binaries with **Oracle GraalVM 23**. On Linux it builds an instrumented binary, runs
   `.github/scripts/pgo-workload.py` on it to record a profile, and builds the shipped binary with `--pgo`.
-  Windows gets `-O3`, because it has no SIGTERM to make the instrumented binary write its profile.
+  Windows gets `-O3`, because it has no SIGTERM to make the instrumented binary write its profile. macOS gets a
+  plain build: the instrumented build ran out of the macOS CI runner's 7 GB memory in v1.34.2-rc1.
 - Licence: Oracle GraalVM is under the GraalVM Free Terms and Conditions (free, production use allowed,
   redistribution allowed if not for a fee). The native binaries carry GFTC-licensed parts; the engine source stays
   Apache-2.0 and the app-image (GraalVM CE 21) is unchanged.
