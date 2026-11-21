@@ -8,6 +8,7 @@ import dev.svod.engine.lifecycle.EngineDiscovery
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
 import dev.svod.engine.migrate.BasicMemoryImport
+import dev.svod.engine.migrate.ClaudeMemoryImport
 import dev.svod.engine.migrate.NotionImport
 import dev.svod.engine.migrate.ObsidianImport
 import dev.svod.engine.security.SecretScanner
@@ -33,6 +34,8 @@ import kotlin.system.exitProcess
  * Basic Memory project, rewriting relations to note titles/permalinks into resolvable wikilinks.
  * `svod-engine import-notion <config.json> <notion-export-dir> [into]` imports an unzipped Notion
  * export under `into` (default `notion`), removing page ids from names and turning page links into wikilinks.
+ * `svod-engine import-claude-memory <config.json> <memory-dir> [into]` imports a Claude Code memory folder under
+ * `into` (default `claude-memory`), tagging each memory with its type and resolving `[[name]]` links; MEMORY.md is skipped.
  *
  * First run: `svod-engine init [dir] [--embedder none|onnx-local]` writes a new `dir/config.json`
  * (default `~/svod`, one WRITE agent with a random token; never overwrites) and prints the MCP
@@ -77,6 +80,7 @@ fun main(args: Array<String>) {
         is Command.Import -> return runImport(cmd.args)
         is Command.ImportBasicMemory -> return runImportBasicMemory(cmd.args)
         is Command.ImportNotion -> return runImportNotion(cmd.args)
+        is Command.ImportClaudeMemory -> return runImportClaudeMemory(cmd.args)
         is Command.Clone -> return runClone(cmd.args)
         is Command.Init -> return runInit(cmd.args)
         is Command.Doctor -> return runDoctor(cmd.args)
@@ -108,6 +112,7 @@ internal sealed interface Command {
     data class Import(val args: List<String>) : Command
     data class ImportBasicMemory(val args: List<String>) : Command
     data class ImportNotion(val args: List<String>) : Command
+    data class ImportClaudeMemory(val args: List<String>) : Command
     data class Clone(val args: List<String>) : Command
     data class Init(val args: List<String>) : Command
     data class Doctor(val args: List<String>) : Command
@@ -125,6 +130,7 @@ internal fun parseCommand(args: Array<String>): Command {
         first == "import" -> Command.Import(args.drop(1))
         first == "import-basic-memory" -> Command.ImportBasicMemory(args.drop(1))
         first == "import-notion" -> Command.ImportNotion(args.drop(1))
+        first == "import-claude-memory" -> Command.ImportClaudeMemory(args.drop(1))
         first == "clone" -> Command.Clone(args.drop(1))
         first == "init" -> Command.Init(args.drop(1))
         first == "doctor" -> Command.Doctor(args.drop(1))
@@ -147,6 +153,8 @@ internal fun usageText(): String = """
     |      import a Basic Memory project (relations to titles/permalinks resolved), then exit (engine stopped)
     |  svod-engine import-notion <config.json> <notion-export-dir> [into]
     |      import an unzipped Notion Markdown & CSV export (default into: notion; CSVs skipped), then exit (engine stopped)
+    |  svod-engine import-claude-memory <config.json> <memory-dir> [into]
+    |      import a Claude Code memory folder (type → tag, [[name]] links resolved, MEMORY.md skipped), then exit (engine stopped)
     |  svod-engine clone <remote> <dest-dir> <vaultId> [local-branch] [--branch <sync-branch>]
     |      clone an existing synced vault onto this machine, then exit
     |  svod-engine --help | -h
@@ -246,12 +254,21 @@ private fun runImportNotion(args: List<String>) {
     runImportWith(args) { source, engine, into -> NotionImport.import(source, engine, into = into.ifEmpty { "notion" }) }
 }
 
-private fun runImportWith(args: List<String>, run: suspend (Path, SvodEngine, String) -> ObsidianImport.Result) {
+private fun runImportClaudeMemory(args: List<String>) {
+    require(args.size >= 2) { "usage: svod-engine import-claude-memory <config.json> <memory-dir> [into]" }
+    runImportWith(args, defaultInto = "claude-memory") { source, engine, into -> ClaudeMemoryImport.import(source, engine, into = into) }
+}
+
+private fun runImportWith(
+    args: List<String>,
+    defaultInto: String = "",
+    run: suspend (Path, SvodEngine, String) -> ObsidianImport.Result,
+) {
     val config = SvodConfig.loadOrThrowValidated(Paths.get(args[0]))
     val source = Paths.get(args[1])
     // Same guard as POST /api/v1/import: a mistyped path must fail loudly, not report "1 skipped".
     require(Files.isDirectory(source)) { "source is not a directory: ${args[1]}" }
-    val into = args.getOrNull(2) ?: ""
+    val into = args.getOrNull(2) ?: defaultInto
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     SvodEngine.open(config.vault(), scope, SecretScanner(config.secretScanning)).use { engine ->
         val r = runBlocking { run(source, engine, into) }
