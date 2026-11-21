@@ -93,8 +93,8 @@ jobs:
       # above already ran on JDK 21 and is unaffected. The native step builds with -Psvod.jdk=23.
       #
       # Oracle GraalVM, not CE, since 1.34.2: its Profile-Guided Optimization closes most of the gap to the JVM
-      # that a native image has without a JIT (multi-word search 5.5 -> 2.9 ms, tree 37.7 -> 26.0 ms, RSS 177 ->
-      # 125 MB on a 5 000-note vault). Licence: GraalVM Free Terms and Conditions (GFTC): free, production use
+      # that a native image has without a JIT (5 000-note vault, CE -> PGO: multi-word search 5.5 -> 3.1 ms,
+      # tree 37.7 -> 29.1 ms, RSS 177 -> 115 MB; see CHANGELOG 1.34.2). Licence: GraalVM Free Terms and Conditions (GFTC): free, production use
       # allowed, redistribution allowed if not for a fee. Only the native binaries are built with it; the
       # app-image keeps GraalVM CE 21 above.
       - uses: graalvm/setup-graalvm@v1
@@ -121,6 +121,8 @@ jobs:
       - name: Build native-image
         id: native
         continue-on-error: true
+        # Two native builds and a workload: a hang must end the step, not hold the release for the 6 h job limit.
+        timeout-minutes: 75
         run: |
           BIN="build/native/nativeCompile/svod-engine${{ matrix.exe }}"
           if [ "${{ runner.os }}" = "Windows" ]; then
@@ -178,6 +180,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The native binaries are built with Oracle GraalVM (GFTC); say so where people download them.
+      - name: Note the native binaries' licence in the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          body="$(gh release view "$TAG" --json body -q .body)"
+          case "$body" in *"GraalVM Free Terms"*) exit 0 ;; esac
+          note='The `svod-engine-*` native binaries are built with Oracle GraalVM and include parts licensed under the [GraalVM Free Terms and Conditions](https://www.oracle.com/downloads/licenses/graal-free-license.html): free to use, including in production; redistribution only free of charge. The source code and the `SvodEngine-*` app-images are Apache-2.0.'
+          gh release edit "$TAG" --notes "$(printf '%s\n\n%s\n' "$body" "$note")"
+
       - name: Attach the self-update script
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

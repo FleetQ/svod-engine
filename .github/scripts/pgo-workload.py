@@ -13,6 +13,7 @@ Standard library only.
 """
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -26,6 +27,7 @@ import urllib.request
 KEY = "svk_" + "p" * 40
 AGENT = "pgo-agent-token-0123456789abcdef"
 NOTES = 3000
+DEADLINE_SECONDS = 20 * 60  # the whole workload; the release step has its own timeout on top
 WORDS = ("deploy server engine vault team client invoice payment search index memory agent policy decision "
          "release migration database sprint review security token backup restore nginx docker postgres redis "
          "решение причина проблем грешка поправка тест проверка сървър памет диск мрежа").split()
@@ -76,7 +78,11 @@ def main():
     proc = subprocess.Popen([binary, "-XX:ProfilesDumpFile=" + profile, config], cwd=work,
                             env=dict(os.environ, HOME=work), stdout=log, stderr=subprocess.STDOUT)
 
+    deadline = time.time() + DEADLINE_SECONDS
+
     def call(path, method="GET", body=None):
+        if time.time() > deadline:
+            raise SystemExit("pgo workload: over %d s, giving up (see %s)" % (DEADLINE_SECONDS, log.name))
         req = urllib.request.Request(base + path, data=json.dumps(body).encode() if body is not None else None,
                                      method=method, headers={"Authorization": "Bearer " + KEY,
                                                              "Content-Type": "application/json"})
@@ -156,6 +162,7 @@ def main():
     if not os.path.isfile(profile) or os.path.getsize(profile) == 0:
         sys.exit("no profile written to %s (engine exit %s, log %s)" % (profile, proc.returncode, log.name))
     print("pgo workload: profile %s (%d bytes), engine exit %s" % (profile, os.path.getsize(profile), proc.returncode))
+    shutil.rmtree(work, ignore_errors=True)  # kept only on failure, for the log
 
 
 if __name__ == "__main__":

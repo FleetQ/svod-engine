@@ -114,7 +114,7 @@ and gets `-O3`. CI's `native-smoke` uses the same toolchain without PGO. Extra a
 Licence: Oracle GraalVM is under the GraalVM Free Terms and Conditions (GFTC): free, production use allowed,
 redistribution allowed if not for a fee. Output of Native Image counts as part of the unmodified Program, so the
 native binaries carry GFTC-licensed parts; the engine source stays Apache-2.0. The app-image (GraalVM CE 21) is
-unaffected. If GFTC ever stops fitting, switching back is one line (`distribution: graalvm-community`) and the
+unaffected. Redistributors must keep these binaries free of charge: GFTC allows redistribution only under its own terms and with no fee for products or services that include or use them (the Apache-2.0 source and the app-images have no such condition). The release notes say so (finalize job). If GFTC ever stops fitting, switching back is one line (`distribution: graalvm-community`) and the
 two passes; the binaries then lose the PGO speed-up, nothing else.
 
 ## Alternatives considered

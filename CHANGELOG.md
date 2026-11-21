@@ -33,9 +33,11 @@ independently of the engine; each entry notes the contract version it ships.
   Apache-2.0 and the app-image (GraalVM CE 21) is unchanged.
 - `-Psvod.nativeArgs="..."` passes extra arguments to native-image.
 
-Measured on Friday (5 000-note vault, `embedder: none`, p50 of 200 calls; JVM in brackets): note read 5.5 ms
-(7.6), file history 3.0 (4.0). With PGO in a local test: search 2.6–2.9 ms (4.0–4.3), tree 26.0 (24.6),
-write 20.4 (18.5), RSS 125 MB (352).
+Measured on Friday (5 000-note vault, `embedder: none`, p50 of 200 calls; JVM in brackets). VFORK alone (CE):
+note read 5.5 ms (7.6), file history 3.0 (4.0). The shipped pipeline (profile from `pgo-workload.py`, measured
+with a different workload): search 2.6–3.1 ms (4.0–4.3), note read 5.2 (7.6), tree 29.1 (24.6), write 20.9
+(18.5), RSS 115 MB (352). One host, single runs; an independent re-run on a busier host saw the same direction
+(PGO faster on search, reads and tree, slower on writes, about a third of the memory).
 
 ## v1.34.1 — 2026-11-20 (App API contract 0.42.0, unchanged)
 

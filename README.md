@@ -353,7 +353,7 @@ Built on **Oracle GraalVM** for JDK 23 with Profile-Guided Optimization on Linux
 the app-images stay on GraalVM CE / JDK 21. Oracle GraalVM is licensed under the
 [GraalVM Free Terms and Conditions](https://www.oracle.com/downloads/licenses/graal-free-license.html)
 (free, production use allowed); the parts of it inside the native binaries are under that licence, the engine
-code stays Apache-2.0. See [ADR-0015](docs/adr/0015-native-image-and-cross-platform-releases.md).
+code stays Apache-2.0. Redistributors must keep these binaries free of charge: GFTC allows redistribution only under its own terms and with no fee for products or services that include or use them (the Apache-2.0 source and the app-images have no such condition). See [ADR-0015](docs/adr/0015-native-image-and-cross-platform-releases.md).
 
 Build from source instead? Read on.
 
