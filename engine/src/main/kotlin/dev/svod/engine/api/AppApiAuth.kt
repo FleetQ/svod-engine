@@ -34,7 +34,8 @@ import java.net.URLDecoder
  * every vault, so on a shared engine (`localAdmin=false`) it needs an admin key — enforced in its
  * own route because it is not under `/api/`.
  *
- * Every request by a keyed principal, and every refusal, is one line in [ApiAuditLog]; refusals
+ * Every request by a keyed principal, and every refusal, is one line in [ApiAuditLog], written when the request
+ * completes (after its response is sent), so lines follow completion order, not arrival order; refusals
  * are also WARN-logged with the peer address and the reason, never the key.
  */
 object AppApiAuth {

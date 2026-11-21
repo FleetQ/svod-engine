@@ -3,7 +3,7 @@
   "name": "io.github.FleetQ/svod-engine",
   "title": "Svod",
   "description": "Auditable git-backed memory for AI agents: plain Markdown, every write an attributed git commit",
-  "version": "1.34.2",
+  "version": "1.34.3",
   "repository": {
     "url": "https://github.com/FleetQ/svod-engine",
     "source": "github"

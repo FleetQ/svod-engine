@@ -413,14 +413,18 @@ class PrincipalAuthTest {
             repeat(3) { assertEquals(200, fx.get("/api/v1/tree").statusCode()) }   // local UI
             assertEquals(401, fx.get("/api/v1/tree", key = "svk_guess").statusCode())   // a refused attempt IS audited
             delay(200)
+            // Lines are written when a request completes, after its response is sent, so two requests made back to
+            // back can land in either order (CI saw boss/ivan swapped). Match each line by content, not position.
             val entries = fx.audit.entries()
             assertEquals(5, entries.size, entries.toString())
-            assertEquals(AppApiAuth.ANONYMOUS, entries[4].userId); assertEquals(401, entries[4].status)
-            val e0 = entries[0]
-            assertEquals("maria", e0.userId); assertEquals("GET", e0.method); assertEquals("/api/v1/tree", e0.path); assertEquals("a", e0.vault); assertEquals(200, e0.status)
-            assertEquals("PUT", entries[1].method); assertEquals("/api/v1/file", entries[1].path)
-            assertEquals("boss", entries[2].userId); assertEquals(200, entries[2].status)
-            assertEquals("ivan", entries[3].userId); assertEquals(403, entries[3].status)
+            fun one(desc: String, pred: (dev.svod.engine.api.ApiAuditLog.Entry) -> Boolean) =
+                entries.singleOrNull(pred) ?: error("expected exactly one audit line for $desc in $entries")
+            val e0 = one("maria GET /tree") { it.userId == "maria" && it.method == "GET" }
+            assertEquals("/api/v1/tree", e0.path); assertEquals("a", e0.vault); assertEquals(200, e0.status)
+            one("maria PUT /file") { it.userId == "maria" && it.method == "PUT" && it.path == "/api/v1/file" }
+            one("boss 200") { it.userId == "boss" && it.status == 200 }
+            one("ivan 403") { it.userId == "ivan" && it.status == 403 }
+            one("anonymous 401") { it.userId == AppApiAuth.ANONYMOUS && it.status == 401 }
             assertTrue(entries.none { it.userId == "local" }, "the loopback UI is not a person to audit")
             val raw = Files.readString(fx.secretsDir.resolve("audit-api.log"))
             assertFalse("k-editor" in raw || "k-admin" in raw || "k-reader" in raw || "svk_" in raw, raw)

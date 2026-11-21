@@ -3,7 +3,22 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
-## v1.34.2 — unreleased (App API contract 0.42.0, additive)
+## v1.34.3 — unreleased (App API contract 0.42.0, unchanged)
+
+### Fixed
+
+- **`user.home` in a native binary without a passwd entry.** A container run with `--user <uid>` (the hosted team
+  engines) has no passwd entry for that uid; the JVM then takes `user.home` from `$HOME`, a native image sets it to
+  `"?"`. That broke logback's rolling file (`PatternSyntaxException` on `?/.svod/logs/...`) and made JGit log
+  `Cannot save config file '/?/.config/jgit/config'` on every start, and would have put every `~/.svod` default
+  under `?/`. `main` now uses `$HOME` when `user.home` is missing or `"?"`, as the JVM does.
+- `PrincipalAuthTest` (audit lines) failed now and then on CI: an API audit line is written when its request
+  completes, after the response is sent, so two back-to-back requests can be logged in either order. The test now
+  matches lines by content; the docs of `AppApiAuth` say the log follows completion order.
+- CI: Gradle now resolves plugins from Maven Central first and the Gradle Plugin Portal second. The portal failed to
+  resolve `org.graalvm.buildtools.native` twice on 2026-11-21.
+
+## v1.34.2 — 2026-11-21 (App API contract 0.42.0, additive)
 
 ### Added — Notion export import
 
