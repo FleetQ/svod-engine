@@ -46,6 +46,13 @@ class MainCliTest {
     }
 
     @Test
+    fun `import-notion is parsed and listed in the usage`() {
+        assertEquals(Command.ImportNotion(listOf("c", "d")), parseCommand(arrayOf("import-notion", "c", "d")))
+        val u = usageText()
+        assertTrue("svod-engine import-notion <config.json> <notion-export-dir> [into]" in u, u)
+    }
+
+    @Test
     fun `doctor is parsed with or without a config and listed in the usage`() {
         assertEquals(Command.Doctor(emptyList()), parseCommand(arrayOf("doctor")))
         assertEquals(Command.Doctor(listOf("/x/cfg.json")), parseCommand(arrayOf("doctor", "/x/cfg.json")))

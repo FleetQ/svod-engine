@@ -8,6 +8,7 @@ import dev.svod.engine.lifecycle.EngineDiscovery
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
 import dev.svod.engine.migrate.BasicMemoryImport
+import dev.svod.engine.migrate.NotionImport
 import dev.svod.engine.migrate.ObsidianImport
 import dev.svod.engine.security.SecretScanner
 import kotlinx.coroutines.CoroutineScope
@@ -30,6 +31,8 @@ import kotlin.system.exitProcess
  * vault lock is exclusive; while it's running, use POST /api/v1/import instead).
  * `svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]` does the same for a
  * Basic Memory project, rewriting relations to note titles/permalinks into resolvable wikilinks.
+ * `svod-engine import-notion <config.json> <notion-export-dir> [into]` imports an unzipped Notion
+ * export under `into` (default `notion`), removing page ids from names and turning page links into wikilinks.
  *
  * First run: `svod-engine init [dir] [--embedder none|onnx-local]` writes a new `dir/config.json`
  * (default `~/svod`, one WRITE agent with a random token; never overwrites) and prints the MCP
@@ -67,6 +70,7 @@ fun main(args: Array<String>) {
         }
         is Command.Import -> return runImport(cmd.args)
         is Command.ImportBasicMemory -> return runImportBasicMemory(cmd.args)
+        is Command.ImportNotion -> return runImportNotion(cmd.args)
         is Command.Clone -> return runClone(cmd.args)
         is Command.Init -> return runInit(cmd.args)
         is Command.Doctor -> return runDoctor(cmd.args)
@@ -97,6 +101,7 @@ internal sealed interface Command {
     data class Run(val configPath: Path?) : Command
     data class Import(val args: List<String>) : Command
     data class ImportBasicMemory(val args: List<String>) : Command
+    data class ImportNotion(val args: List<String>) : Command
     data class Clone(val args: List<String>) : Command
     data class Init(val args: List<String>) : Command
     data class Doctor(val args: List<String>) : Command
@@ -113,6 +118,7 @@ internal fun parseCommand(args: Array<String>): Command {
         first in VERSION_FLAGS -> Command.Version
         first == "import" -> Command.Import(args.drop(1))
         first == "import-basic-memory" -> Command.ImportBasicMemory(args.drop(1))
+        first == "import-notion" -> Command.ImportNotion(args.drop(1))
         first == "clone" -> Command.Clone(args.drop(1))
         first == "init" -> Command.Init(args.drop(1))
         first == "doctor" -> Command.Doctor(args.drop(1))
@@ -133,6 +139,8 @@ internal fun usageText(): String = """
     |      import an Obsidian vault into the configured vault, then exit (engine stopped)
     |  svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]
     |      import a Basic Memory project (relations to titles/permalinks resolved), then exit (engine stopped)
+    |  svod-engine import-notion <config.json> <notion-export-dir> [into]
+    |      import an unzipped Notion Markdown & CSV export (default into: notion; CSVs skipped), then exit (engine stopped)
     |  svod-engine clone <remote> <dest-dir> <vaultId> [local-branch] [--branch <sync-branch>]
     |      clone an existing synced vault onto this machine, then exit
     |  svod-engine --help | -h
@@ -225,6 +233,11 @@ private fun runImport(args: List<String>) {
 private fun runImportBasicMemory(args: List<String>) {
     require(args.size >= 2) { "usage: svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]" }
     runImportWith(args) { source, engine, into -> BasicMemoryImport.import(source, engine, into = into) }
+}
+
+private fun runImportNotion(args: List<String>) {
+    require(args.size >= 2) { "usage: svod-engine import-notion <config.json> <notion-export-dir> [into]" }
+    runImportWith(args) { source, engine, into -> NotionImport.import(source, engine, into = into.ifEmpty { "notion" }) }
 }
 
 private fun runImportWith(args: List<String>, run: suspend (Path, SvodEngine, String) -> ObsidianImport.Result) {

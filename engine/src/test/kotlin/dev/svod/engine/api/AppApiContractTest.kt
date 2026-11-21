@@ -209,9 +209,30 @@ class AppApiContractTest {
             assertEquals(400, invalid.statusCode())
             validate("$ap/import", Request.Method.POST, 400, invalid.body())
 
-            val unknown = fx.post("$ap/import", """{"source":"${esc(dir)}","format":"notion"}""")
+            val unknown = fx.post("$ap/import", """{"source":"${esc(dir)}","format":"evernote"}""")
             assertEquals(400, unknown.statusCode())
             validate("$ap/import", Request.Method.POST, 400, unknown.body())
+        }
+    }
+
+    @Test
+    fun `import endpoint imports a notion export and conforms to the contract`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            val ap = "/api/v1"
+            val dir = Files.createTempDirectory("notion-src-")
+            Files.writeString(dir.resolve("Team Wiki 0123456789abcdef0123456789abcdef.md"), "# Team Wiki\n")
+            fun esc(p: Path) = p.toString().replace("\\", "\\\\")
+
+            val resp = fx.post("$ap/import", """{"source":"${esc(dir)}","format":"notion"}""")
+            assertEquals(200, resp.statusCode(), resp.body())
+            validate("$ap/import", Request.Method.POST, 200, resp.body())
+            assertTrue(resp.body().contains("notion/Team Wiki.md"), resp.body())
+
+            // notion needs a directory: a file source is a 400 that conforms
+            val file = dir.resolve("Team Wiki 0123456789abcdef0123456789abcdef.md")
+            val notDir = fx.post("$ap/import", """{"source":"${esc(file)}","format":"notion"}""")
+            assertEquals(400, notDir.statusCode())
+            validate("$ap/import", Request.Method.POST, 400, notDir.body())
         }
     }
 

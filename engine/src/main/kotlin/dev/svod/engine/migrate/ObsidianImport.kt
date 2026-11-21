@@ -60,7 +60,8 @@ object ObsidianImport {
      * The shared import core. [transform] is applied to each markdown file's text (vault-relative
      * path, content) before it is written; attachments are never transformed. A caller that already
      * walked the source (to pre-scan it) passes that [walk] so the tree is not walked twice and the
-     * written file set is exactly the one it scanned.
+     * written file set is exactly the one it scanned. [pathOf] maps a walked file to its
+     * vault-relative path (default: its path under the source, after the `into` prefix).
      */
     internal suspend fun importWith(
         source: Path,
@@ -69,10 +70,9 @@ object ObsidianImport {
         into: String,
         followSymlinks: Boolean,
         walk: Walk = collectFiles(source.normalize(), prefixOf(into), followSymlinks),
+        pathOf: (Path) -> String = source.normalize().let { base -> prefixOf(into).let { prefix -> { f: Path -> relPath(base, prefix, f) } } },
         transform: (rel: String, text: String) -> String,
     ): Result {
-        val base = source.normalize()
-        val prefix = prefixOf(into)
         val imported = ArrayList<String>()
         val unchanged = ArrayList<String>()
         val skipped = ArrayList(walk.skipped)
@@ -84,7 +84,7 @@ object ObsidianImport {
             // A single unreadable entry must not abort the whole import: read failures are recorded
             // in `skipped` and the walk continues (only a missing source — checked by the caller — is fatal).
             val entries = chunk.mapNotNull { file ->
-                val rel = relPath(base, prefix, file)
+                val rel = pathOf(file)
                 try {
                     val bytes = Files.readAllBytes(file)
                     if (rel.endsWith(".md")) BatchEntry.Text(rel, transform(rel, String(bytes, UTF_8))) else BatchEntry.Bytes(rel, bytes)
