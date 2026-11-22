@@ -179,6 +179,30 @@ class ReadmeConsistencyTest {
     }
 
     @Test
+    fun `How it compares links to the Letta page and the file exists`() {
+        assertTrue(
+            "](docs/compare-letta.md)" in section("How it compares"),
+            "README '## How it compares' has no link to docs/compare-letta.md",
+        )
+        assertTrue(Files.exists(repoRoot.resolve("docs/compare-letta.md")), "docs/compare-letta.md does not exist")
+    }
+
+    @Test
+    fun `the Letta column history cell reflects Context Repositories`() {
+        val table = comparisonTable()
+        assertTrue(table.isNotEmpty(), "README '## How it compares' has no table")
+        val column = table.first().indexOfFirst { "Letta" in it }
+        assertTrue(column >= 0, "comparison table header has no Letta column: ${table.first()}")
+        val row = table.firstOrNull { "version history" in it.firstOrNull().orEmpty() }
+        assertTrue(row != null, "comparison table has no 'version history' row")
+        val cell = row.getOrNull(column).orEmpty()
+        assertTrue(
+            "Context Repositories" in cell && "❌" !in cell,
+            "the Letta 'version history' cell must mention its git-backed Context Repositories, not ❌; found: '$cell'",
+        )
+    }
+
+    @Test
     fun `the Connecting an LLM agent section links the agent-framework page`() {
         val lines = readme.lines()
         val start = lines.indexOfFirst { it.trim() == "### Connecting an LLM agent" }
