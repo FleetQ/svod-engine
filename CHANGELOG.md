@@ -14,6 +14,15 @@ independently of the engine; each entry notes the contract version it ships.
   The top-level `MEMORY.md` index is not imported. Same walk, batch commits, idempotency and no-overwrite rules
   as the other imports. No contract change.
 
+### Docs — Svod vs Letta Context Repositories
+
+- New page `docs/compare-letta.md`: what Svod and Letta's git-backed Context Repositories share, where Svod
+  differs, where Letta is ahead, with dated sources and ⚠️ on unconfirmed facts. Linked from README
+  "How it compares".
+- README "How it compares": the Letta "Full version history / diff" cell said ❌ while the same column names
+  git-backed Context Repositories; it now says ⚠️ via Context Repositories (newer, opt-in).
+- `ReadmeConsistencyTest` checks the link to the new page, that the file exists, and the corrected Letta cell.
+
 ### Fixed
 
 - **`user.home` in a native binary without a passwd entry.** A container run with `--user <uid>` (the hosted team

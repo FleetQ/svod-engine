@@ -484,7 +484,7 @@ a working, dependency-free reference you can crib from.)
 |---|---|---|---|---|---|---|---|
 | **Store of record** | Git repo of Markdown | Vector + KV store | DB + vector store; ⚠️ git-backed Context Repositories (newer) | Markdown files + SQLite index | DB + vector store | Markdown files | Embeddings |
 | **Human-readable / editable** | ✅ any editor | ❌ opaque | ⚠️ via API | ✅ any editor | ❌ opaque | ✅ | ❌ |
-| **Full version history / diff** | ✅ git | ❌ | ❌ | ⚠️ DIY (your own git/sync) | ⚠️ partial | ❌ (last save) | ❌ |
+| **Full version history / diff** | ✅ git | ❌ | ⚠️ via git-backed Context Repositories (newer, opt-in) | ⚠️ DIY (your own git/sync) | ⚠️ partial | ❌ (last save) | ❌ |
 | **Per-change provenance (who/when)** | ✅ commit author | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ❌ |
 | **Never-lose-files guarantee** | ✅ atomic + soft-delete + recovery | ❌ | ❌ | ⚠️ | ❌ | ❌ | ❌ |
 | **Concurrency control** | ✅ single writer + optimistic revision | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ❌ | ⚠️ |
@@ -506,6 +506,8 @@ restore it" beats "it's someone else's database."
 *(Comparison reflects each tool's typical/default posture; specific configurations vary.)*
 
 Choosing between Markdown + MCP memory tools? See [Svod vs Basic Memory](docs/compare-basic-memory.md).
+
+Weighing git-backed agent memory? See [Svod vs Letta Context Repositories](docs/compare-letta.md).
 
 ---
 
