@@ -24,14 +24,14 @@ pages (see [Sources and date](#sources-and-date)). Anything we could not confirm
 | **Durability** | Atomic writes (temp file + rename), soft-delete to `.trash/` plus a commit, and startup crash recovery that completes or rolls back a partial write | ⚠️ Not documented as a guarantee |
 | **Provenance** | The commit author of each write is the specific agent, the UI or the external editor that made the change | ⚠️ Git commits in Context Repositories. Check its docs for how authors are recorded |
 | **Search** | Hybrid BM25 + vector search fused with RRF | ⚠️ Check its docs for the current search support |
-| **Agent interface** | MCP, 21 tools, usable from any MCP-capable agent | Letta's own API and SDKs |
+| **Agent interface** | MCP, usable from any MCP-capable agent | Letta's own API and SDKs |
 | **Runtime** | Fully local on one JVM, with in-process embeddings. No Python and no separate server | ⚠️ A Letta server (self-hosted or Letta Cloud) |
-| **Licence** | Apache-2.0 | ⚠️ Apache-2.0 for the open-source server; the hosted tier is a paid service |
+| **Licence** | Apache-2.0 | ⚠️ Apache-2.0 for the open-source server; the hosted tier (Letta Cloud) is a separate service with paid plans |
 | **Replication** | Git transport between hosts | ⚠️ Not documented for Context Repositories |
 
 What this means in practice: if you want memory that any MCP agent can read and write, with
 conflicts surfaced and "which agent wrote this, when, and what did it say before?" answered by
-git, Svod does that locally without any setup.
+git, Svod does that locally out of the box, with no extra service to run.
 
 ## Where Letta is ahead
 
