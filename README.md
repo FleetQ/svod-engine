@@ -182,7 +182,8 @@ enforced *before* the engine is touched.
 
 ### Connecting an LLM agent
 
-Point any MCP-capable client (Claude Desktop/Code, Cursor, or an agent framework such as LangGraph,
+Point any MCP-capable client (Claude Desktop/Code, Cursor, OpenAI Codex CLI, VS Code/GitHub Copilot,
+Windsurf, Gemini CLI, or an agent framework such as LangGraph,
 the OpenAI Agents SDK, the Vercel AI SDK or Mastra) at the engine's **MCP endpoint** and authenticate
 with one of the bearer tokens from your config's `agents` list. For copy-paste framework setups, see
 [Use Svod from your agent framework](docs/integrations-agent-frameworks.md).
@@ -194,19 +195,81 @@ with one of the bearer tokens from your config's `agents` list. For copy-paste f
   identity — its `agentId` becomes the git commit author and its `role` (`WRITE` / `READ_ONLY`) gates
   every call.
 
-`svod-engine init` (see [Quickstart](#quickstart)) prints the snippets below filled in with your own
-endpoint and the new agent's token, plus a matching `claude mcp add --transport http …` line for Claude Code.
+`svod-engine init` (see [Quickstart](#quickstart)) prints every one of the blocks below, filled in with your
+own endpoint and the new agent's token (shown here as `friday-write-token`).
 
-A minimal Claude Desktop / Cursor MCP server entry:
+Claude Desktop / Cursor — add to the MCP config:
 
 ```json
 {
-  "mcpServers": {
-    "svod-memory": {
-      "url": "http://127.0.0.1:7518/mcp",
-      "headers": { "Authorization": "Bearer friday-write-token" }
+    "mcpServers": {
+        "svod-memory": {
+            "url": "http://127.0.0.1:7518/mcp",
+            "headers": {
+                "Authorization": "Bearer friday-write-token"
+            }
+        }
     }
-  }
+}
+```
+
+Claude Code — run:
+
+```sh
+claude mcp add --transport http svod-memory http://127.0.0.1:7518/mcp --header "Authorization: Bearer friday-write-token"
+```
+
+Codex CLI — add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.svod-memory]
+url = "http://127.0.0.1:7518/mcp"
+http_headers = { "Authorization" = "Bearer friday-write-token" }
+```
+
+VS Code / GitHub Copilot — add to `.vscode/mcp.json` or the user-level MCP config:
+
+```json
+{
+    "servers": {
+        "svod-memory": {
+            "type": "http",
+            "url": "http://127.0.0.1:7518/mcp",
+            "headers": {
+                "Authorization": "Bearer friday-write-token"
+            }
+        }
+    }
+}
+```
+
+Windsurf — add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+    "mcpServers": {
+        "svod-memory": {
+            "serverUrl": "http://127.0.0.1:7518/mcp",
+            "headers": {
+                "Authorization": "Bearer friday-write-token"
+            }
+        }
+    }
+}
+```
+
+Gemini CLI — add to `~/.gemini/settings.json`:
+
+```json
+{
+    "mcpServers": {
+        "svod-memory": {
+            "httpUrl": "http://127.0.0.1:7518/mcp",
+            "headers": {
+                "Authorization": "Bearer friday-write-token"
+            }
+        }
+    }
 }
 ```
 
@@ -382,7 +445,8 @@ svod-engine eval ~/svod/config.json golden.jsonl # score search quality on your 
 From source, the same is `cd engine && ./gradlew run --args="init $HOME/svod"`.
 
 `init` creates one `WRITE` agent with a random token (kept in the owner-only config file) and prints a
-ready-to-paste Claude Desktop / Cursor `mcpServers` entry, a `claude mcp add` line and the system prompt.
+ready-to-paste MCP setup for Claude Desktop / Cursor, Claude Code (`claude mcp add`), Codex CLI,
+VS Code / GitHub Copilot, Windsurf and Gemini CLI, plus the system prompt.
 
 Or write the config by hand:
 

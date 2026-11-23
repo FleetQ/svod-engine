@@ -29,6 +29,39 @@ class ReadmeConsistencyTest {
 
     private fun advertisedTools(): List<String> = ADVERTISED_TOOLS
 
+    /** The fenced json/toml/sh blocks under `### <heading>`, up to the next `###`/`####` heading. */
+    private fun subsectionCodeBlocks(heading: String): List<Pair<String, String>> {
+        val lines = readme.lines()
+        val start = lines.indexOfFirst { it.trim() == "### $heading" }
+        assertTrue(start >= 0, "README has no '### $heading' subsection")
+        val end = (start + 1 until lines.size).firstOrNull {
+            lines[it].startsWith("### ") || lines[it].startsWith("#### ") || lines[it].startsWith("## ")
+        } ?: lines.size
+        val blocks = mutableListOf<Pair<String, String>>()
+        var i = start + 1
+        while (i < end) {
+            val open = lines[i]
+            if (open.startsWith("```") && open.length > 3) {
+                val lang = open.removePrefix("```").trim()
+                val close = (i + 1 until end).first { lines[it] == "```" }
+                if (lang in setOf("json", "toml", "sh")) blocks += lang to lines.subList(i + 1, close).joinToString("\n")
+                i = close + 1
+            } else {
+                i++
+            }
+        }
+        return blocks
+    }
+
+    @Test
+    fun `the Connecting an LLM agent snippets equal the init output`() {
+        val dir = Files.createTempDirectory("svod-readme")
+        val config = dev.svod.engine.lifecycle.ConfigInit.generate(dir, "none", "friday-write-token")
+        val expected = dev.svod.engine.lifecycle.ConfigInit.clientSnippets(config, "friday-write-token")
+            .map { it.lang to it.body.trimEnd() }
+        assertEquals(expected, subsectionCodeBlocks("Connecting an LLM agent"))
+    }
+
     private companion object {
         /** A Markdown table cell boundary: a `|` not escaped as `\|`. */
         val UNESCAPED_PIPE = Regex("""(?<!\\)\|""")

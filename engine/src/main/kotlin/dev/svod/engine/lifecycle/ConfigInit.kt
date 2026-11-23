@@ -95,17 +95,85 @@ object ConfigInit {
         },
     )
 
-    /** Everything a new user pastes to connect an agent: client config, CLI line, system prompt. */
+    /** One client's ready-to-paste setup: [where] names the config file or command, [lang] the code-fence language. */
+    data class ClientSnippet(val client: String, val where: String, val lang: String, val body: String)
+
+    private fun json(obj: kotlinx.serialization.json.JsonObject): String =
+        prettyJson.encodeToString(kotlinx.serialization.json.JsonObject.serializer(), obj)
+
+    /** The VS Code / GitHub Copilot `mcp.json` entry (`servers`, `type: http`). */
+    fun vscodeJson(config: SvodConfig, token: String): String = json(
+        buildJsonObject {
+            putJsonObject("servers") {
+                putJsonObject(SERVER_NAME) {
+                    put("type", "http")
+                    put("url", mcpUrl(config))
+                    putJsonObject("headers") { put("Authorization", "Bearer $token") }
+                }
+            }
+        },
+    )
+
+    /** The Windsurf `mcp_config.json` entry (`serverUrl`). */
+    fun windsurfJson(config: SvodConfig, token: String): String = json(
+        buildJsonObject {
+            putJsonObject("mcpServers") {
+                putJsonObject(SERVER_NAME) {
+                    put("serverUrl", mcpUrl(config))
+                    putJsonObject("headers") { put("Authorization", "Bearer $token") }
+                }
+            }
+        },
+    )
+
+    /** The Gemini CLI `settings.json` entry (`httpUrl` = streamable HTTP). */
+    fun geminiJson(config: SvodConfig, token: String): String = json(
+        buildJsonObject {
+            putJsonObject("mcpServers") {
+                putJsonObject(SERVER_NAME) {
+                    put("httpUrl", mcpUrl(config))
+                    putJsonObject("headers") { put("Authorization", "Bearer $token") }
+                }
+            }
+        },
+    )
+
+    /** A TOML basic string with `\` and `"` escaped. */
+    private fun tomlString(s: String): String = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+    /** The OpenAI Codex CLI `config.toml` table. */
+    fun codexToml(config: SvodConfig, token: String): String =
+        "[mcp_servers.$SERVER_NAME]\n" +
+            "url = ${tomlString(mcpUrl(config))}\n" +
+            "http_headers = { \"Authorization\" = ${tomlString("Bearer $token")} }"
+
+    /** The Claude Code CLI line. */
+    fun claudeCodeLine(config: SvodConfig, token: String): String =
+        "claude mcp add --transport http $SERVER_NAME ${mcpUrl(config)} --header \"Authorization: Bearer $token\""
+
+    /** Every supported client's setup, in the order `init` prints them and the README shows them. */
+    fun clientSnippets(config: SvodConfig, token: String): List<ClientSnippet> = listOf(
+        ClientSnippet("Claude Desktop / Cursor", "add to the MCP config", "json", mcpServersJson(config, token)),
+        ClientSnippet("Claude Code", "run", "sh", claudeCodeLine(config, token)),
+        ClientSnippet("Codex CLI", "add to ~/.codex/config.toml", "toml", codexToml(config, token)),
+        ClientSnippet(
+            "VS Code / GitHub Copilot",
+            "add to .vscode/mcp.json or the user-level MCP config",
+            "json",
+            vscodeJson(config, token),
+        ),
+        ClientSnippet("Windsurf", "add to ~/.codeium/windsurf/mcp_config.json", "json", windsurfJson(config, token)),
+        ClientSnippet("Gemini CLI", "add to ~/.gemini/settings.json", "json", geminiJson(config, token)),
+    )
+
+    /** Everything a new user pastes to connect an agent: client configs, CLI line, system prompt. */
     fun clientSetup(config: SvodConfig, token: String): String = buildString {
-        val url = mcpUrl(config)
-        appendLine("Claude Desktop / Cursor — add to the MCP config:")
-        appendLine()
-        appendLine(mcpServersJson(config, token))
-        appendLine()
-        appendLine("Claude Code:")
-        appendLine()
-        appendLine("  claude mcp add --transport http $SERVER_NAME $url --header \"Authorization: Bearer $token\"")
-        appendLine()
+        for (s in clientSnippets(config, token)) {
+            appendLine("${s.client} — ${s.where}:")
+            appendLine()
+            appendLine(if (s.lang == "sh") s.body.lines().joinToString("\n") { "  $it" } else s.body)
+            appendLine()
+        }
         appendLine("System prompt for your agent:")
         appendLine()
         appendLine(SYSTEM_PROMPT)

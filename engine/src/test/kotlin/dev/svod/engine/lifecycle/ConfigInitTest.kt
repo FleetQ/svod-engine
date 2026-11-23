@@ -112,5 +112,56 @@ class ConfigInitTest {
         )
         assertTrue(text.contains(ConfigInit.SYSTEM_PROMPT))
         assertTrue(ConfigInit.SYSTEM_PROMPT.startsWith("You have a persistent, git-backed memory called Svod"))
+
+        val snippets = ConfigInit.clientSnippets(result.config, result.token)
+        assertEquals(
+            listOf("Claude Desktop / Cursor", "Claude Code", "Codex CLI", "VS Code / GitHub Copilot", "Windsurf", "Gemini CLI"),
+            snippets.map { it.client },
+        )
+        for (s in snippets) {
+            assertTrue(text.contains("${s.client} — ${s.where}:"), "heading for ${s.client}")
+            assertTrue(text.contains(s.body), "body for ${s.client}")
+            assertTrue(s.body.contains(result.token), "token in ${s.client}")
+        }
+    }
+
+    private fun sample(): SvodConfig = ConfigInit.generate(Files.createTempDirectory("svod-init"), "none", "tok-123")
+
+    private fun server(json: String, root: String) =
+        Json.parseToJsonElement(json).jsonObject[root]!!.jsonObject["svod-memory"]!!.jsonObject
+
+    @Test
+    fun `codex snippet is a TOML mcp_servers table with url and bearer header`() {
+        val toml = ConfigInit.codexToml(sample(), "tok-123")
+        val lines = toml.lines()
+        assertTrue("[mcp_servers.svod-memory]" in lines, toml)
+        assertTrue("url = \"http://127.0.0.1:7518/mcp\"" in lines, toml)
+        assertTrue("http_headers = { \"Authorization\" = \"Bearer tok-123\" }" in lines, toml)
+
+        val odd = ConfigInit.codexToml(sample(), "a\"b\\c")
+        assertTrue(odd.contains("\"Bearer a\\\"b\\\\c\""), odd)
+    }
+
+    @Test
+    fun `vscode snippet uses servers with type http`() {
+        val s = server(ConfigInit.vscodeJson(sample(), "tok-123"), "servers")
+        assertEquals("http", s["type"]!!.jsonPrimitive.content)
+        assertEquals("http://127.0.0.1:7518/mcp", s["url"]!!.jsonPrimitive.content)
+        assertEquals("Bearer tok-123", s["headers"]!!.jsonObject["Authorization"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `windsurf snippet uses serverUrl`() {
+        val s = server(ConfigInit.windsurfJson(sample(), "tok-123"), "mcpServers")
+        assertEquals("http://127.0.0.1:7518/mcp", s["serverUrl"]!!.jsonPrimitive.content)
+        assertFalse("url" in s)
+        assertEquals("Bearer tok-123", s["headers"]!!.jsonObject["Authorization"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `gemini snippet uses httpUrl`() {
+        val s = server(ConfigInit.geminiJson(sample(), "tok-123"), "mcpServers")
+        assertEquals("http://127.0.0.1:7518/mcp", s["httpUrl"]!!.jsonPrimitive.content)
+        assertEquals("Bearer tok-123", s["headers"]!!.jsonObject["Authorization"]!!.jsonPrimitive.content)
     }
 }
