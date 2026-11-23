@@ -29,7 +29,7 @@ object VaultEval {
             val reranker = Rerankers.create(rc, vault)
             try {
                 openIndex(config, vault, embedder, reranker, ec, rc).use { index ->
-                    return evaluate(index, queries, embedder, out)
+                    return evaluate(index, queries, headNotes(vault), embedder, out)
                 }
             } finally {
                 (reranker as? AutoCloseable)?.let { runCatching { it.close() } }
@@ -73,9 +73,19 @@ object VaultEval {
             IllegalStateException("index is in use — stop the engine first (svod-engine eval runs with the engine stopped)", it)
         }
 
-    private fun evaluate(index: IndexService, queries: List<GoldenQuery>, embedder: Embedder, out: (String) -> Unit): Report {
+    /** Markdown paths at the vault's HEAD, read through git (no writes); empty for a vault with no commit. */
+    private fun headNotes(vault: Path): Set<String> = GitReader(vault).use { git ->
+        git.headCommit()?.let { git.listMarkdown(it).keys } ?: emptySet()
+    }
+
+    private fun evaluate(
+        index: IndexService,
+        queries: List<GoldenQuery>,
+        known: Set<String>,
+        embedder: Embedder,
+        out: (String) -> Unit,
+    ): Report {
         // A mistyped path silently becomes an unreachable relevant note and depresses recall forever.
-        val known = index.indexedPaths()
         queries.flatMap { q -> q.gains.keys.filter { it !in known }.map { q.text to it } }.forEach { (q, path) ->
             out("warning: '$path' (query '$q') is not a note at the vault's HEAD — it can never be found")
         }

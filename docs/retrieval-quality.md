@@ -67,6 +67,13 @@ These are the numbers of the test suite's leg P: the committed bilingual synthet
 (`GoldenCorpus`, 27 notes, 37 queries) with a hermetic bag-of-words embedder and no reranker.
 `RetrievalQualityDocsTest` runs leg P and fails when this table no longer matches it.
 
+To get the same numbers on every run, the docs test builds the index with one embedding worker,
+then closes and reopens it before measuring. With several workers, the order in which notes are
+re-written decides how equal BM25 scores are ordered. Lucene also keeps counting deleted copies
+until a background merge removes them. Either can move the third decimal: KEYWORD nDCG@10 has
+measured 0.694 or 0.698 depending on the run. `RetrievalEvalTest` only checks floors, so it is not
+affected.
+
 | Run | R@1 | R@5 | R@10 | nDCG@10 | MRR |
 |---|---|---|---|---|---|
 | P/HYBRID | 0.365 | 0.703 | 0.743 | 0.600 | 0.563 |
@@ -87,7 +94,7 @@ you should measure your own.
 
 ## How to reproduce
 
-Leg P, from `engine/`:
+Leg P and the baseline table, from `engine/`:
 
 ```sh
 ./gradlew test --tests 'dev.svod.engine.index.RetrievalEvalTest' --tests 'dev.svod.engine.index.RetrievalQualityDocsTest'

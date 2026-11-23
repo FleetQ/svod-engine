@@ -20,6 +20,7 @@ class VaultEvalTest {
             fx.seed("ops/backup.md", "# Backup\n\nNightly restic snapshots go to the offsite bucket.\n")
             fx.seed("notes/garden.md", "# Garden\n\nTomatoes need watering every second evening.\n")
             fx.seed("notes/recipes.md", "# Recipes\n\nSourdough bread with a long cold proof.\n")
+            fx.seed("notes/journal.md", "---\nprivate: true\n---\n# Journal\n\nA quiet evening in the garden.\n")
         }
         return fx
     }
@@ -39,7 +40,7 @@ class VaultEvalTest {
             val file = golden(
                 fx.root,
                 "# Section 1 - en",
-                """{"q": "restic snapshots offsite", "gains": {"ops/backup.md": 3}}""",
+                """{"q": "restic snapshots offsite", "gains": {"ops/backup.md": 3, "notes/journal.md": 1}}""",
                 """{"q": "tomatoes watering", "gains": {"notes/garden.md": 3, "missing/nowhere.md": 1}}""",
             )
             val out = mutableListOf<String>()
@@ -47,15 +48,18 @@ class VaultEvalTest {
 
             val keyword = assertNotNull(report.metrics[SearchMode.KEYWORD], out.joinToString("\n"))
             assertEquals(2, keyword.queries)
-            // Both answering notes rank first; the unknown path only costs the second query half its recall.
+            // Both answering notes rank first; the private note and the unknown path each cost their
+            // query half its recall.
             assertEquals(1.0, keyword.mrr, 1e-9)
-            assertEquals(0.75, keyword.recallAt5, 1e-9)
+            assertEquals(0.5, keyword.recallAt5, 1e-9)
             assertNotNull(report.metrics[SearchMode.HYBRID])
             assertTrue(SearchMode.SEMANTIC in report.metrics)
             assertNull(report.metrics[SearchMode.SEMANTIC])
 
             val text = out.joinToString("\n")
             assertTrue("missing/nowhere.md" in text, text)
+            // A private note is in git at HEAD but never indexed: it must not be reported as a typo.
+            assertTrue("notes/journal.md" !in text, text)
             assertTrue(out.any { "SEMANTIC" in it && "skipped" in it }, text)
             assertTrue(out.any { "[en]" in it }, text)
             assertEquals(head, GitReader(fx.root).use { it.headCommit() }, "eval must not commit")
