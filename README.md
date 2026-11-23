@@ -552,6 +552,8 @@ When bumping `SvodNode.ENGINE_VERSION`, bump `version` in `server.json` too —
 | `examples/` | Reference integrations — start with `examples/web-viewer/`. |
 | `docs/` | Architecture + ADRs. Start at [`docs/architecture.md`](docs/architecture.md) and [`docs/build-order.md`](docs/build-order.md). |
 
+For security reviews and questionnaires, see [`docs/security-overview.md`](docs/security-overview.md).
+
 ## Status
 
 **v1.34.3 — stable, production.** Integrity core → hybrid index → MCP → App API/contract/graph/

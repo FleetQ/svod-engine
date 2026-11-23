@@ -24,16 +24,24 @@ Older versions are not patched; please upgrade before reporting.
 
 Svod's threat model assumes the local machine is trusted and the network is not.
 
-- **App API is loopback-only.** The HTTP App API binds to `127.0.0.1` exclusively.
-  It is never exposed on a routable interface. Local processes on the same
-  machine are the only clients.
+- **App API is loopback by default.** The HTTP App API binds to `127.0.0.1` by
+  default, where local processes on the same machine are the only clients. A
+  shared engine may bind another address only with TLS on both ports
+  (`appApiTls` and `mcpTls`), at least one person with a personal API key
+  (`users`) and `localAdmin` set to false; the engine refuses to start otherwise
+  (ADR-0019).
 - **Remote agents use the MCP server over TLS.** Agents on other hosts reach the
   engine through the MCP server, which is served over TLS and authenticated with
   a **per-agent bearer token**. Each agent has its own token so access can be
   revoked individually. Tokens are never logged.
-- **Secret-scanning blocks credentials pre-commit.** A pre-commit secret scan
-  rejects commits that contain credentials (API keys, tokens, private keys),
-  preventing accidental disclosure in the repository history.
+- **Secret-scanning can block credentials pre-commit (opt-in).** The scan is off
+  by default; enable it with `secretScanning` in the config. When enabled, it
+  rejects writes that contain high-confidence credentials (API keys, tokens,
+  private keys), preventing accidental disclosure in the repository history.
+
+For the full data-handling summary (data location, authentication, audit trail,
+deletion, outbound connections and known gaps), see
+[docs/security-overview.md](docs/security-overview.md).
 
 ### Out of Scope
 
