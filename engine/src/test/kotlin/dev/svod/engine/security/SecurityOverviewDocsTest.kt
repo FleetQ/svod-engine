@@ -8,12 +8,14 @@ import dev.svod.engine.lifecycle.SvodConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -50,6 +52,10 @@ class SecurityOverviewDocsTest {
         /** Imports that mean a file can open a connection to another host. */
         val NETWORK_CLIENT = Regex(
             """java\.net\.http|HttpURLConnection|io\.ktor\.client|org\.eclipse\.jgit\.transport|java\.net\.Socket\b|SocketChannel|DatagramSocket""",
+        )
+        /** Maven group ids of error-reporting / telemetry SDKs that phone home when configured. */
+        val TELEMETRY_SDK_GROUPS = listOf(
+            "io.sentry", "com.bugsnag", "com.rollbar", "io.opentelemetry", "com.newrelic", "com.datadoghq", "io.honeycomb",
         )
         /** An App API route declaration: `post("/api/...")`, `put("/api/...")`, ... */
         val ROUTE = Regex("""\b(?:get|post|put|patch|delete)\("(/api/[^"]+)"""")
@@ -124,13 +130,18 @@ class SecurityOverviewDocsTest {
         // With the scan ON, a note write is blocked but writeBytes commits the same text unscanned.
         val root = Files.createTempDirectory("svod-scan-bypass-")
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        SvodEngine.open(root, scope, SecretScanner(enabled = true)).use { e ->
-            val author = Author("a", "a@x")
-            val blocked = e.write("notes/key.md", PEM_KEY, null, author)
-            assertTrue(blocked is WriteOutcome.Blocked, "an enabled scan should block a note write with a key, got $blocked")
-            val raw = e.writeBytes("notes/raw.md", PEM_KEY.toByteArray(), null, author)
-            assertTrue(raw is WriteOutcome.Success, "writeBytes now scans ($raw); update $PAGE '## Pre-commit secret scan'")
-            assertTrue(e.history("notes/raw.md").isNotEmpty(), "the unscanned write should be in git history")
+        try {
+            SvodEngine.open(root, scope, SecretScanner(enabled = true)).use { e ->
+                val author = Author("a", "a@x")
+                val blocked = e.write("notes/key.md", PEM_KEY, null, author)
+                assertTrue(blocked is WriteOutcome.Blocked, "an enabled scan should block a note write with a key, got $blocked")
+                val raw = e.writeBytes("notes/raw.md", PEM_KEY.toByteArray(), null, author)
+                assertTrue(raw is WriteOutcome.Success, "writeBytes now scans ($raw); update $PAGE '## Pre-commit secret scan'")
+                assertTrue(e.history("notes/raw.md").isNotEmpty(), "the unscanned write should be in git history")
+            }
+        } finally {
+            scope.cancel()
+            root.toFile().deleteRecursively()
         }
 
         // Every App API route that writes through writeBytes must be named as unscanned.
@@ -240,8 +251,36 @@ class SecurityOverviewDocsTest {
             "the default Ollama endpoint is no longer plain http; update $PAGE '## Outbound connections'",
         )
 
-        // The blanket claim the page used to make must not come back.
+        // Connections made by libraries, not by our imports: a logback appender outside logback
+        // itself, or a bundled error/telemetry SDK, must be named with its group id.
+        val logback = Files.readString(engineDir.resolve("src/main/resources/logback.xml"))
+        val foreignAppenders = Regex("""<appender[^>]*class="([^"]+)"""").findAll(logback)
+            .map { it.groupValues[1] }.filterNot { it.startsWith("ch.qos.logback.") }.toList()
+        val build = Files.readString(engineDir.resolve("build.gradle.kts"))
+        val sdkGroups = TELEMETRY_SDK_GROUPS.filter { "\"$it" in build || "\"$it:" in build }
+        val groups = (foreignAppenders.map { it.split('.').take(2).joinToString(".") } + sdkGroups).toSet()
+        groups.forEach { g ->
+            assertTrue(g in out, "$PAGE '## Outbound connections' does not mention the bundled library $g (logback.xml / build.gradle.kts)")
+        }
+        if (foreignAppenders.isNotEmpty()) {
+            assertTrue("(../engine/src/main/resources/logback.xml)" in out, "$PAGE '## Outbound connections' must link logback.xml")
+        }
+        if ("io.sentry" in groups) {
+            assertBackticked(out, "SENTRY_DSN", "## Outbound connections")
+            assertBackticked(section("At a glance"), "SENTRY_DSN", "## At a glance")
+        }
+        assertTrue("| Telemetry? | None" !in page, "$PAGE '## At a glance' must not answer Telemetry with a flat 'None'")
+
+        // Local log files: the directory variable and its default come from logback.xml.
+        val logDir = assertNotNull(
+            Regex("""\$\{(\w+):-\$\{user\.home\}/([^}]+)\}""").find(logback),
+            "logback.xml no longer writes logs under \${VAR:-\${user.home}/...}; update $PAGE '## Data location'",
+        )
         val loc = section("Data location")
+        assertBackticked(loc, "$" + logDir.groupValues[1], "## Data location")
+        assertBackticked(loc, "~/" + logDir.groupValues[2], "## Data location")
+
+        // The blanket claim the page used to make must not come back.
         assertTrue(
             !Regex("""only if the operator configures a `remote-openai`""").containsMatchIn(loc),
             "$PAGE '## Data location' must not limit outbound note text to remote-openai",
@@ -258,5 +297,18 @@ class SecurityOverviewDocsTest {
         assertTrue("TLS" in security && "shared engine" in security, "SECURITY.md must explain TLS for a shared engine")
         assertTrue("`secretScanning`" in security, "SECURITY.md must name the `secretScanning` opt-in")
         assertTrue(Regex("""off\s+by\s+default""").containsMatchIn(security.lowercase()), "SECURITY.md must say secret scanning is off by default")
+
+        // README links the page, so it must not contradict it either.
+        val readme = Files.readString(repoRoot.resolve("README.md"))
+        listOf(
+            Regex("""App API is \*\*loopback-only\*\*""", RegexOption.IGNORE_CASE),
+            Regex("""loopback-only HTTP/JSON API""", RegexOption.IGNORE_CASE),
+            Regex("""come in exclusively through MCP""", RegexOption.IGNORE_CASE),
+            Regex("""127\.0\.0\.1 only"""),
+            Regex("""leaked key never enters history""", RegexOption.IGNORE_CASE),
+        ).forEach { r ->
+            assertTrue(!r.containsMatchIn(readme), "README.md still says '${r.pattern}', which $PAGE contradicts")
+        }
+        assertTrue(Regex("""(?i)opt-in pre-commit secret scanning""").containsMatchIn(readme), "README.md must call secret scanning opt-in")
     }
 }

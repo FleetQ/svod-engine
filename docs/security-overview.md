@@ -19,8 +19,8 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
 | SSO / SAML / OIDC? | No. |
 | Audit logging? | Yes. Append-only JSON-lines logs for agent writes and refused agent calls and for keyed App API requests, plus git authorship on every commit. Successful agent reads and searches are not logged. |
 | Deletion? | Soft delete to `.trash/`, restore, and admin purge. Purged content remains in git history. |
-| Telemetry? | None in the engine. |
-| Third-party data processors? | None by default. Note text goes only to endpoints the operator configures: an embedder (Ollama or OpenAI-compatible), a remote reranker, a graph-summary or memory-extraction LLM (Ollama), and sync/backup git remotes. See [Outbound connections](#outbound-connections). |
+| Telemetry? | No usage or analytics telemetry. Opt-in error reporting: ERROR log lines go to Sentry only when the operator sets the `SENTRY_DSN` environment variable. |
+| Third-party data processors? | None by default. Note text goes only to endpoints the operator configures: an embedder (Ollama or OpenAI-compatible), a remote reranker, a graph-summary or memory-extraction LLM (Ollama), and sync/backup git remotes. Error logs go to Sentry only if `SENTRY_DSN` is set. See [Outbound connections](#outbound-connections). |
 | Certifications? | None (no SOC 2, ISO 27001 or HIPAA attestation). |
 
 ## Data location
@@ -35,6 +35,10 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
   the vault's `.svod/` directory, which is never committed
   ([`core/VaultPath.kt`](../engine/src/main/kotlin/dev/svod/engine/core/VaultPath.kt) reserves
   `.git`, `.svod` and `.trash`).
+- Engine logs go to the console and to rolling files in `$SVOD_LOG_DIR` (default
+  `~/.svod/logs`), kept for 14 days and capped at 500 MB
+  ([`logback.xml`](../engine/src/main/resources/logback.xml)). Log lines can contain note paths,
+  vault names and exception text, so protect that directory like the vault.
 - The default embedder is `onnx-local` (`EmbedderSettings.provider`): the model runs in-process
   ([`index/OnnxLocalEmbedder.kt`](../engine/src/main/kotlin/dev/svod/engine/index/OnnxLocalEmbedder.kt)).
   With the default settings, note text does not leave the machine. It can be sent to another
@@ -191,7 +195,14 @@ The engine makes no outbound connections except these:
   hosted engines) a remote must be an HTTPS URL naming a public host, and the connection checks
   the address it reached
   ([`sync/RemoteGuard.kt`](../engine/src/main/kotlin/dev/svod/engine/sync/RemoteGuard.kt)).
-- **No telemetry.** The engine sends no usage or analytics data. This statement covers the
+- **Error reporting to Sentry (opt-in).** The engine bundles the Sentry logback appender
+  (`io.sentry:sentry-logback`), attached to the root logger for ERROR lines
+  ([`logback.xml`](../engine/src/main/resources/logback.xml), ADR-0013). It sends nothing unless
+  the `SENTRY_DSN` environment variable is set. When it is set, every ERROR log line, with its
+  message and exception text, goes to that Sentry project. Those can include note paths, vault
+  names and fragments of error output, so treat the Sentry project as a data processor. To keep
+  it off, leave `SENTRY_DSN` unset.
+- **No usage telemetry.** The engine sends no usage or analytics data. This statement covers the
   engine in this repository; check separately distributed clients on their own terms.
 
 ## Known gaps
