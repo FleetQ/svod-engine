@@ -37,8 +37,11 @@ Svod's threat model assumes the local machine is trusted and the network is not.
 - **Secret-scanning can block credentials pre-commit (opt-in).** The scan is off
   by default; enable it with `secretScanning` in the config (configs written by
   `svod-engine init` already do). When enabled, it
-  rejects writes that contain high-confidence credentials (API keys, tokens,
-  private keys), preventing accidental disclosure in the repository history.
+  rejects note writes that contain high-confidence credentials (API keys, tokens,
+  private keys) before they are committed. It does **not** cover session
+  transcripts stored through `POST /api/v1/memory/capture` (kept verbatim by
+  design) or binary files: credentials in those are committed to git history
+  even with the scan on.
 
 For the full data-handling summary (data location, authentication, audit trail,
 deletion, outbound connections and known gaps), see

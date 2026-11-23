@@ -99,9 +99,19 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
 - The scan is **opt-in**: `secretScanning` is off by default. Enable it in the config to use it.
   A config written by `svod-engine init`, and the sample configs in `dist/`, already turn it on.
 - When it is enabled, [`security/SecretScanner.kt`](../engine/src/main/kotlin/dev/svod/engine/security/SecretScanner.kt)
-  blocks a write *before* the commit if the note contains a real private key (key material, not
-  just a quoted `BEGIN` line) or a high-confidence token pattern (AWS access key id, GitHub,
-  Slack and Google API tokens, JWTs, `api_key = "…"` assignments).
+  blocks a **note write** *before* the commit if the note contains a real private key (key
+  material, not just a quoted `BEGIN` line) or a high-confidence token pattern (AWS access key
+  id, GitHub, Slack and Google API tokens, JWTs, `api_key = "…"` assignments).
+- **Not scanned, even when the scan is on:**
+  - **Session transcripts.** `POST /api/v1/memory/capture` stores raw session transcripts
+    verbatim and commits them to git without scanning, by design: transcripts routinely contain
+    tokens, and the capture store keeps them out of recall instead of blocking them.
+    `/api/v1/memory/sessions/mark-distilled` rewrites those notes the same way. A token in a
+    captured transcript therefore **does** enter git history. See
+    [`api/AppApiServer.kt`](../engine/src/main/kotlin/dev/svod/engine/api/AppApiServer.kt) and
+    `writeBytes` in [`core/SvodEngine.kt`](../engine/src/main/kotlin/dev/svod/engine/core/SvodEngine.kt).
+  - **Binary files.** Attachments and other non-Markdown files written through `writeBytes` or
+    imported as binary entries are stored without scanning.
 - Imported text files that trip the scanner are skipped, and incoming synced files are
   quarantined as conflicts rather than written
   ([`sync/SyncEngine.kt`](../engine/src/main/kotlin/dev/svod/engine/sync/SyncEngine.kt)).
@@ -193,6 +203,10 @@ The engine makes no outbound connections except these:
 - **No audit log rotation or retention.** The audit log files grow until the operator rotates them.
 - **Purge does not rewrite git history** (see [Deletion and retention](#deletion-and-retention)).
 - **No key or token expiry.** Keys stay valid until revoked or rotated.
+- **The secret scan has exceptions.** Session transcripts stored through
+  `POST /api/v1/memory/capture`, and binary files, are committed without scanning, so
+  credentials in them reach git history even with `secretScanning` on (see
+  [Pre-commit secret scan](#pre-commit-secret-scan)). Removing them means rewriting git history.
 
 ## Reporting a vulnerability
 

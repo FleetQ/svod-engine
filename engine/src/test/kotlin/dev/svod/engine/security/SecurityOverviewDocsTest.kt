@@ -1,7 +1,14 @@
 package dev.svod.engine.security
 
+import dev.svod.engine.core.Author
+import dev.svod.engine.core.SvodEngine
 import dev.svod.engine.core.VaultPath
+import dev.svod.engine.core.WriteOutcome
 import dev.svod.engine.lifecycle.SvodConfig
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -41,13 +48,19 @@ class SecurityOverviewDocsTest {
     private companion object {
         const val PAGE = "docs/security-overview.md"
         /** Imports that mean a file can open a connection to another host. */
-        val NETWORK_CLIENT = Regex("""java\.net\.http|HttpURLConnection|io\.ktor\.client|org\.eclipse\.jgit\.transport""")
+        val NETWORK_CLIENT = Regex(
+            """java\.net\.http|HttpURLConnection|io\.ktor\.client|org\.eclipse\.jgit\.transport|java\.net\.Socket\b|SocketChannel|DatagramSocket""",
+        )
+        /** An App API route declaration: `post("/api/...")`, `put("/api/...")`, ... */
+        val ROUTE = Regex("""\b(?:get|post|put|patch|delete)\("(/api/[^"]+)"""")
+        // Built at runtime, like SecretScannerTest: no literal key header is committed.
+        private const val DASHES = "-----"
         val PEM_KEY = listOf(
-            "-----BEGIN RSA PRIVATE KEY-----",
+            DASHES + "BEGIN RSA " + "PRIVATE KEY" + DASHES,
             "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun",
             "VTLw7onLRnrq0/IzW7yWR7QkrmBL7jTKEn5u+qKhbwKfBstIs+bMY2Zkp18gnTxK",
             "LxoS2tFczGkPLPgizskuemMghRniWaoLcyehkd3qqGElvW/VDL5AaWTg0nLVkjRo",
-            "-----END RSA PRIVATE KEY-----",
+            DASHES + "END RSA " + "PRIVATE KEY" + DASHES,
         ).joinToString("\n")
     }
 
@@ -104,6 +117,44 @@ class SecurityOverviewDocsTest {
         val init = dev.svod.engine.lifecycle.ConfigInit.generate(Paths.get("x"), "none", "sva_t")
         assertEquals(true, init.secretScanning, "svod-engine init no longer enables secretScanning; update $PAGE")
         assertBackticked(scan, "svod-engine init", "## Pre-commit secret scan")
+    }
+
+    @Test
+    fun secretScanExceptionsAreDocumented() = runBlocking {
+        // With the scan ON, a note write is blocked but writeBytes commits the same text unscanned.
+        val root = Files.createTempDirectory("svod-scan-bypass-")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        SvodEngine.open(root, scope, SecretScanner(enabled = true)).use { e ->
+            val author = Author("a", "a@x")
+            val blocked = e.write("notes/key.md", PEM_KEY, null, author)
+            assertTrue(blocked is WriteOutcome.Blocked, "an enabled scan should block a note write with a key, got $blocked")
+            val raw = e.writeBytes("notes/raw.md", PEM_KEY.toByteArray(), null, author)
+            assertTrue(raw is WriteOutcome.Success, "writeBytes now scans ($raw); update $PAGE '## Pre-commit secret scan'")
+            assertTrue(e.history("notes/raw.md").isNotEmpty(), "the unscanned write should be in git history")
+        }
+
+        // Every App API route that writes through writeBytes must be named as unscanned.
+        val server = Files.readString(engineDir.resolve("src/main/kotlin/dev/svod/engine/api/AppApiServer.kt"))
+        val bypassRoutes = Regex("""\.writeBytes\(""").findAll(server).map { call ->
+            ROUTE.findAll(server.substring(0, call.range.first)).lastOrNull()?.groupValues?.get(1)
+                ?: error("writeBytes call in AppApiServer.kt outside a route")
+        }.toSet()
+        assertTrue(bypassRoutes.isNotEmpty(), "AppApiServer.kt no longer uses writeBytes; the scan exceptions on $PAGE may be stale")
+        val scan = section("Pre-commit secret scan")
+        val gaps = section("Known gaps")
+        bypassRoutes.forEach { route ->
+            assertTrue(route in scan, "$PAGE '## Pre-commit secret scan' does not name the unscanned route $route")
+        }
+        assertTrue("/api/v1/memory/capture" in bypassRoutes, "the capture route no longer bypasses the scan: $bypassRoutes")
+        assertTrue("/api/v1/memory/capture" in gaps, "$PAGE '## Known gaps' must list the capture route's scan exception")
+        assertTrue("binary" in scan.lowercase() && "binary" in gaps.lowercase(), "$PAGE must say binary files are not scanned")
+
+        val security = Files.readString(repoRoot.resolve("SECURITY.md"))
+        assertTrue("/api/v1/memory/capture" in security, "SECURITY.md must state the transcript-capture scan exception")
+        assertTrue(
+            !Regex("""preventing\s+accidental\s+disclosure""").containsMatchIn(security),
+            "SECURITY.md must not claim the scan prevents disclosure in history without exceptions",
+        )
     }
 
     @Test
