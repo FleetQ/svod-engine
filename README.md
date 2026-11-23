@@ -74,12 +74,12 @@ index. The result:
 | **Optional reranking** | A second-stage cross-encoder re-scores the fused candidates for a relevance lift — opt-in, default off, degrades to the fused order on any failure. Configured under `reranker` and reported in `GET /settings`. |
 | **MCP server for agents** | 21 tools over streamable HTTP, per-agent bearer tokens → git author (or the bound person, see team sharing), read-only/write roles, token-bucket rate limiting, append-only audit log, optional TLS. Memory review is chosen per agent (`requireReview`). |
 | **Typed memory + review** | `remember` turns an observation into a typed memory note (policy / preference / fact / episode) with a lifecycle; `context_pack` recalls it (ranked, or the whole rule book with `enumerate=true`). Review is per agent via `agents[].requireReview` (agents without one follow `memory.requireReview`) and **off by default since 1.30.0**; an agent that opts in has its fact/policy wait `provisional` in the review queue (`GET`/`POST /api/v1/memory/review`, the viewer's Memory review pane) until a person approves it. See [ADR-0018](docs/adr/0018-memory-fact-classification.md). |
-| **Local App API + WebSocket** | A loopback-only HTTP/JSON API for UIs, plus a live `/api/v1/events` stream (agent activity, commits, index updates, conflicts) so a UI feels alive. |
+| **Local App API + WebSocket** | An HTTP/JSON API for UIs (loopback by default; a shared engine serves it over TLS with personal keys), plus a live `/api/v1/events` stream (agent activity, commits, index updates, conflicts) so a UI feels alive. |
 | **Wikilink graph + thematic graph** | `[[wikilinks]]` parsed into a backlink/outlink graph. Moving or renaming a note **rewrites every backlink in a single commit** — link integrity for free. Optionally (`graph.enabled`), a derived note graph (wikilinks + kNN similarity over the stored vectors) is clustered by Louvain into thematic communities, with optional build-time summaries: MCP `graph_communities` / `graph_community` / `graph_status`, App API `graph/communities` / `graph/community` / `graph/status` / `graph/rebuild`. |
 | **Team vault sharing** | People are App API principals with personal keys, an `admin` flag and per-vault grants ([ADR-0019](docs/adr/0019-app-api-principals.md)). An agent can be bound to a person (`agents[].user`) and get a role per vault (`reader` / `writer` / `maintainer`); a bound agent's commits are authored by the person with a `Svod-Agent:` trailer, so history shows who stands behind each change. See [ADR-0020](docs/adr/0020-team-sharing-users-and-roles.md). |
 | **Multiple vaults** | Run N vaults in one engine (e.g. `personal` + `work`), each its own git repo, lock, index, and sync remote. Routes select a vault via `?vault=`; agents are scoped to their granted vault. Cross-vault `[[vault:note]]` links resolve and surface as backlinks. |
 | **Multi-host sync** | Replicate the vault across machines over git transport. Frontmatter-aware structured merge (YAML keys union, body via git 3-way). A designated merge authority keeps history deterministic; real conflicts are *surfaced*, never auto-resolved. |
-| **Hardening** | Pre-commit secret scanning (a leaked key never enters history), live metrics (write latency, queue depth, index lag, conflicts, sync status), secret refs (`env:` / `file:` / macOS `keychain:`) instead of plaintext tokens. |
+| **Hardening** | Opt-in pre-commit secret scanning of note writes (`secretScanning`; transcript capture and binary files are not scanned, see [`docs/security-overview.md`](docs/security-overview.md)), live metrics (write latency, queue depth, index lag, conflicts, sync status), secret refs (`env:` / `file:` / macOS `keychain:`) instead of plaintext tokens. |
 | **Obsidian import, zero lock-in** | One-shot migration of an existing Obsidian vault — markdown + **attachments** (images/PDF) preserved, frontmatter + wikilinks intact, `.obsidian/` skipped. Idempotent (re-run reconciles, never clobbers). Symlinks are skipped by default or, with `followSymlinks`, materialized (file + whole directory links copied in). Leaving is just `git clone`. |
 | **Basic Memory import** | `svod-engine import-basic-memory <config.json> <dir> [into]` (engine stopped) imports a Basic Memory project the same way: observations, relations and frontmatter kept verbatim, and relations that point at a note's `title` or `permalink` turned into resolvable `[[path\|Original]]` wikilinks. Idempotent, never clobbers. |
 | **Claude Code memory import** | `svod-engine import-claude-memory <config.json> <memory-dir> [into]` (engine stopped) imports a Claude Code auto-memory folder (`~/.claude/projects/*/memory/`) under `into` (default `claude-memory`), one note per memory: frontmatter and body kept, the memory's type (`metadata.type` or `type`) added as a tag next to `claude-memory`, and `[[name]]` links to another memory's `name` turned into resolvable `[[path\|name]]` wikilinks. The top-level `MEMORY.md` index is skipped. Idempotent, never clobbers. |
@@ -96,7 +96,7 @@ index. The result:
         AI agents (remote)            UI / scripts (local)            you (anytime)
               │                              │                            │
         MCP over HTTPS                 HTTP + WebSocket               git / editor /
-        token + role                  127.0.0.1 only                  Obsidian
+        token + role                  loopback default                Obsidian
               │                              │                            │
               ▼                              ▼                            ▼
         ┌──────────────────────────────────────────────────────┐
@@ -119,8 +119,9 @@ index. The result:
 Reads fan out (search, history, graph — concurrent and cheap). **Writes are serialized**
 through one actor, so integrity is structural, not best-effort. Indexing runs *off* the write
 path, so a slow embed never blocks a write, and the index self-heals against git `HEAD` after
-any wipe. The App API is **loopback-only**; remote agents come in exclusively through MCP with
-TLS + per-agent tokens (architecture invariant #7).
+any wipe. The App API is **loopback by default**; remote agents come in through MCP with
+TLS + per-agent tokens (architecture invariant #7). A shared engine may expose both ports off
+loopback only with TLS on each, personal keys and `localAdmin` off (ADR-0019).
 
 Full detail: [`docs/architecture.md`](docs/architecture.md) and the ADRs in
 [`docs/adr/`](docs/adr/).
@@ -553,6 +554,8 @@ When bumping `SvodNode.ENGINE_VERSION`, bump `version` in `server.json` too —
 | `dist/` | launchd plist, jpackage/jlink packaging, install + secrets docs. |
 | `examples/` | Reference integrations — start with `examples/web-viewer/`. |
 | `docs/` | Architecture + ADRs. Start at [`docs/architecture.md`](docs/architecture.md) and [`docs/build-order.md`](docs/build-order.md). |
+
+For security reviews and questionnaires, see [`docs/security-overview.md`](docs/security-overview.md).
 
 ## Status
 
