@@ -20,12 +20,12 @@ from this repository, and facts about Mem0 come from its public pages (see
 |---|---|---|
 | **Store of record** | A git repository of Markdown files | ⚠️ A vector store plus a key-value store behind its API |
 | **Readable and editable** | Ordinary `.md` files with frontmatter. Open, edit and grep them in any editor, including Obsidian | ⚠️ Memories are read and changed through its API or dashboard |
-| **History** | One attributed git commit per write. `log`, `diff` and restore of any earlier revision are built in | ⚠️ Not documented as a full per-write history with restore |
+| **History** | One attributed git commit per write. `log`, `diff` and restore of any earlier revision are built in | ⚠️ A per-memory change history through its API. Restoring an earlier revision is not documented |
 | **Concurrency** | A single serialized writer with an optimistic `expectedRevision`. A stale write is surfaced as a conflict and never silently merged | ⚠️ Not documented as a guarantee |
 | **Durability** | Atomic writes (temp file + rename), soft-delete to `.trash/` plus a commit, and startup crash recovery that completes or rolls back a partial write | ⚠️ Depends on the backing stores you configure |
 | **Search** | Hybrid BM25 + vector search fused with RRF | ⚠️ Vector-first. Check its docs for the current keyword and graph options |
 | **Runtime** | Fully in-process on one JVM, with in-process embeddings. No Python and no separate server | ⚠️ A Python or JS library with an external LLM, embedder and vector store, or the hosted platform |
-| **Agent interface** | MCP, with 21 MCP tools for reading, searching and writing memory | Python and JS SDKs and a hosted REST API |
+| **Agent interface** | MCP, with 21 MCP tools for reading, searching and writing memory | Python and JS SDKs and a hosted REST API. ⚠️ An MCP server (OpenMemory) is also offered |
 | **Lock-in** | None: leaving means keeping a git clone of Markdown files | ⚠️ Higher: memories live in its stores. Its export is JSON, which Svod can import (below) |
 
 What this means in practice: if you need to read your agent's memory yourself, fix a wrong fact
@@ -41,8 +41,10 @@ files and git history do that without any setup.
 - **SDKs and framework integrations.** Mem0 ships official Python and JS SDKs and integrations
   with many agent frameworks. Svod's interface is MCP, which agent frameworks reach through
   their MCP clients.
-- **Automatic extraction.** Mem0 extracts memories from conversations for you. In Svod, agents
-  write notes explicitly through MCP tools.
+- **Automatic extraction.** Mem0 extracts memories from conversations for you by default. In
+  Svod, agents usually write notes explicitly through MCP tools. Svod's `extract_memories` tool is
+  opt-in: it needs a configured local model, and every memory it proposes is provisional and waits
+  for a person to approve it in the Memory review queue.
 - **A larger community.** Mem0 has a larger user base and ecosystem today.
 
 ## Importing an existing Mem0 export
@@ -50,7 +52,7 @@ files and git history do that without any setup.
 Svod's local App API imports a Mem0 JSON export file into a vault:
 
 ```bash
-curl -X POST http://127.0.0.1:<app-api-port>/api/v1/import \
+curl -X POST http://127.0.0.1:7517/api/v1/import \
   -H 'Content-Type: application/json' \
   -d '{"source": "/path/to/mem0-export.json", "format": "mem0"}'
 ```
@@ -62,7 +64,10 @@ curl -X POST http://127.0.0.1:<app-api-port>/api/v1/import \
 - **Idempotent:** the path depends only on the Mem0 id, so running the same import again changes
   nothing. A note you have edited locally is skipped and never overwritten.
 - **Through the single writer:** the import is committed to git like any other write.
-- The App API is loopback-only, so `source` is a path on the machine running Svod.
+- `7517` is the default `appApiPort`; use the value from your config if you changed it.
+- `source` is a path on the machine running the engine, not on the caller's machine. The App API
+  binds to 127.0.0.1 by default; a shared engine binds to the network and every caller presents a
+  personal key.
 
 There is no CLI subcommand for the Mem0 import yet; use the App API call above.
 
