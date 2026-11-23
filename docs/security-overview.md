@@ -20,7 +20,7 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
 | Audit logging? | Yes. Append-only JSON-lines logs for agent actions and for keyed App API requests, plus git authorship on every commit. |
 | Deletion? | Soft delete to `.trash/`, restore, and admin purge. Purged content remains in git history. |
 | Telemetry? | None in the engine. |
-| Third-party data processors? | None by default. Only remote embedders, rerankers or sync/backup remotes that the operator configures. |
+| Third-party data processors? | None by default. Note text goes only to endpoints the operator configures: an embedder (Ollama or OpenAI-compatible), a remote reranker, a graph-summary or memory-extraction LLM (Ollama), and sync/backup git remotes. See [Outbound connections](#outbound-connections). |
 | Certifications? | None (no SOC 2, ISO 27001 or HIPAA attestation). |
 
 ## Data location
@@ -36,10 +36,11 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
   `.git`, `.svod` and `.trash`).
 - The default embedder is `onnx-local` (`EmbedderSettings.provider`): the model runs in-process
   ([`index/OnnxLocalEmbedder.kt`](../engine/src/main/kotlin/dev/svod/engine/index/OnnxLocalEmbedder.kt)).
-  Note text leaves the machine only if the operator configures a `remote-openai` embedder
-  ([`index/OpenAiEmbedder.kt`](../engine/src/main/kotlin/dev/svod/engine/index/OpenAiEmbedder.kt)),
-  a remote reranker ([`index/RemoteReranker.kt`](../engine/src/main/kotlin/dev/svod/engine/index/RemoteReranker.kt)),
-  or sync/backup remotes ([`sync/`](../engine/src/main/kotlin/dev/svod/engine/sync/)).
+  With the default settings, note text does not leave the machine. It can be sent to another
+  host only through a service the operator configures: an Ollama or OpenAI-compatible embedder,
+  a remote reranker, an Ollama graph-summary or memory-extraction LLM, or a sync/backup git
+  remote. The full list, with the config keys, is under
+  [Outbound connections](#outbound-connections).
 
 ## Network exposure
 
@@ -137,9 +138,38 @@ The engine makes no outbound connections except these:
 - **Update check.** When an update check is requested, the engine asks GitHub releases for the
   latest version and the release's published SHA-256 checksum
   ([`lifecycle/UpdateService.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/UpdateService.kt)).
-- **Operator-configured services only.** Remote embedders and rerankers, and sync or backup git
-  remotes. With `denyPrivateRemotes` on (for hosted engines) a remote must be an HTTPS URL naming
-  a public host, and the connection checks the address it reached
+- **Operator-configured services that receive note text.** None of these is on by default
+  beyond the local ONNX embedder. Each sends note or conversation text to the endpoint the
+  operator sets:
+  - **Ollama embedder** (`embedder.provider` `ollama` / `local-ollama`): note chunks go to
+    `embedder.endpoint`, else `embedder.ollamaEndpoint` (default `http://127.0.0.1:11434`)
+    ([`index/OllamaEmbedder.kt`](../engine/src/main/kotlin/dev/svod/engine/index/OllamaEmbedder.kt)).
+  - **OpenAI-compatible embedder** (`embedder.provider` `remote-openai` / `openai`): note chunks
+    go to `embedder.endpoint`
+    ([`index/OpenAiEmbedder.kt`](../engine/src/main/kotlin/dev/svod/engine/index/OpenAiEmbedder.kt)).
+    The embedder's model list, which an admin can request, calls the same endpoint
+    ([`lifecycle/EmbedderController.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/EmbedderController.kt)).
+  - **Remote reranker** (`reranker.provider` `remote` / `remote-tei` / `tei`): the query and
+    candidate passages go to `reranker.endpoint`
+    ([`index/RemoteReranker.kt`](../engine/src/main/kotlin/dev/svod/engine/index/RemoteReranker.kt)).
+  - **Graph summaries** (`graph.summaryProvider` `ollama`): note excerpts go to
+    `graph.summaryEndpoint`, else the embedder's endpoint
+    ([`graphrag/SummaryLlm.kt`](../engine/src/main/kotlin/dev/svod/engine/graphrag/SummaryLlm.kt)).
+  - **Memory extraction** (`memory.extractionProvider` `ollama`): conversation text goes to
+    `memory.extractionEndpoint`, else the embedder's Ollama endpoint. It never falls back to a
+    `remote-openai` endpoint
+    ([`memory/MemoryExtractor.kt`](../engine/src/main/kotlin/dev/svod/engine/memory/MemoryExtractor.kt),
+    [`SvodConfig.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/SvodConfig.kt)).
+  - **Sync, backup and clone** git remotes: the vault's full git history goes to the remotes
+    configured for each vault and for `backup`
+    ([`sync/SyncGit.kt`](../engine/src/main/kotlin/dev/svod/engine/sync/SyncGit.kt),
+    [`sync/SyncBootstrap.kt`](../engine/src/main/kotlin/dev/svod/engine/sync/SyncBootstrap.kt)).
+- **Endpoint checks.** `SvodConfig.validate()` does not restrict the embedder, reranker, summary
+  or extraction endpoints to loopback, and it does not require HTTPS for them. Ollama endpoints
+  are plain `http://` by default, so pointing one at another host sends note text unencrypted
+  unless you put it behind TLS. Only git remotes are checked: with `denyPrivateRemotes` on (for
+  hosted engines) a remote must be an HTTPS URL naming a public host, and the connection checks
+  the address it reached
   ([`sync/RemoteGuard.kt`](../engine/src/main/kotlin/dev/svod/engine/sync/RemoteGuard.kt)).
 - **No telemetry.** The engine sends no usage or analytics data. This statement covers the
   engine in this repository; check separately distributed clients on their own terms.

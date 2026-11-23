@@ -40,6 +40,8 @@ class SecurityOverviewDocsTest {
 
     private companion object {
         const val PAGE = "docs/security-overview.md"
+        /** Imports that mean a file can open a connection to another host. */
+        val NETWORK_CLIENT = Regex("""java\.net\.http|HttpURLConnection|io\.ktor\.client|org\.eclipse\.jgit\.transport""")
         val PEM_KEY = listOf(
             "-----BEGIN RSA PRIVATE KEY-----",
             "MIIEowIBAAKCAQEAu1SU1LfVLPHCozMxH2Mo4lgOEePzNm0tRgeLezV6ffAt0gun",
@@ -142,6 +144,45 @@ class SecurityOverviewDocsTest {
         listOf("encryption at rest", "sso", "soc 2", "audit log", "expiry").forEach {
             assertTrue(it in gaps, "$PAGE '## Known gaps' does not mention '$it'")
         }
+    }
+
+    @Test
+    fun outboundConnectionsListEveryNetworkClient() {
+        val out = section("Outbound connections")
+        // Every main source file that opens an HTTP connection or a git transport must be linked
+        // there, so a new client can't add a data flow without the page noticing.
+        val srcRoot = engineDir.resolve("src/main/kotlin/dev/svod/engine")
+        val clients = Files.walk(srcRoot).use { s ->
+            s.filter { it.toString().endsWith(".kt") }
+                .filter { NETWORK_CLIENT.containsMatchIn(Files.readString(it)) }
+                .map { srcRoot.relativize(it).toString().replace('\\', '/') }
+                .toList()
+        }
+        assertTrue(clients.isNotEmpty(), "found no network client in $srcRoot")
+        val missing = clients.filterNot { "(../engine/src/main/kotlin/dev/svod/engine/$it)" in out }
+        assertTrue(missing.isEmpty(), "$PAGE '## Outbound connections' does not link these network clients: $missing")
+
+        // Every provider that sends text to an endpoint is named, with its endpoint key.
+        val local = setOf("none", "onnx-local", "local-onnx")
+        (SvodConfig.PROVIDERS + SvodConfig.RERANKER_PROVIDERS + SvodConfig.EXTRACTION_PROVIDERS)
+            .filter { it !in local }
+            .forEach { assertBackticked(out, it, "## Outbound connections") }
+        listOf(
+            "embedder.endpoint", "embedder.ollamaEndpoint", "reranker.endpoint",
+            "graph.summaryEndpoint", "memory.extractionEndpoint", "denyPrivateRemotes",
+        ).forEach { assertBackticked(out, it, "## Outbound connections") }
+        assertBackticked(out, defaults.embedder.ollamaEndpoint, "## Outbound connections")
+        assertTrue(
+            defaults.embedder.ollamaEndpoint.startsWith("http://"),
+            "the default Ollama endpoint is no longer plain http; update $PAGE '## Outbound connections'",
+        )
+
+        // The blanket claim the page used to make must not come back.
+        val loc = section("Data location")
+        assertTrue(
+            !Regex("""only if the operator configures a `remote-openai`""").containsMatchIn(loc),
+            "$PAGE '## Data location' must not limit outbound note text to remote-openai",
+        )
     }
 
     @Test
