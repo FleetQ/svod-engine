@@ -85,6 +85,10 @@ class SecurityOverviewDocsTest {
             users = listOf(SvodConfig.UserSettings(userId = "admin", name = "Admin", keyRef = "env:K", admin = true)),
         )
         assertEquals(emptyList(), shared.validate(), "a TLS + users + localAdmin=false shared engine should be valid")
+        // ...but only because that user is an admin, which the page must say.
+        val noAdmin = shared.copy(users = shared.users.map { it.copy(admin = false) }).validate()
+        assertTrue(noAdmin.isNotEmpty(), "validate() no longer requires an admin user off loopback; update $PAGE '## Network exposure'")
+        assertBackticked(net, "admin", "## Network exposure")
     }
 
     @Test
@@ -96,6 +100,10 @@ class SecurityOverviewDocsTest {
         assertBackticked(scan, "secretScanning", "## Pre-commit secret scan")
         assertTrue("off by default" in scan.lowercase(), "$PAGE '## Pre-commit secret scan' must say it is off by default")
         assertTrue("opt-in" in scan.lowercase(), "$PAGE '## Pre-commit secret scan' must say it is opt-in")
+        // `svod-engine init` writes a config with the scan on; the page says so.
+        val init = dev.svod.engine.lifecycle.ConfigInit.generate(Paths.get("x"), "none", "sva_t")
+        assertEquals(true, init.secretScanning, "svod-engine init no longer enables secretScanning; update $PAGE")
+        assertBackticked(scan, "svod-engine init", "## Pre-commit secret scan")
     }
 
     @Test
@@ -120,6 +128,7 @@ class SecurityOverviewDocsTest {
     @Test
     fun auditPathsMatchSource() {
         val audit = section("Audit trail")
+        assertTrue("every mcp tool call" !in audit.lowercase(), "$PAGE '## Audit trail' must not claim every MCP call is audited: read-only calls are not")
         assertBackticked(audit, ".svod/audit/audit.log", "## Audit trail")
         assertBackticked(audit, "audit-api.log", "## Audit trail")
         val node = Files.readString(engineDir.resolve("src/main/kotlin/dev/svod/engine/lifecycle/SvodNode.kt"))
@@ -172,6 +181,9 @@ class SecurityOverviewDocsTest {
             "graph.summaryEndpoint", "memory.extractionEndpoint", "denyPrivateRemotes",
         ).forEach { assertBackticked(out, it, "## Outbound connections") }
         assertBackticked(out, defaults.embedder.ollamaEndpoint, "## Outbound connections")
+        // Where note text goes when an endpoint is left unset.
+        assertBackticked(out, dev.svod.engine.index.OpenAiEmbedder.DEFAULT_ENDPOINT, "## Outbound connections")
+        assertBackticked(out, dev.svod.engine.index.RemoteReranker.DEFAULT_ENDPOINT, "## Outbound connections")
         assertTrue(
             defaults.embedder.ollamaEndpoint.startsWith("http://"),
             "the default Ollama endpoint is no longer plain http; update $PAGE '## Outbound connections'",
@@ -194,6 +206,6 @@ class SecurityOverviewDocsTest {
         )
         assertTrue("TLS" in security && "shared engine" in security, "SECURITY.md must explain TLS for a shared engine")
         assertTrue("`secretScanning`" in security, "SECURITY.md must name the `secretScanning` opt-in")
-        assertTrue(Regex("""off\s+by\s+default""").containsMatchIn(security.lowercase()),"SECURITY.md must say secret scanning is off by default")
+        assertTrue(Regex("""off\s+by\s+default""").containsMatchIn(security.lowercase()), "SECURITY.md must say secret scanning is off by default")
     }
 }

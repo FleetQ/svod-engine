@@ -17,7 +17,7 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
 | How do users authenticate? | People: personal API keys (`svk_…`, 256 random bits). Agents: one MCP bearer token per agent. |
 | Role-based access? | Yes. Per-vault grants: `READER` / `EDITOR` for people, plus engine admin. Agents get per-vault roles. |
 | SSO / SAML / OIDC? | No. |
-| Audit logging? | Yes. Append-only JSON-lines logs for agent actions and for keyed App API requests, plus git authorship on every commit. |
+| Audit logging? | Yes. Append-only JSON-lines logs for agent writes and refused agent calls and for keyed App API requests, plus git authorship on every commit. Successful agent reads and searches are not logged. |
 | Deletion? | Soft delete to `.trash/`, restore, and admin purge. Purged content remains in git history. |
 | Telemetry? | None in the engine. |
 | Third-party data processors? | None by default. Note text goes only to endpoints the operator configures: an embedder (Ollama or OpenAI-compatible), a remote reranker, a graph-summary or memory-extraction LLM (Ollama), and sync/backup git remotes. See [Outbound connections](#outbound-connections). |
@@ -30,7 +30,8 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
   [`SvodConfig.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/SvodConfig.kt). Every
   change is a git commit ([`core/SvodEngine.kt`](../engine/src/main/kotlin/dev/svod/engine/core/SvodEngine.kt),
   [`core/GitRepo.kt`](../engine/src/main/kotlin/dev/svod/engine/core/GitRepo.kt)).
-- The search index (Lucene), the link/graph sidecars and the agent audit log are derived data under
+- The search index (Lucene) and the link/graph sidecars are derived data, and the agent audit log
+  is not (it cannot be rebuilt, so keep it when you delete the index). All of them live under
   the vault's `.svod/` directory, which is never committed
   ([`core/VaultPath.kt`](../engine/src/main/kotlin/dev/svod/engine/core/VaultPath.kt) reserves
   `.git`, `.svod` and `.trash`).
@@ -48,7 +49,7 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
   ([`SvodConfig.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/SvodConfig.kt)).
 - To bind any other address, `SvodConfig.validate()` refuses to start unless **all** of these are
   set: `appApiTls` (HTTPS for the App API), `mcpTls` (HTTPS for MCP), at least one entry in
-  `users`, and `localAdmin` set to false (ADR-0019,
+  `users` with `admin` set to true, and `localAdmin` set to false (ADR-0019,
   [`docs/adr/`](adr/)). There is no plain-HTTP mode off loopback.
 - The keyless loopback admin (`localAdmin`) is accepted only when the peer address is loopback,
   the `Host` header names a loopback host and there is no foreign `Origin`. This blocks DNS
@@ -96,6 +97,7 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
 ## Pre-commit secret scan
 
 - The scan is **opt-in**: `secretScanning` is off by default. Enable it in the config to use it.
+  A config written by `svod-engine init`, and the sample configs in `dist/`, already turn it on.
 - When it is enabled, [`security/SecretScanner.kt`](../engine/src/main/kotlin/dev/svod/engine/security/SecretScanner.kt)
   blocks a write *before* the commit if the note contains a real private key (key material, not
   just a quoted `BEGIN` line) or a high-confidence token pattern (AWS access key id, GitHub,
@@ -107,16 +109,21 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
 
 ## Audit trail
 
-- **Agents.** Every MCP tool call is appended as one JSON line to `.svod/audit/audit.log` inside
-  each vault, created owner-only ([`mcp/AuditLog.kt`](../engine/src/main/kotlin/dev/svod/engine/mcp/AuditLog.kt),
+- **Agents.** Every MCP write (successful, conflicting or blocked), every call refused for the
+  agent's role and every rate-limited call is appended as one JSON line to
+  `.svod/audit/audit.log` inside each vault, created owner-only
+  ([`mcp/AuditLog.kt`](../engine/src/main/kotlin/dev/svod/engine/mcp/AuditLog.kt),
+  [`mcp/SvodTools.kt`](../engine/src/main/kotlin/dev/svod/engine/mcp/SvodTools.kt),
   wired in [`lifecycle/SvodNode.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/SvodNode.kt)).
+  Successful read-only calls (`read`, `search`, `context_pack` and the like) are not logged.
 - **People.** Every keyed App API request, and every refusal, is one JSON line in
   `audit-api.log` in the config directory. The file is created 0600 and never contains request
   bodies, query strings (except the `vault` parameter) or `Authorization` values
   ([`api/ApiAuditLog.kt`](../engine/src/main/kotlin/dev/svod/engine/api/ApiAuditLog.kt)).
 - **Content history.** Every change is a git commit authored by the person or agent who made it.
   An agent acting for a person adds a `Svod-Agent:` trailer.
-- Not audited: keyless loopback requests on a single-user engine (the local UI).
+- Not audited: keyless loopback requests on a single-user engine (the local UI), and successful
+  read-only MCP calls by agents.
 
 ## Deletion and retention
 
@@ -138,6 +145,8 @@ The engine makes no outbound connections except these:
 - **Update check.** When an update check is requested, the engine asks GitHub releases for the
   latest version and the release's published SHA-256 checksum
   ([`lifecycle/UpdateService.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/UpdateService.kt)).
+  When an admin applies an update, the installed self-update script downloads the release asset
+  from GitHub.
 - **Operator-configured services that receive note text.** None of these is on by default
   beyond the local ONNX embedder. Each sends note or conversation text to the endpoint the
   operator sets:
@@ -145,17 +154,18 @@ The engine makes no outbound connections except these:
     `embedder.endpoint`, else `embedder.ollamaEndpoint` (default `http://127.0.0.1:11434`)
     ([`index/OllamaEmbedder.kt`](../engine/src/main/kotlin/dev/svod/engine/index/OllamaEmbedder.kt)).
   - **OpenAI-compatible embedder** (`embedder.provider` `remote-openai` / `openai`): note chunks
-    go to `embedder.endpoint`
+    go to `embedder.endpoint`, which defaults to `https://api.openai.com` when unset
     ([`index/OpenAiEmbedder.kt`](../engine/src/main/kotlin/dev/svod/engine/index/OpenAiEmbedder.kt)).
     The embedder's model list, which an admin can request, calls the same endpoint
     ([`lifecycle/EmbedderController.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/EmbedderController.kt)).
   - **Remote reranker** (`reranker.provider` `remote` / `remote-tei` / `tei`): the query and
-    candidate passages go to `reranker.endpoint`
+    candidate passages go to `reranker.endpoint` (default `http://127.0.0.1:8080`)
     ([`index/RemoteReranker.kt`](../engine/src/main/kotlin/dev/svod/engine/index/RemoteReranker.kt)).
-  - **Graph summaries** (`graph.summaryProvider` `ollama`): note excerpts go to
-    `graph.summaryEndpoint`, else the embedder's endpoint
+  - **Graph summaries** (`graph.summaryProvider` `ollama` / `local-ollama`): note excerpts go to
+    `graph.summaryEndpoint`, else the embedder's endpoint, even when that is a `remote-openai`
+    endpoint
     ([`graphrag/SummaryLlm.kt`](../engine/src/main/kotlin/dev/svod/engine/graphrag/SummaryLlm.kt)).
-  - **Memory extraction** (`memory.extractionProvider` `ollama`): conversation text goes to
+  - **Memory extraction** (`memory.extractionProvider` `ollama` / `local-ollama`): conversation text goes to
     `memory.extractionEndpoint`, else the embedder's Ollama endpoint. It never falls back to a
     `remote-openai` endpoint
     ([`memory/MemoryExtractor.kt`](../engine/src/main/kotlin/dev/svod/engine/memory/MemoryExtractor.kt),
