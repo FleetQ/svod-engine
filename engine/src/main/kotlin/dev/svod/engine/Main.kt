@@ -263,6 +263,10 @@ private fun runEval(args: List<String>) {
     } catch (e: IllegalStateException) {
         System.err.println("svod-engine eval: ${e.message}")
         exitProcess(2)
+    } catch (e: java.io.IOException) {
+        // An unreadable config or golden file is a usage problem, not a crash.
+        System.err.println("svod-engine eval: cannot read ${e.message}")
+        exitProcess(2)
     }
 }
 
