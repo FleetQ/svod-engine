@@ -41,13 +41,14 @@ class RetrievalQualityDocsTest {
         val fx = IndexFixture.create()
         runBlocking { GoldenCorpus.notes.forEach { (path, content) -> fx.seed(path, content) } }
         fx.use {
-            // Leg P as RetrievalEvalTest runs it is not reproducible to 3 decimals. The embedding pass
-            // re-writes every note (keyword-only first, then with vectors) from `maxThreads` workers,
-            // so Lucene's doc order — which breaks equal BM25 scores — depends on which thread wins;
-            // and BM25 counts the deleted copies until a background merge drops them. KEYWORD
-            // nDCG@10 measured 0.694 alone and 0.698 next to RetrievalEvalTest. So: one embed worker
-            // (fixed re-write order), then close (waits for merges) and reopen. The reopened index is
-            // current (same model, every blob indexed) and writes no documents.
+            // Deliberately NOT exactly leg P as RetrievalEvalTest builds it. Hypothesis (not proven):
+            // the embedding pass re-writes every note (keyword-only first, then with vectors) from
+            // `maxThreads` workers, so Lucene's doc order, which breaks equal BM25 scores, may depend
+            // on which thread wins; and BM25 counts deleted copies until a background merge drops
+            // them. Observed once during development: next to RetrievalEvalTest, the default build
+            // measured KEYWORD nDCG@10 0.698 where a lone run measured 0.694; not reproduced since.
+            // So: one embed worker (fixed re-write order), then close (waits for merges) and reopen.
+            // The reopened index is current (same model, every blob indexed) and writes no documents.
             fun open() = IndexService(fx.root, fx.indexDir, BagOfWordsEmbedder(), maxThreads = 1).start()
             open().close()
             open().use { index ->

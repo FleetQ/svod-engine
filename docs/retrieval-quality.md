@@ -67,12 +67,15 @@ These are the numbers of the test suite's leg P: the committed bilingual synthet
 (`GoldenCorpus`, 27 notes, 37 queries) with a hermetic bag-of-words embedder and no reranker.
 `RetrievalQualityDocsTest` runs leg P and fails when this table no longer matches it.
 
-To get the same numbers on every run, the docs test builds the index with one embedding worker,
-then closes and reopens it before measuring. With several workers, the order in which notes are
-re-written decides how equal BM25 scores are ordered. Lucene also keeps counting deleted copies
-until a background merge removes them. Either can move the third decimal: KEYWORD nDCG@10 has
-measured 0.694 or 0.698 depending on the run. `RetrievalEvalTest` only checks floors, so it is not
-affected.
+The docs test does not build the index exactly as `RetrievalEvalTest` does: it uses one embedding
+worker, then closes and reopens the index before measuring. The reason is a hypothesis, not a proven
+cause. With several workers, the order in which notes are re-written may decide how equal BM25
+scores are ordered, and Lucene keeps counting deleted copies until a background merge removes them.
+Either could move the third decimal. The evidence is one observation during development: with the
+default setup, one run that shared the JVM with `RetrievalEvalTest` measured KEYWORD nDCG@10 at
+0.698 instead of 0.694 (MRR 0.678 instead of 0.677). An independent re-run did not reproduce this.
+With the one-worker build, the test matched the table in every run combination tried.
+`RetrievalEvalTest` only checks floors, so it is not affected either way.
 
 | Run | R@1 | R@5 | R@10 | nDCG@10 | MRR |
 |---|---|---|---|---|---|
