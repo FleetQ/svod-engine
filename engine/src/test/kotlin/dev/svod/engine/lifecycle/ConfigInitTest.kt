@@ -140,6 +140,10 @@ class ConfigInitTest {
 
         val odd = ConfigInit.codexToml(sample(), "a\"b\\c")
         assertTrue(odd.contains("\"Bearer a\\\"b\\\\c\""), odd)
+
+        val control = ConfigInit.codexToml(sample(), "x\ny\u0001")
+        assertEquals(3, control.lines().size, control)
+        assertTrue(control.contains("\"Bearer x\\ny\\u0001\""), control)
     }
 
     @Test
