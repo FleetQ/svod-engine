@@ -17,8 +17,8 @@ independently of the engine; each entry notes the contract version it ships.
   set: recall@1/5/10, nDCG@10 and MRR for HYBRID, KEYWORD and SEMANTIC (SEMANTIC skipped with embedder `none`), per
   `# Section` group, with the embedder and reranker from the config. It writes no notes and makes no commits; the
   index may catch up to HEAD as at engine start. Gains paths that are not notes at HEAD are warned about, and a
-  held index gives "stop the engine first". `RetrievalEval` and `GoldenSetFile` are now part of the engine (`src/main`,
-  same package and API) so the CLI can use them. Sample file `examples/golden.sample.jsonl`; new page `docs/retrieval-quality.md` with the leg P baseline,
+  held index gives "stop the engine first". `RetrievalEval` and `GoldenSetFile` are now also compiled into the engine
+  (`src/main`, same package and API) so the CLI can use them. Sample file `examples/golden.sample.jsonl`; new page `docs/retrieval-quality.md` with the leg P baseline,
   kept in sync by `RetrievalQualityDocsTest`. No contract change.
 
 ### Docs — Svod vs Letta Context Repositories
