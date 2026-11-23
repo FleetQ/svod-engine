@@ -372,7 +372,11 @@ Fastest start: let the engine write the config for you, then run with it.
 svod-engine init ~/svod                    # writes ~/svod/config.json (never overwrites); add --embedder onnx-local for semantic search
 svod-engine ~/svod/config.json             # start the engine with it
 svod-engine doctor ~/svod/config.json      # check the setup without changing anything (exits 1 on a failure)
+svod-engine eval ~/svod/config.json golden.jsonl # score search quality on your own notes (engine stopped)
 ```
+
+`eval` reports recall@k, nDCG@10 and MRR per search mode for a golden set you write; see
+[Retrieval quality](docs/retrieval-quality.md) for the file format and the baseline numbers.
 
 From source, the same is `cd engine && ./gradlew run --args="init $HOME/svod"`.
 

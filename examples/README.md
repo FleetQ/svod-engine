@@ -39,6 +39,13 @@ Copy-paste MCP setups for LangGraph / LangChain, the OpenAI Agents SDK, the Verc
 live in [Use Svod from your agent framework](../docs/integrations-agent-frameworks.md). Each one
 connects to the engine's MCP endpoint with a bearer token and calls `search` and `remember`.
 
+## Retrieval eval
+
+[`golden.sample.jsonl`](golden.sample.jsonl) is a commented example golden set for
+`svod-engine eval <config.json> <golden.jsonl>`, which scores search on your own vault (engine stopped).
+Replace its paths with notes from your vault. Format, metrics and baseline numbers:
+[Retrieval quality](../docs/retrieval-quality.md).
+
 ## FleetQ integration
 
 FleetQ attaches to Svod like any other MCP client — a first-party *reference* integration

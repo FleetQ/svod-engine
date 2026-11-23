@@ -1,0 +1,25 @@
+# Sample golden set for `svod-engine eval <config.json> <golden.jsonl>`.
+#
+# One JSON object per line: "q" is a query as you would type it, "gains" maps a note path
+# (relative to the vault root) to how relevant that note is for the query:
+#   3 = the note that answers the question
+#   2 = a strong, useful match
+#   1 = related, fine to see in the list
+#   0 = not relevant (same as leaving the path out)
+# Every query needs at least one note with a gain above 0.
+#
+# Blank lines and lines starting with '#' are skipped. A '# Section ...' line starts a group:
+# every query below it is also reported on its own, so a weak subset (another language, a
+# harder kind of question) is not hidden by the average.
+#
+# Copy this file next to your config, replace the paths with notes from your own vault, and
+# keep it out of any public repository if the queries say something private.
+
+# Section 1 - en
+{"q": "how do I deploy the engine", "gains": {"ops/deploy.md": 3, "ops/launchd.md": 1}}
+{"q": "where do the nightly backups go", "gains": {"ops/backup.md": 3}}
+{"q": "decision about the search ranking", "gains": {"decisions/search-ranking.md": 3, "notes/search-ideas.md": 1}}
+
+# Section 2 - bg
+{"q": "как се деплойва engine-ът", "gains": {"ops/deploy.md": 3, "ops/launchd.md": 1}}
+{"q": "къде отиват нощните бекъпи", "gains": {"ops/backup.md": 3}}

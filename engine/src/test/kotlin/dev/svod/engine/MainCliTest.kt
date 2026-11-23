@@ -68,6 +68,13 @@ class MainCliTest {
     }
 
     @Test
+    fun `eval is parsed and listed in the usage`() {
+        assertEquals(Command.Eval(listOf("c.json", "g.jsonl")), parseCommand(arrayOf("eval", "c.json", "g.jsonl")))
+        val u = usageText()
+        assertTrue("svod-engine eval <config.json> <golden.jsonl>" in u, u)
+    }
+
+    @Test
     fun `version names the engine and the contract`() {
         assertEquals(
             "svod-engine ${SvodNode.ENGINE_VERSION} (App API contract ${ApiCompatibility.CURRENT_CONTRACT_VERSION})",
