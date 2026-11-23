@@ -179,6 +179,15 @@ class ReadmeConsistencyTest {
     }
 
     @Test
+    fun `How it compares links to the Mem0 page and the file exists`() {
+        assertTrue(
+            "](docs/compare-mem0.md)" in section("How it compares"),
+            "README '## How it compares' has no link to docs/compare-mem0.md",
+        )
+        assertTrue(Files.exists(repoRoot.resolve("docs/compare-mem0.md")), "docs/compare-mem0.md does not exist")
+    }
+
+    @Test
     fun `How it compares links to the Letta page and the file exists`() {
         assertTrue(
             "](docs/compare-letta.md)" in section("How it compares"),
