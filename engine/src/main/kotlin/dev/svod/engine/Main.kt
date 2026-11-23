@@ -1,6 +1,7 @@
 package dev.svod.engine
 
 import dev.svod.engine.core.SvodEngine
+import dev.svod.engine.index.VaultEval
 import dev.svod.engine.lifecycle.ApiCompatibility
 import dev.svod.engine.lifecycle.ConfigInit
 import dev.svod.engine.lifecycle.Doctor
@@ -45,6 +46,9 @@ import kotlin.system.exitProcess
  * ports and the embedder model without changing anything, prints one line per check and exits 1
  * when any check fails.
  *
+ * Retrieval eval: `svod-engine eval <config.json> <golden.jsonl>` scores search (recall@k, nDCG@10, MRR) on the
+ * configured vault against a golden set, with the engine stopped and without writing notes (see [VaultEval]).
+ *
  * `svod-engine --help` (`-h`) prints usage and `svod-engine --version` (`-V`) prints the engine
  * and App API contract versions; both exit before any config is read.
  */
@@ -84,6 +88,7 @@ fun main(args: Array<String>) {
         is Command.Clone -> return runClone(cmd.args)
         is Command.Init -> return runInit(cmd.args)
         is Command.Doctor -> return runDoctor(cmd.args)
+        is Command.Eval -> return runEval(cmd.args)
         is Command.Run -> cmd.configPath
     }
     val config = configPath
@@ -116,6 +121,7 @@ internal sealed interface Command {
     data class Clone(val args: List<String>) : Command
     data class Init(val args: List<String>) : Command
     data class Doctor(val args: List<String>) : Command
+    data class Eval(val args: List<String>) : Command
     data class Unknown(val flag: String) : Command
 }
 
@@ -134,6 +140,7 @@ internal fun parseCommand(args: Array<String>): Command {
         first == "clone" -> Command.Clone(args.drop(1))
         first == "init" -> Command.Init(args.drop(1))
         first == "doctor" -> Command.Doctor(args.drop(1))
+        first == "eval" -> Command.Eval(args.drop(1))
         first.startsWith("-") -> Command.Unknown(first)
         else -> Command.Run(Paths.get(first))
     }
@@ -147,6 +154,8 @@ internal fun usageText(): String = """
     |      write a new config.json in dir (default ~/svod) and print how to connect an agent
     |  svod-engine doctor [config.json]
     |      check the setup (config, secrets, vault, ports, model) without changing anything; exits 1 on any failure
+    |  svod-engine eval <config.json> <golden.jsonl>
+    |      score search quality (recall@k, nDCG@10, MRR) on your vault against a golden set, then exit (engine stopped; never writes notes)
     |  svod-engine import <config.json> <obsidian-dir> [into]
     |      import an Obsidian vault into the configured vault, then exit (engine stopped)
     |  svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]
@@ -237,6 +246,28 @@ private fun runDoctor(args: List<String>) {
     }
     Doctor.format(checks).forEach(::println)
     exitProcess(Doctor.exitCode(checks))
+}
+
+/** `svod-engine eval <config.json> <golden.jsonl>`: score search on the vault; engine stopped, no notes written. */
+private fun runEval(args: List<String>) {
+    if (args.size != 2 || args.any { it.startsWith("-") }) {
+        System.err.println("usage: svod-engine eval <config.json> <golden.jsonl>")
+        exitProcess(2)
+    }
+    try {
+        val config = SvodConfig.loadOrThrowValidated(Paths.get(args[0]))
+        VaultEval.run(config, Paths.get(args[1]))
+    } catch (e: IllegalArgumentException) {
+        System.err.println("svod-engine eval: ${e.message}")
+        exitProcess(2)
+    } catch (e: IllegalStateException) {
+        System.err.println("svod-engine eval: ${e.message}")
+        exitProcess(2)
+    } catch (e: java.io.IOException) {
+        // An unreadable config or golden file is a usage problem, not a crash.
+        System.err.println("svod-engine eval: cannot read ${e.message}")
+        exitProcess(2)
+    }
 }
 
 private fun runImport(args: List<String>) {
