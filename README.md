@@ -499,7 +499,7 @@ a working, dependency-free reference you can crib from.)
 | **Multi-host replication** | ✅ git transport | ⚠️ hosted | ⚠️ | ⚠️ cloud sync | ⚠️ hosted | ⚠️ sync apps | ⚠️ |
 | **Lock-in** | None (git clone) | High | Medium | Low | High | None | High |
 | **Licence** | Apache-2.0 | Apache-2.0 | Apache-2.0 | AGPL-3.0 | — | Proprietary (free app) | Varies |
-| **Hosted tier** | ❌ self-host only (no hosted product yet) | ✅ platform (paid) | ✅ cloud | ✅ cloud (paid) | ✅ cloud | ⚠️ paid Sync/Publish add-ons | Varies |
+| **Hosted tier** | ❌ self-host only (no hosted product yet) | ✅ hosted platform | ✅ cloud | ✅ cloud (paid) | ✅ cloud | ⚠️ paid Sync/Publish add-ons | Varies |
 
 **Where Svod wins:** auditability, durability, and provenance — memory as a *substrate you own
 and can inspect*, not a service you query and trust. **Where the others may fit better:** if
@@ -510,6 +510,8 @@ restore it" beats "it's someone else's database."
 *(Comparison reflects each tool's typical/default posture; specific configurations vary.)*
 
 Choosing between Markdown + MCP memory tools? See [Svod vs Basic Memory](docs/compare-basic-memory.md).
+
+Moving off a hosted memory store? See [Svod vs Mem0](docs/compare-mem0.md).
 
 Weighing git-backed agent memory? See [Svod vs Letta Context Repositories](docs/compare-letta.md).
 
