@@ -24,8 +24,9 @@ independently of the engine; each entry notes the contract version it ships.
   as `[[wikilinks]]` grouped by subfolder, with title, last change date and author/agent) and `log.md` (the
   folder's commits from git, newest first: UTC date, author/agent, message) into each named folder, or every
   top-level folder with notes when none is named. Both files land in one guarded `digest: <folder>` commit by
-  `svod`; the output depends only on git history and digest commits are left out of `log.md`, so a re-run with
-  nothing new makes no commit. A file without the `generated: svod-folder-digest` frontmatter marker is never
+  `svod`; the output depends only on git history, and digest commits and commits that changed only the digest
+  files are left out of `log.md` (the newest 200 other commits are kept), so a re-run with nothing new makes no
+  commit, however long the folder's history. A file without the `generated: svod-folder-digest` frontmatter marker is never
   overwritten (the folder is reported as skipped). No contract change.
 
 ### Docs — Svod vs Letta Context Repositories

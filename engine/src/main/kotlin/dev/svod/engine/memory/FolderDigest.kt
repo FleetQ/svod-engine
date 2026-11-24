@@ -31,6 +31,7 @@ object FolderDigest {
     data class Result(val written: List<String>, val unchanged: List<String>, val skipped: Map<String, String>)
 
     suspend fun run(engine: SvodEngine, folders: List<String> = emptyList(), maxLog: Int = 200): Result {
+        require(maxLog > 0) { "maxLog must be positive: $maxLog" }
         val all = engine.list()
         val targets = folders.ifEmpty {
             all.filter { it.endsWith(".md") && '/' in it }.map { it.substringBefore('/') }.distinct().sorted()
@@ -58,8 +59,9 @@ object FolderDigest {
                 skipped[folder] = "no notes"
                 continue
             }
+            val others = all.filter { it.startsWith("$folder/") && it != indexPath && it != logPath }
             val index = renderIndex(engine, folder, notes)
-            val log = renderLog(folder, engine.history(folder, maxLog))
+            val log = renderLog(folder, logCommits(engine, folder, indexPath, logPath, others, maxLog))
             if (index == currentIndex?.text && log == currentLog?.text) {
                 unchanged.add(folder)
                 continue
@@ -115,10 +117,45 @@ object FolderDigest {
         return parsed.body.lineSequence().firstOrNull { it.startsWith("# ") }?.removePrefix("# ")?.trim()?.takeIf { it.isNotEmpty() }
     }
 
-    private fun renderLog(folder: String, commits: List<CommitInfo>): String {
+    /**
+     * The newest [maxLog] commits of [folder], leaving out digest commits (message `digest: `) and commits that
+     * touched only the digest files. The filter runs after `git log -n`, so the window is widened until [maxLog]
+     * commits survive or history runs out; otherwise each digest commit would push a real entry out of the
+     * window and every re-run would commit again.
+     *
+     * [CommitInfo] carries no file list, so "touched only the digest files" means: in the history of index.md or
+     * log.md and in the history of no other file now in the folder ([others]).
+     */
+    private suspend fun logCommits(
+        engine: SvodEngine,
+        folder: String,
+        indexPath: String,
+        logPath: String,
+        others: List<String>,
+        maxLog: Int,
+    ): List<CommitInfo> {
+        var fetch = maxLog
+        while (true) {
+            val commits = engine.history(folder, fetch)
+            // Every commit inside this window that touched a path is inside that path's newest `fetch` commits.
+            val digestTouching = (engine.history(indexPath, fetch) + engine.history(logPath, fetch))
+                .filter { !it.message.startsWith(MESSAGE_PREFIX) }
+                .mapTo(HashSet()) { it.commit }
+            val touchesOther = HashSet<String>()
+            if (digestTouching.isNotEmpty()) {
+                for (p in others) engine.history(p, fetch).mapTo(touchesOther) { it.commit }
+            }
+            val kept = commits.filter {
+                !it.message.startsWith(MESSAGE_PREFIX) && (it.commit !in digestTouching || it.commit in touchesOther)
+            }
+            if (kept.size >= maxLog || commits.size < fetch) return kept.take(maxLog)
+            fetch = if (fetch > Int.MAX_VALUE / 2) Int.MAX_VALUE else fetch * 2
+        }
+    }
+
+    private fun renderLog(folder: String, kept: List<CommitInfo>): String {
         val sb = StringBuilder(header("Recent changes in $folder/, newest first"))
         sb.append('\n')
-        val kept = commits.filter { !it.message.startsWith(MESSAGE_PREFIX) }
         if (kept.isEmpty()) sb.append("_No commits yet._\n")
         for (c in kept) {
             val subject = c.message.lineSequence().firstOrNull().orEmpty().trim()

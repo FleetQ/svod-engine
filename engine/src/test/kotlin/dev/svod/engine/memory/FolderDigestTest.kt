@@ -112,6 +112,53 @@ class FolderDigestTest {
     }
 
     @Test
+    fun `a user-written log is never overwritten`() = runBlocking {
+        write("proj/a.md", "# A\n", alice)
+        write("proj/log.md", "my own log\n", alice)
+        val head = engine.head()
+
+        val r = FolderDigest.run(engine, listOf("proj"))
+        assertTrue("proj" in r.skipped, r.toString())
+        assertEquals(head, engine.head())
+        assertEquals("my own log\n", engine.read("proj/log.md")!!.text)
+        assertNull(engine.read("proj/index.md"))
+    }
+
+    @Test
+    fun `a folder with more commits than maxLog stays stable on re-run`() = runBlocking {
+        write("proj/a.md", "# A\n", alice)
+        write("proj/b.md", "# B\n", alice)
+        write("proj/c.md", "# C\n", bob)
+
+        assertEquals(listOf("proj"), FolderDigest.run(engine, listOf("proj"), maxLog = 2).written)
+        val log1 = engine.read("proj/log.md")!!.text
+        assertEquals(2, logEntries(log1).size, log1)
+        val head = engine.head()
+
+        repeat(2) {
+            val r = FolderDigest.run(engine, listOf("proj"), maxLog = 2)
+            assertEquals(listOf("proj"), r.unchanged, r.toString())
+            assertEquals(head, engine.head())
+        }
+        assertEquals(log1, engine.read("proj/log.md")!!.text)
+    }
+
+    @Test
+    fun `a commit that touched only the digest files is not logged`() = runBlocking {
+        write("proj/a.md", "# A\n", alice)
+        FolderDigest.run(engine, listOf("proj"))
+        val log1 = engine.read("proj/log.md")!!.text
+        val idx = engine.read("proj/index.md")!!
+        val edited = engine.write("proj/index.md", idx.text + "\nhand note\n", idx.revision, alice)
+        assertTrue(edited is WriteOutcome.Success, edited.toString())
+        assertTrue(engine.history("proj/index.md", 1).first().message.lines().first().let { !it.startsWith("digest: ") })
+
+        val r = FolderDigest.run(engine, listOf("proj"))
+        assertEquals(listOf("proj"), r.written)
+        assertEquals(log1, engine.read("proj/log.md")!!.text)
+    }
+
+    @Test
     fun `no folder arguments digests every top-level folder with notes`() = runBlocking {
         write("root.md", "# Root\n", alice)
         write("one/a.md", "# A\n", alice)
