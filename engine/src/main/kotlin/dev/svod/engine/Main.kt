@@ -8,6 +8,7 @@ import dev.svod.engine.lifecycle.Doctor
 import dev.svod.engine.lifecycle.EngineDiscovery
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
+import dev.svod.engine.memory.FolderDigest
 import dev.svod.engine.migrate.BasicMemoryImport
 import dev.svod.engine.migrate.ClaudeMemoryImport
 import dev.svod.engine.migrate.NotionImport
@@ -49,6 +50,9 @@ import kotlin.system.exitProcess
  * Retrieval eval: `svod-engine eval <config.json> <golden.jsonl>` scores search (recall@k, nDCG@10, MRR) on the
  * configured vault against a golden set, with the engine stopped and without writing notes (see [VaultEval]).
  *
+ * Folder digest: `svod-engine digest <config.json> [folder...]` writes a generated index.md and log.md into each
+ * folder in one commit per folder, with the engine stopped (see [FolderDigest]).
+ *
  * `svod-engine --help` (`-h`) prints usage and `svod-engine --version` (`-V`) prints the engine
  * and App API contract versions; both exit before any config is read.
  */
@@ -89,6 +93,7 @@ fun main(args: Array<String>) {
         is Command.Init -> return runInit(cmd.args)
         is Command.Doctor -> return runDoctor(cmd.args)
         is Command.Eval -> return runEval(cmd.args)
+        is Command.Digest -> return runDigest(cmd.args)
         is Command.Run -> cmd.configPath
     }
     val config = configPath
@@ -122,6 +127,7 @@ internal sealed interface Command {
     data class Init(val args: List<String>) : Command
     data class Doctor(val args: List<String>) : Command
     data class Eval(val args: List<String>) : Command
+    data class Digest(val args: List<String>) : Command
     data class Unknown(val flag: String) : Command
 }
 
@@ -141,6 +147,7 @@ internal fun parseCommand(args: Array<String>): Command {
         first == "init" -> Command.Init(args.drop(1))
         first == "doctor" -> Command.Doctor(args.drop(1))
         first == "eval" -> Command.Eval(args.drop(1))
+        first == "digest" -> Command.Digest(args.drop(1))
         first.startsWith("-") -> Command.Unknown(first)
         else -> Command.Run(Paths.get(first))
     }
@@ -156,6 +163,8 @@ internal fun usageText(): String = """
     |      check the setup (config, secrets, vault, ports, model) without changing anything; exits 1 on any failure
     |  svod-engine eval <config.json> <golden.jsonl>
     |      score search quality (recall@k, nDCG@10, MRR) on your vault against a golden set, then exit (engine stopped; never writes notes)
+    |  svod-engine digest <config.json> [folder...]
+    |      write a generated index.md and log.md into each folder (default: every top-level folder), then exit (engine stopped)
     |  svod-engine import <config.json> <obsidian-dir> [into]
     |      import an Obsidian vault into the configured vault, then exit (engine stopped)
     |  svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]
@@ -267,6 +276,21 @@ private fun runEval(args: List<String>) {
         // An unreadable config or golden file is a usage problem, not a crash.
         System.err.println("svod-engine eval: cannot read ${e.message}")
         exitProcess(2)
+    }
+}
+
+/** `svod-engine digest <config.json> [folder...]`: generated index.md + log.md per folder; engine stopped. */
+private fun runDigest(args: List<String>) {
+    if (args.isEmpty() || args.any { it.startsWith("-") }) {
+        System.err.println("usage: svod-engine digest <config.json> [folder...]")
+        exitProcess(2)
+    }
+    val config = SvodConfig.loadOrThrowValidated(Paths.get(args[0]))
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    SvodEngine.open(config.vault(), scope, SecretScanner(config.secretScanning)).use { engine ->
+        val r = runBlocking { FolderDigest.run(engine, args.drop(1)) }
+        println("digest: ${r.written.size} written, ${r.unchanged.size} unchanged, ${r.skipped.size} skipped")
+        r.skipped.forEach { (folder, reason) -> println("  skipped $folder: $reason") }
     }
 }
 

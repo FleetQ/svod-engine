@@ -75,6 +75,13 @@ class MainCliTest {
     }
 
     @Test
+    fun `digest is parsed and listed in the usage`() {
+        assertEquals(Command.Digest(listOf("c.json", "proj")), parseCommand(arrayOf("digest", "c.json", "proj")))
+        val u = usageText()
+        assertTrue("svod-engine digest <config.json> [folder...]" in u, u)
+    }
+
+    @Test
     fun `version names the engine and the contract`() {
         assertEquals(
             "svod-engine ${SvodNode.ENGINE_VERSION} (App API contract ${ApiCompatibility.CURRENT_CONTRACT_VERSION})",
