@@ -350,7 +350,8 @@ curl -fsSL https://raw.githubusercontent.com/FleetQ/svod-engine/main/dist/instal
 ```
 
 [`dist/install.sh`](dist/install.sh) downloads the latest release for your machine (to pin one, end the
-pipe with `| SVOD_VERSION=v1.2.3 sh`), checks it against the release's `SHA256SUMS`, unpacks it to `~/.svod/<version>`
+pipe with `| SVOD_VERSION=v1.2.3 sh`), checks it against the release's `SHA256SUMS` (it stops on a mismatch, and only warns
+if the release has no `SHA256SUMS` or no `sha256sum`/`shasum` is installed), unpacks it to `~/.svod/<version>`
 (with a `~/.svod/current` link), runs `init ~/svod` and prints the next steps. An existing
 `~/svod/config.json` is never overwritten. On Windows, download `SvodEngine-windows-x64.zip` and follow
 the manual steps below.
