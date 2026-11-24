@@ -1,6 +1,7 @@
 package dev.svod.engine.lifecycle
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
@@ -82,30 +83,89 @@ object ConfigInit {
 
     fun mcpUrl(config: SvodConfig): String = "http://${config.host}:${config.mcpPort}/mcp"
 
-    /** The Claude Desktop / Cursor `mcpServers` entry. */
-    fun mcpServersJson(config: SvodConfig, token: String): String = prettyJson.encodeToString(
-        kotlinx.serialization.json.JsonObject.serializer(),
-        buildJsonObject {
-            putJsonObject("mcpServers") {
-                putJsonObject(SERVER_NAME) {
-                    put("url", mcpUrl(config))
-                    putJsonObject("headers") { put("Authorization", "Bearer $token") }
+    /**
+     * A JSON MCP client entry: `{ <root>: { svod-memory: { [type], <urlKey>: url, headers: { Authorization } } } }`.
+     * The clients differ only in the root key, the URL key name and whether they want `type`.
+     */
+    private fun serverJson(root: String, urlKey: String, config: SvodConfig, token: String, type: String? = null): String =
+        prettyJson.encodeToString(
+            JsonObject.serializer(),
+            buildJsonObject {
+                putJsonObject(root) {
+                    putJsonObject(SERVER_NAME) {
+                        if (type != null) put("type", type)
+                        put(urlKey, mcpUrl(config))
+                        putJsonObject("headers") { put("Authorization", "Bearer $token") }
+                    }
                 }
+            },
+        )
+
+    /** The Claude Desktop / Cursor `mcpServers` entry. */
+    fun mcpServersJson(config: SvodConfig, token: String): String = serverJson("mcpServers", "url", config, token)
+
+    /** One client's ready-to-paste setup: [where] names the config file or command, [lang] the code-fence language. */
+    data class ClientSnippet(val client: String, val where: String, val lang: String, val body: String)
+
+    /** The VS Code / GitHub Copilot `mcp.json` entry (`servers`, `type: http`). */
+    fun vscodeJson(config: SvodConfig, token: String): String = serverJson("servers", "url", config, token, type = "http")
+
+    /** The Windsurf `mcp_config.json` entry (`serverUrl`). */
+    fun windsurfJson(config: SvodConfig, token: String): String = serverJson("mcpServers", "serverUrl", config, token)
+
+    /** The Gemini CLI `settings.json` entry (`httpUrl` = streamable HTTP). */
+    fun geminiJson(config: SvodConfig, token: String): String = serverJson("mcpServers", "httpUrl", config, token)
+
+    /** A TOML basic string: `\`, `"` and control characters escaped, so any value stays one valid string. */
+    private fun tomlString(s: String): String = buildString {
+        append('"')
+        for (c in s) {
+            when {
+                c == '\\' -> append("\\\\")
+                c == '"' -> append("\\\"")
+                c == '\n' -> append("\\n")
+                c == '\r' -> append("\\r")
+                c == '\t' -> append("\\t")
+                c < ' ' || c == '\u007f' -> append("\\u%04X".format(c.code))
+                else -> append(c)
             }
-        },
+        }
+        append('"')
+    }
+
+    /** The OpenAI Codex CLI `config.toml` table. */
+    fun codexToml(config: SvodConfig, token: String): String =
+        "[mcp_servers.$SERVER_NAME]\n" +
+            "url = ${tomlString(mcpUrl(config))}\n" +
+            "http_headers = { \"Authorization\" = ${tomlString("Bearer $token")} }"
+
+    /** The Claude Code CLI line. */
+    fun claudeCodeLine(config: SvodConfig, token: String): String =
+        "claude mcp add --transport http $SERVER_NAME ${mcpUrl(config)} --header \"Authorization: Bearer $token\""
+
+    /** Every supported client's setup, in the order `init` prints them and the README shows them. */
+    fun clientSnippets(config: SvodConfig, token: String): List<ClientSnippet> = listOf(
+        ClientSnippet("Claude Desktop / Cursor", "add to the MCP config", "json", mcpServersJson(config, token)),
+        ClientSnippet("Claude Code", "run", "sh", claudeCodeLine(config, token)),
+        ClientSnippet("Codex CLI", "add to ~/.codex/config.toml", "toml", codexToml(config, token)),
+        ClientSnippet(
+            "VS Code / GitHub Copilot",
+            "add to .vscode/mcp.json or the user-level MCP config",
+            "json",
+            vscodeJson(config, token),
+        ),
+        ClientSnippet("Windsurf", "add to ~/.codeium/windsurf/mcp_config.json", "json", windsurfJson(config, token)),
+        ClientSnippet("Gemini CLI", "add to ~/.gemini/settings.json", "json", geminiJson(config, token)),
     )
 
-    /** Everything a new user pastes to connect an agent: client config, CLI line, system prompt. */
+    /** Everything a new user pastes to connect an agent: client configs, CLI line, system prompt. */
     fun clientSetup(config: SvodConfig, token: String): String = buildString {
-        val url = mcpUrl(config)
-        appendLine("Claude Desktop / Cursor — add to the MCP config:")
-        appendLine()
-        appendLine(mcpServersJson(config, token))
-        appendLine()
-        appendLine("Claude Code:")
-        appendLine()
-        appendLine("  claude mcp add --transport http $SERVER_NAME $url --header \"Authorization: Bearer $token\"")
-        appendLine()
+        for (s in clientSnippets(config, token)) {
+            appendLine("${s.client} — ${s.where}:")
+            appendLine()
+            appendLine(if (s.lang == "sh") s.body.lines().joinToString("\n") { "  $it" } else s.body)
+            appendLine()
+        }
         appendLine("System prompt for your agent:")
         appendLine()
         appendLine(SYSTEM_PROMPT)

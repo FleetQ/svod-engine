@@ -29,6 +29,46 @@ class ReadmeConsistencyTest {
 
     private fun advertisedTools(): List<String> = ADVERTISED_TOOLS
 
+    /**
+     * The fenced json/toml/sh blocks under `### <heading>`, up to the next `###`/`####` heading, each as
+     * (lead-in line before the fence with backticks removed, fence language, body).
+     */
+    private fun subsectionCodeBlocks(heading: String): List<Triple<String, String, String>> {
+        val lines = readme.lines()
+        val start = lines.indexOfFirst { it.trim() == "### $heading" }
+        assertTrue(start >= 0, "README has no '### $heading' subsection")
+        val end = (start + 1 until lines.size).firstOrNull {
+            lines[it].startsWith("### ") || lines[it].startsWith("#### ") || lines[it].startsWith("## ")
+        } ?: lines.size
+        val blocks = mutableListOf<Triple<String, String, String>>()
+        var i = start + 1
+        while (i < end) {
+            val open = lines[i]
+            if (open.startsWith("```") && open.length > 3) {
+                val lang = open.removePrefix("```").trim()
+                val close = (i + 1 until end).firstOrNull { lines[it].trimEnd() == "```" }
+                    ?: error("unclosed ```$lang fence at README line ${i + 1}")
+                if (lang in setOf("json", "toml", "sh")) {
+                    val label = (i - 1 downTo start + 1).map { lines[it] }.firstOrNull { it.isNotBlank() }.orEmpty()
+                    blocks += Triple(label.replace("`", "").trim(), lang, lines.subList(i + 1, close).joinToString("\n"))
+                }
+                i = close + 1
+            } else {
+                i++
+            }
+        }
+        return blocks
+    }
+
+    @Test
+    fun `the Connecting an LLM agent snippets equal the init output`() {
+        val dir = Files.createTempDirectory("svod-readme")
+        val config = dev.svod.engine.lifecycle.ConfigInit.generate(dir, "none", "friday-write-token")
+        val expected = dev.svod.engine.lifecycle.ConfigInit.clientSnippets(config, "friday-write-token")
+            .map { Triple("${it.client} — ${it.where}:", it.lang, it.body.trimEnd()) }
+        assertEquals(expected, subsectionCodeBlocks("Connecting an LLM agent"))
+    }
+
     private companion object {
         /** A Markdown table cell boundary: a `|` not escaped as `\|`. */
         val UNESCAPED_PIPE = Regex("""(?<!\\)\|""")
