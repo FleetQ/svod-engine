@@ -96,12 +96,14 @@ object FolderDigest {
 
     private suspend fun renderIndex(engine: SvodEngine, folder: String, notes: List<String>): String {
         val sb = StringBuilder(header("Notes in $folder/"))
-        val groups = notes.sorted().groupBy { it.removePrefix("$folder/").substringBeforeLast('/', "") }
+        // A subfolder's own generated index.md / log.md (from `digest proj/sub`) is not a note to list.
+        val texts = notes.sorted().associateWith { engine.read(it)?.text.orEmpty() }.filterValues { !hasMarker(it) }
+        val groups = texts.keys.groupBy { it.removePrefix("$folder/").substringBeforeLast('/', "") }
         for ((sub, paths) in groups.toSortedMap()) {
             sb.append('\n')
             if (sub.isNotEmpty()) sb.append("## $sub\n\n")
             for (path in paths) {
-                val text = engine.read(path)?.text.orEmpty()
+                val text = texts.getValue(path)
                 val title = titleOf(text) ?: path.substringAfterLast('/').removeSuffix(".md")
                 val last = engine.history(path, 1).firstOrNull()
                 val change = last?.let { " — ${DAY.format(Instant.ofEpochSecond(it.epochSeconds))} · ${who(it.authorName, it.agent)}" }.orEmpty()
@@ -138,20 +140,23 @@ object FolderDigest {
         while (true) {
             val commits = engine.history(folder, fetch)
             // Every commit inside this window that touched a path is inside that path's newest `fetch` commits.
-            val digestTouching = (engine.history(indexPath, fetch) + engine.history(logPath, fetch))
-                .filter { !it.message.startsWith(MESSAGE_PREFIX) }
+            // Commits that touched a digest file and (so far) no other file of the folder.
+            val digestOnly = (engine.history(indexPath, fetch) + engine.history(logPath, fetch))
+                .filter { !isDigestCommit(it) }
                 .mapTo(HashSet()) { it.commit }
-            val touchesOther = HashSet<String>()
-            if (digestTouching.isNotEmpty()) {
-                for (p in others) engine.history(p, fetch).mapTo(touchesOther) { it.commit }
+            for (p in others) {
+                if (digestOnly.isEmpty()) break
+                engine.history(p, fetch).forEach { digestOnly.remove(it.commit) }
             }
-            val kept = commits.filter {
-                !it.message.startsWith(MESSAGE_PREFIX) && (it.commit !in digestTouching || it.commit in touchesOther)
-            }
+            val kept = commits.filter { !isDigestCommit(it) && it.commit !in digestOnly }
             if (kept.size >= maxLog || commits.size < fetch) return kept.take(maxLog)
             fetch = if (fetch > Int.MAX_VALUE / 2) Int.MAX_VALUE else fetch * 2
         }
     }
+
+    /** A commit made by this digest: by [Author.SYSTEM] with the `digest: ` message, not any commit so worded. */
+    private fun isDigestCommit(c: CommitInfo) =
+        c.authorEmail == Author.SYSTEM.email && c.message.startsWith(MESSAGE_PREFIX)
 
     private fun renderLog(folder: String, kept: List<CommitInfo>): String {
         val sb = StringBuilder(header("Recent changes in $folder/, newest first"))

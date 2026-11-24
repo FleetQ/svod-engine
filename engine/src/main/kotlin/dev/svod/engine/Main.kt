@@ -1,6 +1,7 @@
 package dev.svod.engine
 
 import dev.svod.engine.core.SvodEngine
+import dev.svod.engine.core.VaultLockedException
 import dev.svod.engine.index.VaultEval
 import dev.svod.engine.lifecycle.ApiCompatibility
 import dev.svod.engine.lifecycle.ConfigInit
@@ -285,12 +286,23 @@ private fun runDigest(args: List<String>) {
         System.err.println("usage: svod-engine digest <config.json> [folder...]")
         exitProcess(2)
     }
-    val config = SvodConfig.loadOrThrowValidated(Paths.get(args[0]))
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    SvodEngine.open(config.vault(), scope, SecretScanner(config.secretScanning)).use { engine ->
-        val r = runBlocking { FolderDigest.run(engine, args.drop(1)) }
-        println("digest: ${r.written.size} written, ${r.unchanged.size} unchanged, ${r.skipped.size} skipped")
-        r.skipped.forEach { (folder, reason) -> println("  skipped $folder: $reason") }
+    try {
+        val config = SvodConfig.loadOrThrowValidated(Paths.get(args[0]))
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        SvodEngine.open(config.vault(), scope, SecretScanner(config.secretScanning)).use { engine ->
+            val r = runBlocking { FolderDigest.run(engine, args.drop(1)) }
+            println("digest: ${r.written.size} written, ${r.unchanged.size} unchanged, ${r.skipped.size} skipped")
+            r.skipped.forEach { (folder, reason) -> println("  skipped $folder: $reason") }
+        }
+    } catch (e: VaultLockedException) {
+        System.err.println("svod-engine digest: ${e.message} — stop the engine first (digest runs with the engine stopped)")
+        exitProcess(2)
+    } catch (e: IllegalArgumentException) {
+        System.err.println("svod-engine digest: ${e.message}")
+        exitProcess(2)
+    } catch (e: java.io.IOException) {
+        System.err.println("svod-engine digest: cannot read ${e.message}")
+        exitProcess(2)
     }
 }
 
