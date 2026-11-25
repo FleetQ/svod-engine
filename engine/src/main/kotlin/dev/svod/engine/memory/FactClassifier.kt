@@ -71,6 +71,10 @@ data class ClassificationPlan(
  * same memory `type`, and to the same `subject` when the incoming memory declares one. Two facts
  * about different subjects are never compared, and no attempt is made to decide that two differently
  * spelled subjects denote the same entity.
+ *
+ * Procedures ([PROCEDURE_TYPE]) are versioned by subject, not judged by similarity: a procedure
+ * with a subject that is not an exact restatement is an [Classification.UPDATE] of the active
+ * procedure for that subject. A procedure without a subject takes the generic path above.
  */
 class FactClassifier(
     private val engine: SvodEngine,
@@ -97,6 +101,14 @@ class FactClassifier(
         val incomingTokens = tokenize(content)
         val byOverlap = candidates.maxByOrNull { jaccard(incomingTokens, tokenize(it.body)) }!!
         val overlap = jaccard(incomingTokens, tokenize(byOverlap.body))
+
+        // Procedures are versioned by subject: a new one for a subject replaces the active one.
+        if (type == PROCEDURE_TYPE && subject != null) {
+            return ClassificationPlan(
+                Classification.UPDATE, byOverlap, 1.0,
+                "procedure: a new version for subject '$subject' replaces the previous one", guards,
+            )
+        }
 
         // 3. Embedding cosine, when (and only when) the configured embedder actually produces vectors.
         val embedder = index.activeEmbedder()
@@ -180,6 +192,9 @@ class FactClassifier(
     }
 
     companion object {
+        /** Ordered how-to steps; a new version for a subject replaces the previous one. */
+        const val PROCEDURE_TYPE = "procedure"
+
         /** At or above this cosine, two memories are treated as the same statement. */
         const val DUPLICATE_COSINE = 0.97
 

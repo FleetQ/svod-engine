@@ -673,7 +673,7 @@ class SvodTools(
      * (identical content+type ⇒ no second note); status defaults by type (fact/policy enter
      * `provisional` — kept out of recall until confirmed — when the writing agent reviews memory
      * (its own `requireReview`, else `memory.requireReview`); otherwise every memory enters `active`,
-     * an UNCERTAIN one still flagged `needs-review: true`; preference/episode/note are always `active`);
+     * an UNCERTAIN one still flagged `needs-review: true`; preference/episode/procedure/note are always `active`);
      * a `supersedes` target is revoked and linked. Writes through the engine (secret-scanned,
      * committed, indexed, conflict-guarded). Keeps an agent-written KB from poisoning itself.
      *
@@ -876,7 +876,7 @@ class SvodTools(
      * CONTRADICTION is `active` with its `contradicts:` link, so a person can still find both.
      */
     private fun defaultStatusFor(type: String, agent: AgentIdentity): String = when {
-        type != "fact" && type != "policy" -> "active"             // preference / episode / note
+        type != "fact" && type != "policy" -> "active"             // preference / episode / procedure / note
         agent.reviewsMemory(requireReview) -> "provisional"         // durable but kept out of recall until confirmed
         else -> "active"
     }

@@ -44,6 +44,17 @@ class MemoryExtractorTest {
     }
 
     @Test
+    fun `procedure is a recognised type, not coerced to fact`() {
+        val out = LlmMemoryExtractor.parseCandidates(
+            """[{"content": "1. Run tests\n2. Deploy", "type": "procedure", "subject": "deploy-api"}]""",
+            5,
+        )
+        assertEquals(listOf(ExtractedMemory("1. Run tests\n2. Deploy", "procedure", "deploy-api")), out)
+        assertTrue("procedure" in MemoryExtractor.TYPES)
+        assertTrue("\"procedure\"" in LlmMemoryExtractor.systemPrompt(5), "the prompt offers the type")
+    }
+
+    @Test
     fun `caps the result at maxMemories`() {
         val raw = (1..8).joinToString(",", "[", "]") { """{"content": "m$it", "type": "fact"}""" }
         assertEquals(listOf("m1", "m2", "m3"), LlmMemoryExtractor.parseCandidates(raw, 3)!!.map { it.content })
