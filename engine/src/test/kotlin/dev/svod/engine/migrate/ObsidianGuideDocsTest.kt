@@ -197,7 +197,29 @@ class ObsidianGuideDocsTest {
         onlyApi.forEach {
             assertTrue("without `autoSync`" in it, "$PAGE: '${it.trim()}' must be limited to sources without `autoSync`")
         }
+        // Who may call what: import and source writes/syncs are admin-only; listing sources is not.
+        val auth = Files.readString(engineDir.resolve("src/main/kotlin/dev/svod/engine/api/AppApiAuth.kt"))
+        assertTrue(
+            """Rule(setOf("POST", "PUT", "PATCH", "DELETE"), Regex("^/api/v1/sources(/.*)?$"))""" in auth,
+            "the admin rule for /api/v1/sources changed; update $PAGE (admin sentence in '## Import an existing Obsidian vault')",
+        )
+        assertTrue(Regex("""Rule\(setOf\("POST"\), Regex\("\^/api/v1/\([^"]*\|import\|""").containsMatchIn(auth), "POST /api/v1/import is no longer admin-only; update $PAGE")
+        val importFlat = section("Import an existing Obsidian vault").replace(Regex("""\s+"""), " ")
+        assertTrue(
+            "Import, and the source routes below that register, change, remove or sync sources, need an engine admin." in importFlat,
+            "$PAGE must say import and source writes/syncs need an engine admin",
+        )
+        assertTrue("`GET /api/v1/sources` does not" in importFlat, "$PAGE must say listing sources does not need an admin")
+        assertTrue("sources routes below) need an engine admin" !in importFlat, "$PAGE must not say every sources route needs an admin")
         val server = Files.readString(engineDir.resolve("src/main/kotlin/dev/svod/engine/api/AppApiServer.kt"))
+        assertTrue(
+            "it.copy(path = it.path.substringAfterLast('/'))" in server,
+            "GET /api/v1/sources no longer hides the server path from non-admins; update $PAGE",
+        )
+        // prune only removes an untouched copy.
+        val sync = Files.readString(engineDir.resolve("src/main/kotlin/dev/svod/engine/sources/SourceSync.kt"))
+        assertTrue("source.prune && cur != null && m != null && m.vault == cur.revision" in sync, "prune's edited-copy guard changed; update $PAGE")
+        assertTrue("only a copy nobody has edited" in sources.replace(Regex("""\s+"""), " "), "$PAGE must say prune leaves an edited copy")
         assertTrue("post(\"/api/v1/sources\")" in server && "post(\"/api/v1/sources/sync\")" in server, "the sources routes moved; update $PAGE")
         assertTrue("/api/v1/sources" in sources, "$PAGE '## Notes that live elsewhere' must name /api/v1/sources")
         assertTrue("(adr/0016-external-sources-and-symlink-import.md)" in sources, "$PAGE '## Notes that live elsewhere' must link ADR-0016")

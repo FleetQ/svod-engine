@@ -65,7 +65,9 @@ curl -X POST http://127.0.0.1:7517/api/v1/import \
   -d '{"source": "/path/to/obsidian-vault", "format": "obsidian", "into": "", "followSymlinks": false}'
 ```
 
-Import (and the sources routes below) need an engine admin. On your own machine with the default
+Import, and the source routes below that register, change, remove or sync sources, need an engine
+admin. `GET /api/v1/sources` does not: vault members may list sources, and see where each one lands
+in the vault but not its path on the server. On your own machine with the default
 `localAdmin` setting, a request from `127.0.0.1` without a key is the admin; on a shared engine add
 `-H 'Authorization: Bearer <admin key>'`. With several vaults, add `?vault=<id>` to the URL to pick
 the vault to import into.
@@ -93,7 +95,8 @@ source instead. See [ADR-0016](adr/0016-external-sources-and-symlink-import.md) 
 - `POST /api/v1/sources` registers an absolute `path`, with an optional `into` folder and these
   options (all off by default):
   - `followSymlinks`: copy symlinked files and folders in instead of skipping them.
-  - `prune`: soft-delete vault copies of files removed from the source.
+  - `prune`: soft-delete vault copies of files removed from the source, but only a copy nobody has
+    edited in the vault since the last sync; an edited copy is left in place.
   - `autoSync`: watch the source path; a filesystem watcher re-syncs that source shortly after its
     files change, with no config and no API call needed (only while the path exists).
   - `writeBack`: two-way; a vault edit to a file that came from the source is written back to it,
