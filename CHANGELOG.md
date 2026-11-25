@@ -20,6 +20,14 @@ independently of the engine; each entry notes the contract version it ships.
   held index gives "stop the engine first". `RetrievalEval` and `GoldenSetFile` are now also compiled into the engine
   (`src/main`, same package and API) so the CLI can use them. Sample file `examples/golden.sample.jsonl`; new page `docs/retrieval-quality.md` with the leg P baseline,
   kept in sync by `RetrievalQualityDocsTest`. No contract change.
+- `svod-engine digest <config.json> [folder...]` (engine stopped) writes a generated `index.md` (the folder's notes
+  as `[[wikilinks]]` grouped by subfolder, with title, last change date and author/agent) and `log.md` (the
+  folder's commits from git, newest first: UTC date, author/agent, message) into each named folder, or every
+  top-level folder with notes when none is named. Both files land in one guarded `digest: <folder>` commit by
+  `svod`; the output depends only on git history, and digest commits and commits that changed only the digest
+  files are left out of `log.md` (the newest 200 other commits are kept), so a re-run with nothing new makes no
+  commit, however long the folder's history. A file without the `generated: svod-folder-digest` frontmatter marker is never
+  overwritten (the folder is reported as skipped). No contract change.
 
 ### Docs — Svod vs Letta Context Repositories
 

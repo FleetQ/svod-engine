@@ -437,10 +437,16 @@ svod-engine init ~/svod                    # writes ~/svod/config.json (never ov
 svod-engine ~/svod/config.json             # start the engine with it
 svod-engine doctor ~/svod/config.json      # check the setup without changing anything (exits 1 on a failure)
 svod-engine eval ~/svod/config.json golden.jsonl # score search quality on your own notes (engine stopped)
+svod-engine digest ~/svod/config.json proj # write proj/index.md + proj/log.md from git history (engine stopped)
 ```
 
 `eval` reports recall@k, nDCG@10 and MRR per search mode for a golden set you write; see
 [Retrieval quality](docs/retrieval-quality.md) for the file format and the baseline numbers.
+
+`digest` writes a generated `index.md` (each note's title, last change and author/agent) and `log.md` (the
+folder's commits, newest first) into each named folder, or every top-level folder when none is given, in one
+commit per folder; a re-run with nothing new makes no commit, and a file without the
+`generated: svod-folder-digest` frontmatter marker is never overwritten.
 
 From source, the same is `cd engine && ./gradlew run --args="init $HOME/svod"`.
 
