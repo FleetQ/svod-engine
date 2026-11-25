@@ -134,6 +134,20 @@ class ObsidianGuideDocsTest {
         listOf("backlinks", "outlinks", "rewrittenBacklinks").forEach {
             assertTrue("putJsonArray(\"$it\")" in tools, "SvodTools.kt no longer returns `$it`; update $PAGE")
         }
+        // Cross-vault relinking: one engine.write (one commit) per changed note, best-effort, App API only.
+        val server = Files.readString(engineDir.resolve("src/main/kotlin/dev/svod/engine/api/AppApiServer.kt"))
+        val relinkStart = server.indexOf("private suspend fun crossVaultRelink(")
+        assertTrue(relinkStart >= 0, "AppApiServer.kt has no crossVaultRelink; update $PAGE '## Links and backlinks'")
+        val relink = server.substring(relinkStart, server.indexOf("\n    }\n", relinkStart))
+        assertTrue(
+            "runCatching { v.engine.write(path, updated, fc.revision, author) }" in relink && "writeBatch" !in relink && "writeGuarded" !in relink,
+            "crossVaultRelink no longer commits each note separately and best-effort; update $PAGE '## Links and backlinks'",
+        )
+        assertTrue("crossVaultRelink" !in tools, "MCP move now relinks other vaults; update $PAGE '## Links and backlinks'")
+        val flat = links.replace(Regex("""\s+"""), " ")
+        assertTrue("best-effort update that commits each changed note on its own" in flat, "$PAGE must say cross-vault relinking commits each changed note on its own")
+        assertTrue("does not rewrite links in other vaults" in flat, "$PAGE must say MCP `move` does not relink other vaults")
+        assertTrue("commit per vault" !in flat, "$PAGE must not claim one commit per vault for cross-vault relinking")
         val counts = Regex("""(\d+)(?:[\s-]+MCP)?[\s-]+tools\b""", RegexOption.IGNORE_CASE).findAll(page).map { it.groupValues[1].toInt() }.toList()
         assertTrue(counts.all { it == ADVERTISED_TOOLS.size }, "$PAGE tool counts must be ${ADVERTISED_TOOLS.size}: $counts")
 

@@ -39,7 +39,9 @@ same link graph.
   link to it.
 - **Across vaults.** With several vaults on one engine, a qualified link such as `[[work:roadmap]]`
   points at a note in another vault. A move made through the App API also rewrites these links in
-  the other vaults, as a best-effort, separate commit per vault.
+  the other vaults you may write to. That is a best-effort update that commits each changed note on
+  its own, so it is not one commit with the move; a link it could not rewrite is left dangling.
+  The MCP `move` tool does not rewrite links in other vaults.
 
 ## Import an existing Obsidian vault
 
