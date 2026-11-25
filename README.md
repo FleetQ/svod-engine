@@ -80,7 +80,7 @@ index. The result:
 | **Multiple vaults** | Run N vaults in one engine (e.g. `personal` + `work`), each its own git repo, lock, index, and sync remote. Routes select a vault via `?vault=`; agents are scoped to their granted vault. Cross-vault `[[vault:note]]` links resolve and surface as backlinks. |
 | **Multi-host sync** | Replicate the vault across machines over git transport. Frontmatter-aware structured merge (YAML keys union, body via git 3-way). A designated merge authority keeps history deterministic; real conflicts are *surfaced*, never auto-resolved. |
 | **Hardening** | Opt-in pre-commit secret scanning of note writes (`secretScanning`; transcript capture and binary files are not scanned, see [`docs/security-overview.md`](docs/security-overview.md)), live metrics (write latency, queue depth, index lag, conflicts, sync status), secret refs (`env:` / `file:` / macOS `keychain:`) instead of plaintext tokens. |
-| **Obsidian import, zero lock-in** | One-shot migration of an existing Obsidian vault — markdown + **attachments** (images/PDF) preserved, frontmatter + wikilinks intact, `.obsidian/` skipped. Idempotent (re-run reconciles, never clobbers). Symlinks are skipped by default or, with `followSymlinks`, materialized (file + whole directory links copied in). Leaving is just `git clone`. |
+| **Obsidian import, zero lock-in** | One-shot migration of an existing Obsidian vault — markdown + **attachments** (images/PDF) preserved, frontmatter + wikilinks intact, `.obsidian/` skipped. Idempotent (re-run reconciles, never clobbers). Symlinks are skipped by default or, with `followSymlinks`, materialized (file + whole directory links copied in). Leaving is just `git clone`. See [Using a Svod vault with Obsidian](docs/obsidian.md). |
 | **Basic Memory import** | `svod-engine import-basic-memory <config.json> <dir> [into]` (engine stopped) imports a Basic Memory project the same way: observations, relations and frontmatter kept verbatim, and relations that point at a note's `title` or `permalink` turned into resolvable `[[path\|Original]]` wikilinks. Idempotent, never clobbers. |
 | **Claude Code memory import** | `svod-engine import-claude-memory <config.json> <memory-dir> [into]` (engine stopped) imports a Claude Code auto-memory folder (`~/.claude/projects/*/memory/`) under `into` (default `claude-memory`), one note per memory: frontmatter and body kept, the memory's type (`metadata.type` or `type`) added as a tag next to `claude-memory`, and `[[name]]` links to another memory's `name` turned into resolvable `[[path\|name]]` wikilinks. The top-level `MEMORY.md` index is skipped. Idempotent, never clobbers. |
 | **Mem0 import** | One note per memory, idempotent by Mem0 id, through the single writer. `POST /api/v1/import` with `format: mem0` and a local JSON export file; categories become tags, a locally edited note is never overwritten. |
@@ -538,7 +538,7 @@ it's reviewed.
 You spot a bad fact in the agent's memory. Instead of black-box surgery, you open the note in
 Obsidian (or `git revert` the offending commit). The file watcher ingests your edit as an
 `external`-authored commit, re-indexes it, and the agent reads the corrected memory next time.
-No special tooling, no migration.
+No special tooling, no migration. (See [Using a Svod vault with Obsidian](docs/obsidian.md).)
 
 **3. Long-running project knowledge that compounds.**
 Over months, agents accumulate decisions, ADRs, and findings as linked notes. `[[wikilinks]]`
