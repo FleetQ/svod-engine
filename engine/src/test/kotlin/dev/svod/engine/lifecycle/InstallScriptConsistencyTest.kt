@@ -50,7 +50,9 @@ class InstallScriptConsistencyTest {
     @Test
     fun `install script archive names match UpdateService platforms`() {
         val names = archivesInScript()
-        val known = UpdateService.PLATFORM_LABELS.map { UpdateService.releaseArchive(it) }.toSet()
+        val known = UpdateService.PLATFORM_LABELS.flatMap {
+            listOf(UpdateService.archiveName(it), UpdateService.archiveName(it, "zip"))
+        }.toSet()
         for (n in names) assertTrue(n in known, "install.sh names $n, which is not an UpdateService archive ($known)")
         for (label in listOf("macos-arm64", "linux-x64")) {
             assertTrue(label in UpdateService.PLATFORM_LABELS, "UpdateService has no platform $label")
@@ -66,8 +68,8 @@ class InstallScriptConsistencyTest {
             assertTrue(tableRows.any { n in it }, "$n from install.sh is not in the README Download & install table")
         }
         val binaries = mapOf(
-            UpdateService.releaseArchive("macos-arm64") to "SvodEngine.app/Contents/MacOS/SvodEngine",
-            UpdateService.releaseArchive("linux-x64") to "SvodEngine/bin/SvodEngine",
+            UpdateService.archiveName("macos-arm64") to "SvodEngine.app/Contents/MacOS/SvodEngine",
+            UpdateService.archiveName("linux-x64") to "SvodEngine/bin/SvodEngine",
         )
         for ((archive, binary) in binaries) {
             assertTrue(binary in script, "install.sh does not use the binary path $binary")

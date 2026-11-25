@@ -97,9 +97,6 @@ class UpdateService(
         /** The release app-image archive for [label], e.g. `SvodEngine-linux-x64.tar.gz`. */
         internal fun archiveName(label: String, ext: String = "tar.gz") = "SvodEngine-$label.$ext"
 
-        /** The archive a release actually ships for [label]: a `.zip` on Windows, a `.tar.gz` elsewhere. */
-        internal fun releaseArchive(label: String) = archiveName(label, if (label == WINDOWS_X64) "zip" else "tar.gz")
-
         /** `SVOD_SELF_UPDATE_SCRIPT` if set, else [defaultScript] when that file exists. */
         fun resolveScript(env: Map<String, String> = System.getenv(), defaultScript: Path = DEFAULT_SCRIPT): String? =
             env["SVOD_SELF_UPDATE_SCRIPT"]?.takeIf { it.isNotBlank() }
@@ -128,7 +125,7 @@ class UpdateService(
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build()
             val hostLabel = currentHostLabel()
-            val assetName = releaseArchive(hostLabel)
+            val assetName = archiveName(hostLabel)
 
             val tag = resolveLatestTag(noRedirect)
                 ?: return fetchFromApi(following, "https://api.github.com/repos/$REPO/releases/latest", hostLabel)
