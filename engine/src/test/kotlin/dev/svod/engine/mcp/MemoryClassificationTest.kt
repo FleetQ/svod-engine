@@ -355,6 +355,36 @@ class MemoryClassificationTest {
     }
 
     @Test
+    fun `procedure - a rewrite sharing no words with the previous version still replaces it`() = runBlocking {
+        ClassifyFixture(adjudicator = null).use { fx ->
+            val first = fx.tools.remember(fx.write, PROC_V1, "procedure", "deploy-api", null, null, null, null, null)
+            // Look-alike procedures for other subjects must not crowd the predecessor out.
+            (1..6).forEach { i ->
+                fx.tools.remember(fx.write, "$PROC_V2\n5. Notify team $i", "procedure", "deploy-svc-$i", null, null, null, null, null)
+            }
+            fx.index.waitIdle()
+            val second = fx.tools.remember(fx.write, "kubectl apply -f k8s/\nhelm upgrade svc", "procedure", " deploy-api ", null, null, null, null, null)
+            assertEquals("UPDATE", str(second, "classification"))
+            assertEquals(str(first, "path"), str(second, "superseded"))
+            assertEquals("revoked", fm(fx, str(first, "path")!!).status)
+        }
+    }
+
+    @Test
+    fun `procedure - an unreviewed version never retires the one in use`() = runBlocking {
+        ClassifyFixture(adjudicator = null).use { fx ->
+            val first = fx.tools.remember(fx.write, PROC_V1, "procedure", "deploy-api", null, null, null, null, null)
+            fx.index.waitIdle()
+            val second = fx.tools.remember(fx.write, PROC_V2, "procedure", "deploy-api", null, null, "provisional", null, null)
+            assertEquals("UNCERTAIN", str(second, "classification"))
+            assertEquals("provisional", str(second, "memoryStatus"))
+            assertEquals(str(first, "path"), str(second, "relatedNote"))
+            assertEquals("active", fm(fx, str(first, "path")!!).status)
+            assertNull(fm(fx, str(first, "path")!!).supersededBy)
+        }
+    }
+
+    @Test
     fun `procedure - context_pack enumerate type=procedure returns only the active version in full`() = runBlocking {
         ClassifyFixture(adjudicator = null).use { fx ->
             fx.tools.remember(fx.write, PROC_V1, "procedure", "deploy-api", null, null, null, null, null)
