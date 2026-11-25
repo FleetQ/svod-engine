@@ -349,7 +349,7 @@ The WebSocket streams `agent.activity` / `commit.created` / `index.updated` / `i
 curl -fsSL https://raw.githubusercontent.com/FleetQ/svod-engine/main/dist/install.sh | sh
 ```
 
-It installs the latest release into `~/.svod/<version>` (with a `~/.svod/current` link), checks the
+It installs the latest release into `~/.svod/<tag>` (with a `~/.svod/current` link), checks the
 download against the release's `SHA256SUMS` when the release has one (it warns when it does not), runs `init ~/svod` and prints how to start the engine and
 connect your agent. Pin a release by setting `SVOD_VERSION` to its tag for `sh` (`... | SVOD_VERSION=<tag> sh`);
 an existing `~/svod/config.json` is never overwritten. On Windows, download `SvodEngine-windows-x64.zip`

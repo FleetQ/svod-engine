@@ -234,18 +234,26 @@ class UpdateService(
             )
         }.getOrNull()
 
-        /** The platform labels release archives are published for (dist/install.sh and the README use them too). */
-        internal val PLATFORM_LABELS = listOf("macos-arm64", "linux-x64", "windows-x64")
+        private const val MACOS_LABEL = "macos-arm64"
+        private const val LINUX_LABEL = "linux-x64"
+        private const val WINDOWS_LABEL = "windows-x64"
 
-        /** The app-image archive name for a platform label, e.g. `SvodEngine-linux-x64.tar.gz`. */
-        internal fun archiveName(label: String, ext: String = "tar.gz") = "SvodEngine-$label.$ext"
+        /** The platform labels release archives are published for (dist/install.sh and the README use them too). */
+        internal val PLATFORM_LABELS = listOf(MACOS_LABEL, LINUX_LABEL, WINDOWS_LABEL)
+
+        /**
+         * The app-image archive name for a platform label as the release publishes it, e.g.
+         * `SvodEngine-linux-x64.tar.gz` or `SvodEngine-windows-x64.zip`.
+         */
+        internal fun archiveName(label: String, ext: String = if (label == WINDOWS_LABEL) "zip" else "tar.gz") =
+            "SvodEngine-$label.$ext"
 
         private fun currentHostLabel(): String {
             val os = System.getProperty("os.name").lowercase()
             return when {
-                os.contains("mac") -> PLATFORM_LABELS[0]
-                os.contains("win") -> PLATFORM_LABELS[2]
-                else -> PLATFORM_LABELS[1]
+                os.contains("mac") -> MACOS_LABEL
+                os.contains("win") -> WINDOWS_LABEL
+                else -> LINUX_LABEL
             }
         }
     }

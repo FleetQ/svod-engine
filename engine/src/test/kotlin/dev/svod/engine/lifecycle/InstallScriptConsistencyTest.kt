@@ -55,9 +55,7 @@ class InstallScriptConsistencyTest {
 
     @Test
     fun `install script archive names match UpdateService platforms`() {
-        val allowed = UpdateService.PLATFORM_LABELS.flatMap {
-            listOf(UpdateService.archiveName(it), UpdateService.archiveName(it, "zip"))
-        }.toSet()
+        val allowed = UpdateService.PLATFORM_LABELS.map { UpdateService.archiveName(it) }.toSet()
         val names = scriptArchives()
         val unknown = names - allowed
         assertTrue(unknown.isEmpty(), "install.sh names archives UpdateService does not know: $unknown")
@@ -101,7 +99,6 @@ class InstallScriptConsistencyTest {
         val branch = script.lines().drop(unsupported).take(6).joinToString("\n")
         assertTrue(releasesLink in branch, "the unsupported-platform branch must print $releasesLink")
         assertTrue("exit 1" in branch, "the unsupported-platform branch must exit 1")
-        assertTrue("config.json\" ]" in script, "install.sh must check whether config.json exists before init")
         assertTrue(Regex("""-f\s+"\${'$'}SVOD_VAULT_DIR/config\.json"""").containsMatchIn(script),
             "install.sh must test -f \"\$SVOD_VAULT_DIR/config.json\"")
         assertTrue(script.lines().none { Regex(""">\s*"?\S*config\.json""").containsMatchIn(it.substringBefore("#")) },
