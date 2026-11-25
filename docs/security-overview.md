@@ -12,7 +12,7 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
 | Question | Answer |
 |---|---|
 | Where is data stored? | On the machine running the engine: plain Markdown files in a local git repository per vault, plus a derived index under the vault's `.svod/`. |
-| Is data encrypted at rest? | No, not by Svod. Use full-disk or volume encryption (see [Known gaps](#known-gaps)). |
+| Is data encrypted at rest? | Not by the engine itself; supported through host volume encryption with a key you hold, see [Encryption at rest](#encryption-at-rest) / [ADR-0021](adr/0021-encryption-at-rest.md). |
 | Is data encrypted in transit? | Loopback-only by default. A shared engine must enable TLS on both the App API and MCP before it may bind off loopback. |
 | How do users authenticate? | People: personal API keys (`svk_…`, 256 random bits). Agents: one MCP bearer token per agent. |
 | Role-based access? | Yes. Per-vault grants: `READER` / `EDITOR` for people, plus engine admin. Agents get per-vault roles. |
@@ -46,6 +46,55 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
   a remote reranker, an Ollama graph-summary or memory-extraction LLM, or a sync/backup git
   remote. The full list, with the config keys, is under
   [Outbound connections](#outbound-connections).
+
+## Encryption at rest
+
+The engine does not encrypt data itself. The supported setup is host volume or full-disk
+encryption whose key you hold and control: LUKS2 / dm-crypt on Linux servers, FileVault on macOS,
+BitLocker on Windows ([ADR-0021](adr/0021-encryption-at-rest.md); for a Debian server see the
+[central-instance runbook](runbook-central-instance.md#5a-encryption-at-rest)). The key stays with
+you: Svod never sees, stores or needs it, because the engine only reads and writes files on a
+volume the operating system has already unlocked.
+
+Put **all** of these on the encrypted volume. `SecurityOverviewDocsTest` reads the fixed paths,
+the `.svod/` files and the path environment variables from the code and fails CI when this list
+misses one. It cannot follow paths that come from configuration at runtime (vaults, external
+sources, git remotes), so those are named here by the setting that holds them.
+
+- **Each vault**, at `vaults[].path` (or the legacy `vaultPath`). Vaults created through the API
+  without a path go next to the first vault, or under `~/.svod/vaults` when there is none. A
+  config-less start uses `~/svod-vault`. Inside each vault:
+  - the notes and `.trash/`, and the git history in `.git/`;
+  - `.svod/`, which holds the plain-text note content in another form: the search index
+    `.svod/index` (note text, stored fields, embedding vectors), the graph sidecar `.svod/graph`,
+    the agent audit log under `.svod/audit`, the legacy model copy `.svod/models`, the
+    external-source registry and manifests `.svod/sources.json` and `.svod/source-manifests`,
+    the memory inbox `.svod/recall-proposals.json` and `.svod/recall-distill.json`, and
+    `.svod/backup.json`, `.svod/sync-resolutions.json` and the vault lock `.svod/lock`.
+- **Every external source folder** (ADR-0016): a folder registered as an external source of a
+  vault can be any absolute path. Svod imports the notes from it, and with `writeBack` on it
+  writes vault edits back into it. Keep those folders on the encrypted volume too.
+- **Local git remotes**: a sync or backup remote that is a path on this machine (a shared bare
+  repository, for example) holds the full git history and belongs on the volume as well.
+- **The config directory** (the folder holding the config file; `svod-engine init` defaults to
+  `~/svod`): the config itself, the key and token files in `secrets/`, the App API audit log
+  `audit-api.log` and `user-activity.json`. A start without a config file uses `~/.svod` as that
+  directory instead: secrets in `~/.svod/secrets`, plus `~/.svod/audit-api.log` and
+  `~/.svod/user-activity.json`.
+- **Logs**: `$SVOD_LOG_DIR`, default `~/.svod/logs`.
+- **Files under the service user's home**, mostly in `~/.config/svod`: the discovery file
+  `~/.config/svod/engine.json` (or wherever `$SVOD_DISCOVERY_FILE` points), the
+  host id `~/.config/svod/host-id`, the self-update log `~/.config/svod/self-update.log`, and the
+  downloaded model cache `~/.cache/svod-models` (model weights only, no note data).
+
+The simplest layout is one encrypted volume holding the vaults, the config directory and the
+service user's home, as in the runbook.
+
+**Not covered by the volume.** Data that leaves the machine is outside it: sync and backup git
+remotes receive the full git history, and Sentry receives ERROR log lines when `SENTRY_DSN` is set
+(see [Outbound connections](#outbound-connections)). Encrypt those on their own terms, for example
+an encrypted disk on the remote git host. Volume encryption protects a powered-off or stolen disk,
+not a running, unlocked host.
 
 ## Network exposure
 
@@ -207,7 +256,8 @@ The engine makes no outbound connections except these:
 
 ## Known gaps
 
-- **No encryption at rest** by Svod. Rely on full-disk or volume encryption on the host.
+- **No encryption at rest** by Svod. Rely on full-disk or volume encryption on the host, with a key
+  you hold ([Encryption at rest](#encryption-at-rest), [ADR-0021](adr/0021-encryption-at-rest.md)).
 - **No SSO** (SAML, OIDC) and no SCIM provisioning. People authenticate with personal keys.
 - **No SOC 2, ISO 27001 or HIPAA attestation.** Svod is software you run yourself, not a hosted
   service.
