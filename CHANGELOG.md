@@ -7,6 +7,13 @@ independently of the engine; each entry notes the contract version it ships.
 
 ### Added
 
+- One-command install for macOS (Apple Silicon) and Linux (x64):
+  `curl -fsSL https://raw.githubusercontent.com/FleetQ/svod-engine/main/dist/install.sh | sh`. `dist/install.sh`
+  (POSIX sh) downloads the release app-image archive (latest, or `SVOD_VERSION`), checks it against the release's
+  `SHA256SUMS` when present (warns when not), unpacks it to `~/.svod/<tag>` with a `~/.svod/current` symlink, runs
+  `init ~/svod` only when `~/svod/config.json` does not exist yet, and prints the next steps. `SVOD_HOME` and
+  `SVOD_VAULT_DIR` override the paths. `InstallScriptConsistencyTest` keeps its archive names and binary paths in
+  step with `UpdateService.PLATFORM_LABELS` and the README table. No engine or contract change.
 - `svod-engine import-claude-memory <config.json> <memory-dir> [into]` (engine stopped) imports a Claude Code
   auto-memory folder under `into` (default `claude-memory`), one note per memory file. Frontmatter is kept; when
   it has no `tags`/`tag` key, a `tags: [claude-memory, <type>]` line is added, the type taken from `metadata.type` or

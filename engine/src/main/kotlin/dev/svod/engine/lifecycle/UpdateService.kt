@@ -88,6 +88,12 @@ class UpdateService(
         val DEFAULT_SCRIPT: Path = CONFIG_DIR.resolve("self-update.sh")
         val DEFAULT_LOG: Path = CONFIG_DIR.resolve("self-update.log")
 
+        /** Platforms with a release app-image archive; dist/install.sh and the README table use the same names. */
+        internal val PLATFORM_LABELS = listOf("macos-arm64", "linux-x64", "windows-x64")
+
+        /** The release app-image archive for [label], e.g. `SvodEngine-linux-x64.tar.gz`. */
+        internal fun archiveName(label: String, ext: String = "tar.gz") = "SvodEngine-$label.$ext"
+
         /** `SVOD_SELF_UPDATE_SCRIPT` if set, else [defaultScript] when that file exists. */
         fun resolveScript(env: Map<String, String> = System.getenv(), defaultScript: Path = DEFAULT_SCRIPT): String? =
             env["SVOD_SELF_UPDATE_SCRIPT"]?.takeIf { it.isNotBlank() }
@@ -116,7 +122,7 @@ class UpdateService(
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build()
             val hostLabel = currentHostLabel()
-            val assetName = "SvodEngine-$hostLabel.tar.gz"
+            val assetName = archiveName(hostLabel)
 
             val tag = resolveLatestTag(noRedirect)
                 ?: return fetchFromApi(following, "https://api.github.com/repos/$REPO/releases/latest", hostLabel)
@@ -222,7 +228,7 @@ class UpdateService(
             // because it is listed first, and the script could not unpack it.
             val assets = root["assets"]?.jsonArray?.map { it.jsonObject }.orEmpty()
             fun nameOf(o: kotlinx.serialization.json.JsonObject) = o["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
-            val archives = setOf("SvodEngine-$hostLabel.tar.gz", "SvodEngine-$hostLabel.zip")
+            val archives = setOf(archiveName(hostLabel), archiveName(hostLabel, "zip"))
             val asset = assets.firstOrNull { nameOf(it) in archives }
                 ?: assets.firstOrNull { nameOf(it).contains(hostLabel) }
 
@@ -237,9 +243,9 @@ class UpdateService(
         private fun currentHostLabel(): String {
             val os = System.getProperty("os.name").lowercase()
             return when {
-                os.contains("mac") -> "macos-arm64"
-                os.contains("win") -> "windows-x64"
-                else -> "linux-x64"
+                os.contains("mac") -> PLATFORM_LABELS[0]
+                os.contains("win") -> PLATFORM_LABELS[2]
+                else -> PLATFORM_LABELS[1]
             }
         }
     }
