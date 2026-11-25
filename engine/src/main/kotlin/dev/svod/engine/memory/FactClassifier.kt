@@ -74,9 +74,7 @@ data class ClassificationPlan(
  *
  * Procedures ([PROCEDURE_TYPE]) are versioned by subject, not judged by similarity: a procedure
  * with a subject that is not an exact restatement is an [Classification.UPDATE] of the active
- * procedure for that subject, found by subject rather than by wording. An unreviewed (provisional)
- * version is [Classification.UNCERTAIN] instead, so it never retires the version in use. A
- * procedure without a subject takes the generic path above.
+ * procedure for that subject. A procedure without a subject takes the generic path above.
  */
 class FactClassifier(
     private val engine: SvodEngine,
@@ -86,17 +84,8 @@ class FactClassifier(
     private val topK: Int = 5,
 ) {
 
-    /**
-     * [provisional] says the incoming memory will be stored unreviewed: a provisional procedure must
-     * not retire the version a person relies on, so it is kept beside it as UNCERTAIN instead.
-     */
-    suspend fun plan(
-        content: String, type: String, subject: String?, targetPath: String, provisional: Boolean = false,
-    ): ClassificationPlan {
-        @Suppress("NAME_SHADOWING")
-        val subject = subject?.trim()?.takeIf { it.isNotEmpty() }
-        val versioned = type == PROCEDURE_TYPE && subject != null
-        val candidates = retrieve(content, type, subject, targetPath, versioned)
+    suspend fun plan(content: String, type: String, subject: String?, targetPath: String): ClassificationPlan {
+        val candidates = retrieve(content, type, subject, targetPath)
         val guards = candidates.associate { it.path to it.revision }
         if (candidates.isEmpty()) {
             return ClassificationPlan(Classification.NEW, null, 1.0, "no comparable memory of this type/subject", guards)
@@ -114,18 +103,11 @@ class FactClassifier(
         val overlap = jaccard(incomingTokens, tokenize(byOverlap.body))
 
         // Procedures are versioned by subject: a new one for a subject replaces the active one.
-        if (versioned) {
-            return if (provisional) {
-                ClassificationPlan(
-                    Classification.UNCERTAIN, byOverlap, 0.0,
-                    "procedure: an unreviewed version for subject '$subject' waits for review beside the current one", guards,
-                )
-            } else {
-                ClassificationPlan(
-                    Classification.UPDATE, byOverlap, 1.0,
-                    "procedure: a new version for subject '$subject' replaces the previous one", guards,
-                )
-            }
+        if (type == PROCEDURE_TYPE && subject != null) {
+            return ClassificationPlan(
+                Classification.UPDATE, byOverlap, 1.0,
+                "procedure: a new version for subject '$subject' replaces the previous one", guards,
+            )
         }
 
         // 3. Embedding cosine, when (and only when) the configured embedder actually produces vectors.
@@ -187,34 +169,23 @@ class FactClassifier(
      * yet they are exactly what an incoming fact must be checked against. Retired memories (revoked
      * or already superseded) are dropped — they cannot be contradicted. Subject scoping is applied
      * here, after retrieval, because `subject` is note frontmatter and is not an indexed field.
-     *
-     * A [versioned] procedure is matched by subject, not by wording: a rewritten version may share
-     * no words with its predecessor, and other subjects' look-alike procedures could fill the top-k,
-     * so every live (active/provisional) procedure is enumerated unranked instead of searched.
      */
-    private suspend fun retrieve(
-        content: String, type: String, subject: String?, targetPath: String, versioned: Boolean,
-    ): List<MemoryCandidate> {
-        val paths = if (versioned) {
-            listOf("active", "provisional")
-                .flatMap { index.enumerate(SearchFilters(type = type, status = it, includeAll = true)) }
-        } else {
-            index.search(
-                SearchQuery(
-                    text = content,
-                    filters = SearchFilters(type = type, includeAll = true),
-                    limit = topK,
-                ),
-            ).hits.map { it.path }
-        }
+    private suspend fun retrieve(content: String, type: String, subject: String?, targetPath: String): List<MemoryCandidate> {
+        val hits = index.search(
+            SearchQuery(
+                text = content,
+                filters = SearchFilters(type = type, includeAll = true),
+                limit = topK,
+            ),
+        ).hits
         val out = LinkedHashMap<String, MemoryCandidate>()
-        for (path in paths.distinct()) {
+        for (path in hits.map { it.path }.distinct()) {
             if (path == targetPath || out.size >= topK) continue
             val file = engine.read(path) ?: continue
             val parsed = MarkdownChunker.parse(file.text)
             if (parsed.status == "revoked" || parsed.supersededBy != null) continue
             val candidateSubject = parsed.frontmatter["subject"]?.toString()
-            if (subject != null && !candidateSubject?.trim().equals(subject, ignoreCase = true)) continue
+            if (subject != null && !candidateSubject.equals(subject, ignoreCase = true)) continue
             out[path] = MemoryCandidate(path, file.revision, parsed.body.trim(), candidateSubject)
         }
         return out.values.toList()

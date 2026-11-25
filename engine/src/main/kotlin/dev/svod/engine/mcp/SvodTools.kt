@@ -800,7 +800,7 @@ class SvodTools(
                     1.0, "caller-declared supersedes", mapOf(supersedes to old.revision),
                 )
             } else {
-                classifier.plan(content, t, subject, path, provisional = st == "provisional")
+                classifier.plan(content, t, subject, path)
             }
 
             if (plan.classification == Classification.DUPLICATE && plan.related != null) {
