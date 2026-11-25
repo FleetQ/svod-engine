@@ -343,6 +343,18 @@ The WebSocket streams `agent.activity` / `commit.created` / `index.updated` / `i
 
 ## Download & install
 
+**One command (macOS Apple Silicon, Linux x64):**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/FleetQ/svod-engine/main/dist/install.sh | sh
+```
+
+It installs the latest release into `~/.svod/<version>` (with a `~/.svod/current` link), checks the
+download against the release's `SHA256SUMS`, runs `init ~/svod` and prints how to start the engine and
+connect your agent. Pin a release by setting `SVOD_VERSION` to its tag for `sh` (`... | SVOD_VERSION=<tag> sh`);
+an existing `~/svod/config.json` is never overwritten. On Windows, download `SvodEngine-windows-x64.zip`
+and follow the manual steps below.
+
 Prebuilt, self-contained app-images for every release are on the
 **[Releases page](https://github.com/FleetQ/svod-engine/releases/latest)** — a bundled trimmed JVM,
 no Java needed, every embedder including in-process `onnx-local` semantic search:
