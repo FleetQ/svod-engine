@@ -89,10 +89,16 @@ class UpdateService(
         val DEFAULT_LOG: Path = CONFIG_DIR.resolve("self-update.log")
 
         /** Platforms with a release app-image archive; dist/install.sh and the README table use the same names. */
-        internal val PLATFORM_LABELS = listOf("macos-arm64", "linux-x64", "windows-x64")
+        private const val MACOS_ARM64 = "macos-arm64"
+        private const val LINUX_X64 = "linux-x64"
+        private const val WINDOWS_X64 = "windows-x64"
+        internal val PLATFORM_LABELS = listOf(MACOS_ARM64, LINUX_X64, WINDOWS_X64)
 
         /** The release app-image archive for [label], e.g. `SvodEngine-linux-x64.tar.gz`. */
         internal fun archiveName(label: String, ext: String = "tar.gz") = "SvodEngine-$label.$ext"
+
+        /** The archive a release actually ships for [label]: a `.zip` on Windows, a `.tar.gz` elsewhere. */
+        internal fun releaseArchive(label: String) = archiveName(label, if (label == WINDOWS_X64) "zip" else "tar.gz")
 
         /** `SVOD_SELF_UPDATE_SCRIPT` if set, else [defaultScript] when that file exists. */
         fun resolveScript(env: Map<String, String> = System.getenv(), defaultScript: Path = DEFAULT_SCRIPT): String? =
@@ -122,7 +128,7 @@ class UpdateService(
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build()
             val hostLabel = currentHostLabel()
-            val assetName = archiveName(hostLabel)
+            val assetName = releaseArchive(hostLabel)
 
             val tag = resolveLatestTag(noRedirect)
                 ?: return fetchFromApi(following, "https://api.github.com/repos/$REPO/releases/latest", hostLabel)
@@ -243,9 +249,9 @@ class UpdateService(
         private fun currentHostLabel(): String {
             val os = System.getProperty("os.name").lowercase()
             return when {
-                os.contains("mac") -> PLATFORM_LABELS[0]
-                os.contains("win") -> PLATFORM_LABELS[2]
-                else -> PLATFORM_LABELS[1]
+                os.contains("mac") -> MACOS_ARM64
+                os.contains("win") -> WINDOWS_X64
+                else -> LINUX_X64
             }
         }
     }
