@@ -6,6 +6,8 @@ import dev.svod.engine.index.Embedder
 import dev.svod.engine.index.IndexService
 import dev.svod.engine.index.MarkdownChunker
 import dev.svod.engine.index.NoneEmbedder
+import dev.svod.engine.index.SearchFilters
+import dev.svod.engine.index.SearchQuery
 import dev.svod.engine.memory.Classification
 import dev.svod.engine.memory.MemoryAdjudicator
 import kotlinx.coroutines.CoroutineScope
@@ -14,6 +16,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
@@ -276,6 +280,117 @@ class MemoryClassificationTest {
             assertTrue(!embedded, "the adjudicator must never see secret content")
             assertEquals(emptyList(), engine.list().filter { it.startsWith("memory/") })
         } finally { index.close(); engine.close() }
+    }
+
+    // ---- procedure: versioned by subject, not judged by similarity ----
+
+    private val PROC_V1 = "1. Run the unit tests\n2. Build the docker image\n3. Push the image to the registry"
+    private val PROC_V2 = "1. Run the unit tests\n2. Build the docker image with cache\n3. Push the image to the registry\n4. Restart the api pods"
+
+    @Test
+    fun `procedure - first version is stored active under memory slash procedure`() = runBlocking {
+        ClassifyFixture().use { fx ->
+            val r = fx.tools.remember(fx.write, PROC_V1, "procedure", "deploy-api", null, null, null, null, null)
+            assertEquals("written", str(r, "status"))
+            assertEquals("NEW", str(r, "classification"))
+            val path = str(r, "path")!!
+            assertTrue(path.startsWith("memory/procedure/"), "stored under memory/procedure/, got $path")
+            assertEquals("active", str(r, "memoryStatus"))
+            val note = fm(fx, path)
+            assertEquals("active", note.status)
+            assertEquals("procedure", note.frontmatter["type"]?.toString())
+            assertEquals("deploy-api", note.frontmatter["subject"]?.toString())
+            assertEquals(PROC_V1, note.body.trim(), "multi-line steps kept verbatim")
+        }
+    }
+
+    @Test
+    fun `procedure - a refined version on the same subject revokes and links the previous one without an adjudicator`() = runBlocking {
+        ClassifyFixture(adjudicator = null).use { fx ->
+            val first = fx.tools.remember(fx.write, PROC_V1, "procedure", "deploy-api", null, null, null, null, null)
+            fx.index.waitIdle()
+            val firstPath = str(first, "path")!!
+
+            val second = fx.tools.remember(fx.write, PROC_V2, "procedure", "Deploy-API", null, null, null, null, null)
+            val secondPath = str(second, "path")!!
+
+            assertEquals("written", str(second, "status"))
+            assertEquals("UPDATE", str(second, "classification"), "a new version replaces the old one with no judge")
+            assertEquals(firstPath, str(second, "superseded"))
+            assertEquals(firstPath, str(second, "relatedNote"))
+            assertNull(second.data["needsReview"], "a versioned procedure is not flagged for review")
+            assertEquals("active", str(second, "memoryStatus"))
+
+            assertEquals("revoked", fm(fx, firstPath).status)
+            assertEquals(secondPath, fm(fx, firstPath).supersededBy)
+            assertEquals(firstPath, fm(fx, secondPath).frontmatter["supersedes"])
+            assertEquals("active", fm(fx, secondPath).status)
+
+            // The previous version stays reachable through git history.
+            val history = fx.engine.history(firstPath, 10)
+            assertTrue(history.size >= 2, "predecessor has its original and its revocation commit")
+            val original = fx.engine.getRevision(firstPath, history.last().commit)
+            assertTrue(original!!.text.contains("Build the docker image"), "original steps recoverable")
+        }
+    }
+
+    @Test
+    fun `procedure - different subjects or no subject are never merged`() = runBlocking {
+        ClassifyFixture(adjudicator = null).use { fx ->
+            val api = fx.tools.remember(fx.write, PROC_V1, "procedure", "deploy-api", null, null, null, null, null)
+            fx.index.waitIdle()
+            val web = fx.tools.remember(fx.write, PROC_V2, "procedure", "deploy-web", null, null, null, null, null)
+            assertEquals("NEW", str(web, "classification"))
+            assertEquals("active", fm(fx, str(api, "path")!!).status)
+            assertEquals("active", fm(fx, str(web, "path")!!).status)
+        }
+        ClassifyFixture(adjudicator = null).use { fx ->
+            val a = fx.tools.remember(fx.write, PROC_V1, "procedure", null, null, null, null, null, null)
+            fx.index.waitIdle()
+            val b = fx.tools.remember(fx.write, PROC_V2, "procedure", null, null, null, null, null, null)
+            assertEquals("UNCERTAIN", str(b, "classification"), "no subject keeps the generic similarity path")
+            assertEquals("active", fm(fx, str(a, "path")!!).status)
+            assertNull(fm(fx, str(a, "path")!!).supersededBy)
+        }
+    }
+
+    @Test
+    fun `procedure - a provisional version does not retire the active one by subject`() = runBlocking {
+        ClassifyFixture(adjudicator = null).use { fx ->
+            val first = fx.tools.remember(fx.write, PROC_V1, "procedure", "deploy-api", null, null, null, null, null)
+            fx.index.waitIdle()
+            val firstPath = str(first, "path")!!
+
+            val second = fx.tools.remember(fx.write, PROC_V2, "procedure", "deploy-api", null, null, "provisional", null, null)
+            assertEquals("written", str(second, "status"))
+            assertEquals("provisional", str(second, "memoryStatus"))
+            // The generic path: lexical overlap in the ambiguous band with no judge ⇒ UNCERTAIN.
+            assertEquals("UNCERTAIN", str(second, "classification"))
+            assertNull(second.data["superseded"])
+            assertEquals("active", fm(fx, firstPath).status)
+            assertNull(fm(fx, firstPath).supersededBy)
+        }
+    }
+
+    @Test
+    fun `procedure - context_pack enumerate type=procedure returns only the active version in full`() = runBlocking {
+        ClassifyFixture(adjudicator = null).use { fx ->
+            fx.tools.remember(fx.write, PROC_V1, "procedure", "deploy-api", null, null, null, null, null)
+            fx.index.waitIdle()
+            val second = fx.tools.remember(fx.write, PROC_V2, "procedure", "deploy-api", null, null, null, null, null)
+            val secondPath = str(second, "path")!!
+            fx.index.waitIdle()
+
+            val r = fx.tools.contextPack(
+                fx.write, SearchQuery("", SearchFilters(type = "procedure")), tokenBudget = 1, enumerate = true,
+            )
+            assertEquals("enumerate", str(r, "mode"))
+            val blocks = r.data["blocks"]!!.jsonArray
+            assertEquals(listOf(secondPath), blocks.map { it.jsonObject["path"]!!.jsonPrimitive.content })
+            val content = blocks.single().jsonObject["content"]!!.jsonPrimitive.content
+            assertTrue(content.contains("4. Restart the api pods"), "every step present: $content")
+            assertTrue(content.contains("1. Run the unit tests"), "every step present: $content")
+        }
     }
 
     // ---- integration: through the actor, under concurrency ----

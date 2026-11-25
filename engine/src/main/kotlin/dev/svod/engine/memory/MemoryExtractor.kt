@@ -25,7 +25,7 @@ interface MemoryExtractor {
     suspend fun extract(transcript: String, maxMemories: Int): List<ExtractedMemory>?
 
     companion object {
-        val TYPES = setOf("policy", "preference", "fact", "episode")
+        val TYPES = setOf("policy", "preference", "fact", "episode", "procedure")
     }
 }
 
@@ -60,8 +60,9 @@ class LlmMemoryExtractor(private val llm: SummaryLlm) : MemoryExtractor {
                 "rules or policies the user set, stable preferences, lasting facts about people, projects or systems, " +
                 "and notable events. Skip small talk, temporary state, guesses and anything the transcript does not state. " +
                 "Never include passwords, tokens or other secrets. Answer ONLY with a JSON array of at most $maxMemories " +
-                "objects, each {\"content\": one self-contained sentence, \"type\": \"policy\"|\"preference\"|\"fact\"|\"episode\", " +
-                "\"subject\": optional short topic}. Answer [] when there is nothing durable."
+                "objects, each {\"content\": one self-contained sentence, \"type\": \"policy\"|\"preference\"|\"fact\"|\"episode\"|\"procedure\", " +
+                "\"subject\": optional short topic}. A \"procedure\" is a reusable how-to that worked: its content may be " +
+                "several numbered steps, one per line, and it should come with a subject. Answer [] when there is nothing durable."
 
         /** The candidates in [raw] model output, at most [maxMemories]; null when no JSON array can be read. */
         internal fun parseCandidates(raw: String, maxMemories: Int): List<ExtractedMemory>? {
