@@ -109,6 +109,29 @@ class ExtractMemoriesToolTest {
     }
 
     @Test
+    fun `an extracted procedure does not retire the approved procedure for its subject`(): Unit = runBlocking {
+        val v1 = "1. Run the unit tests\n2. Build the docker image\n3. Push the image to the registry"
+        val v2 = "1. Run the unit tests\n2. Build the docker image with cache\n3. Push the image to the registry\n4. Restart the api pods"
+        val fake = FakeExtractor(listOf(ExtractedMemory(v2, "procedure", "deploy-api")))
+        Fixture(fake).use { fx ->
+            val first = fx.tools.remember(fx.write, v1, "procedure", "deploy-api", null, null, null, null, null)
+            val firstPath = str(first, "path")!!
+            assertEquals("active", str(first, "memoryStatus"))
+            fx.index.waitIdle()
+
+            val r = fx.tools.extractMemories(fx.write, transcript, null)
+            val m = r.data["memories"]!!.jsonArray.single().jsonObject
+            assertEquals("written", m["status"]!!.jsonPrimitive.content)
+            assertEquals("provisional", m["memoryStatus"]!!.jsonPrimitive.content)
+            assertTrue(m["superseded"] == null, m.toString())
+
+            val old = MarkdownChunker.parse(fx.engine.read(firstPath)!!.text)
+            assertEquals("active", old.status, "the approved procedure stays live")
+            assertEquals(null, old.supersededBy)
+        }
+    }
+
+    @Test
     fun `not configured is an error and writes nothing`(): Unit = runBlocking {
         Fixture(dev.svod.engine.memory.NoneMemoryExtractor).use { fx ->
             val r = fx.tools.extractMemories(fx.write, transcript, null)

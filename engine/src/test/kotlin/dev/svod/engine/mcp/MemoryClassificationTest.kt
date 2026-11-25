@@ -355,6 +355,24 @@ class MemoryClassificationTest {
     }
 
     @Test
+    fun `procedure - a provisional version does not retire the active one by subject`() = runBlocking {
+        ClassifyFixture(adjudicator = null).use { fx ->
+            val first = fx.tools.remember(fx.write, PROC_V1, "procedure", "deploy-api", null, null, null, null, null)
+            fx.index.waitIdle()
+            val firstPath = str(first, "path")!!
+
+            val second = fx.tools.remember(fx.write, PROC_V2, "procedure", "deploy-api", null, null, "provisional", null, null)
+            assertEquals("written", str(second, "status"))
+            assertEquals("provisional", str(second, "memoryStatus"))
+            // The generic path: lexical overlap in the ambiguous band with no judge ⇒ UNCERTAIN.
+            assertEquals("UNCERTAIN", str(second, "classification"))
+            assertNull(second.data["superseded"])
+            assertEquals("active", fm(fx, firstPath).status)
+            assertNull(fm(fx, firstPath).supersededBy)
+        }
+    }
+
+    @Test
     fun `procedure - context_pack enumerate type=procedure returns only the active version in full`() = runBlocking {
         ClassifyFixture(adjudicator = null).use { fx ->
             fx.tools.remember(fx.write, PROC_V1, "procedure", "deploy-api", null, null, null, null, null)

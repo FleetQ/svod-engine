@@ -74,7 +74,8 @@ data class ClassificationPlan(
  *
  * Procedures ([PROCEDURE_TYPE]) are versioned by subject, not judged by similarity: a procedure
  * with a subject that is not an exact restatement is an [Classification.UPDATE] of the active
- * procedure for that subject. A procedure without a subject takes the generic path above.
+ * procedure for that subject found among the retrieved candidates. A procedure without a subject,
+ * or one stored `provisional` (unreviewed, e.g. extracted), takes the generic path above.
  */
 class FactClassifier(
     private val engine: SvodEngine,
@@ -84,7 +85,13 @@ class FactClassifier(
     private val topK: Int = 5,
 ) {
 
-    suspend fun plan(content: String, type: String, subject: String?, targetPath: String): ClassificationPlan {
+    /**
+     * [provisional] says the incoming memory will be stored unreviewed. An unreviewed procedure must
+     * not retire the approved one, so it skips the procedure rule and takes the generic path.
+     */
+    suspend fun plan(
+        content: String, type: String, subject: String?, targetPath: String, provisional: Boolean = false,
+    ): ClassificationPlan {
         val candidates = retrieve(content, type, subject, targetPath)
         val guards = candidates.associate { it.path to it.revision }
         if (candidates.isEmpty()) {
@@ -103,7 +110,7 @@ class FactClassifier(
         val overlap = jaccard(incomingTokens, tokenize(byOverlap.body))
 
         // Procedures are versioned by subject: a new one for a subject replaces the active one.
-        if (type == PROCEDURE_TYPE && subject != null) {
+        if (type == PROCEDURE_TYPE && subject != null && !provisional) {
             return ClassificationPlan(
                 Classification.UPDATE, byOverlap, 1.0,
                 "procedure: a new version for subject '$subject' replaces the previous one", guards,

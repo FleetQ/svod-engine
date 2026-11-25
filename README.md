@@ -150,9 +150,13 @@ enforced *before* the engine is touched.
   give it a lifecycle (recall hides revoked/provisional/superseded/expired by default). `context_pack`
   with `enumerate=true` returns *every* note matching a `type`/`tags` filter **in full, unranked** —
   the "rule book" (all active policies/preferences) loaded verbatim, vs. the ranked semantic recall.
-- **Procedures.** `type: procedure` holds ordered how-to steps (one per line) for a `subject`. Each
-  new version for a subject is an attributed git commit that revokes and links the previous one (no
-  model judges it); load them all with `context_pack` `enumerate=true` `type=procedure`.
+- **Procedures.** `type: procedure` holds ordered how-to steps (one per line) for a `subject`. A new
+  `active` version for a subject is an attributed git commit that revokes and links the previous one
+  when the similarity search for the new text finds it (no model judges it; a full rewrite may not
+  be found, so pass `supersedes` then). A `provisional` version, e.g. from `extract_memories`, is not
+  matched by subject: it is classified like any other memory, so it does not retire the approved one
+  just for sharing its subject. Load them all with
+  `context_pack` `enumerate=true` `type=procedure`.
 - `remember` is the **promotion gate**: it turns an observation into a durable typed memory note —
   dedups by content, sets `status` by type (fact/policy enter `provisional`), and `supersedes` an
   older memory by revoking + linking it — so an agent-written KB doesn't poison its own recall.
