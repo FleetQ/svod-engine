@@ -266,6 +266,55 @@ curl -s --cacert /srv/svod/config/tls/svod.crt https://localhost:7517/ready
 On a loopback engine without TLS use `http://127.0.0.1:7517/ready`. Restart is `systemctl restart svod`;
 a restart was exercised in the gate (users, agents and tokens come back from `config.json`).
 
+## 5a. Encryption at rest
+
+**[not run]** The engine does not encrypt anything itself; the supported setup is a LUKS2 volume
+whose passphrase or key you hold ([ADR-0021](adr/0021-encryption-at-rest.md)). Everything the
+engine writes on this host is under `/srv/svod` (section 2: the vaults, the config directory with
+`secrets/` and `audit-api.log`, and the service user's home with `~/.svod/logs`, `~/.config/svod`
+and `~/.cache/svod-models`), so one volume mounted at `/srv/svod` covers all of it. The full path
+list is in [security-overview.md, Encryption at rest](security-overview.md#encryption-at-rest).
+Set this up **before** section 2, on an empty disk or partition (`/dev/sdb` below is an example).
+
+```bash
+sudo apt-get install -y cryptsetup
+sudo cryptsetup luksFormat --type luks2 /dev/sdb      # asks for the passphrase; keep it in your password manager
+sudo cryptsetup open /dev/sdb svod-data
+sudo mkfs.ext4 /dev/mapper/svod-data
+sudo mkdir -p /srv/svod
+sudo mount /dev/mapper/svod-data /srv/svod
+```
+
+To unlock and mount it at boot, add it to `/etc/crypttab` and `/etc/fstab` (with `nofail` the host
+still boots when nobody types the passphrase; the engine then stays down, see below):
+
+```
+# /etc/crypttab
+svod-data  UUID=<uuid of /dev/sdb from blkid>  none  luks
+# /etc/fstab
+/dev/mapper/svod-data  /srv/svod  ext4  defaults,nofail  0  2
+```
+
+`none` means the passphrase is asked for at boot. A key file instead of `none` must itself live on
+storage you control (not on the same disk unencrypted), or the encryption protects nothing.
+
+If logs must live elsewhere, point `SVOD_LOG_DIR` (an `Environment=` line in the unit) at a folder
+on the encrypted volume, never at an unencrypted path.
+
+The engine must start only after the volume is unlocked and mounted, or it would create an empty
+vault on the root disk underneath the mount point. Add to the `[Unit]` section of
+`/etc/systemd/system/svod.service` (section 5):
+
+```ini
+RequiresMountsFor=/srv/svod
+```
+
+Then `sudo systemctl daemon-reload`. With the volume locked, `systemctl start svod` waits for or
+fails on the mount instead of starting.
+
+Backup and sync remotes (sections 10 and 11) receive the full git history and are outside this
+volume: keep them on encrypted storage too. The same goes for the Sentry project if `SENTRY_DSN` is set.
+
 ## 6. TLS and reverse proxy
 
 Which one do you need?

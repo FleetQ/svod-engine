@@ -654,9 +654,9 @@ guard for hosted engines (`denyPrivateRemotes`) → admin-only `GET /stats` coun
 Full suite green;
 CI gates every change; packaged as self-contained app-images **and** GraalVM `native-image` single
 binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.42.0**
-(versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0020) for the decision record.
+(versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0021) for the decision record.
 
-Deferred (documented, not hidden): encryption-at-rest (spec-optional; relies on disk encryption).
+Deferred (documented, not hidden): encryption built into the engine. Encryption at rest is handled by host volume encryption with a key the customer holds ([ADR-0021](docs/adr/0021-encryption-at-rest.md), [paths to put on the volume](docs/security-overview.md#encryption-at-rest)).
 The GraalVM `native-image` binary now ships for all three OSes (built on Oracle GraalVM/JDK 23; serves
 BM25/Ollama, not in-process onnx-local — see
 [ADR-0015](docs/adr/0015-native-image-and-cross-platform-releases.md)).

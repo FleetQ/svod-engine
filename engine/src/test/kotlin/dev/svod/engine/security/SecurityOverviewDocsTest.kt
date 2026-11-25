@@ -217,6 +217,97 @@ class SecurityOverviewDocsTest {
         }
     }
 
+    /** [p] under user.home, written the way the page writes it: `~/...`. */
+    private fun underHome(p: Path, what: String): String {
+        val home = Paths.get(System.getProperty("user.home")).toAbsolutePath()
+        assertTrue(p.toAbsolutePath().startsWith(home), "$what ($p) is no longer under user.home; update $PAGE '## Encryption at rest'")
+        return "~/" + home.relativize(p.toAbsolutePath()).toString().replace('\\', '/')
+    }
+
+    @Test
+    fun encryptionAtRestSectionListsEveryDataPath() {
+        val enc = section("Encryption at rest")
+        val where = "## Encryption at rest"
+        val main = engineDir.resolve("src/main/kotlin/dev/svod/engine")
+
+        // Vault locations: the config keys, and every top-level directory inside a vault.
+        listOf("vaults[].path", "vaultPath").forEach { assertBackticked(enc, it, where) }
+        VaultPath.RESERVED_TOP.forEach { assertBackticked(enc, "$it/", where) }
+        // Every named file or directory the engine creates directly under a vault's .svod/.
+        val svodChildren = Files.walk(main).use { s ->
+            s.filter { it.toString().endsWith(".kt") }.toList().flatMap { f ->
+                Regex("""\.resolve\("\.svod"\)\.resolve\("([^"]+)"\)""").findAll(Files.readString(f)).map { it.groupValues[1] }.toList()
+            }
+        }.toSet()
+        assertTrue("index" in svodChildren && "audit" in svodChildren, "found no .svod/index or .svod/audit in the sources: $svodChildren")
+        svodChildren.forEach { assertBackticked(enc, ".svod/$it", where) }
+
+        // Fixed paths under user.home spelled as literals in the sources, the way auditPathsMatchSource reads them.
+        val homeLiteral = Regex("""System\.getProperty\("user\.home"\),\s*((?:"[^"]+"\s*,?\s*)+)\)""")
+        val literals = listOf("lifecycle/SvodNode.kt", "lifecycle/VaultController.kt", "Main.kt").flatMap { f ->
+            homeLiteral.findAll(Files.readString(main.resolve(f))).map { m ->
+                "~/" + Regex(""""([^"]+)"""").findAll(m.groupValues[1]).joinToString("/") { it.groupValues[1] }
+            }.toList()
+        }.toSet()
+        assertTrue("~/.svod/secrets" in literals, "SvodNode.kt no longer falls back to ~/.svod/secrets: $literals")
+        assertTrue("~/.svod/vaults" in literals, "VaultController.kt no longer creates vaults under ~/.svod/vaults: $literals")
+        literals.forEach { assertBackticked(enc, it, where) }
+
+        // Fixed paths under user.home held in constants.
+        listOf(
+            underHome(dev.svod.engine.lifecycle.EngineDiscovery.DEFAULT_PATH, "EngineDiscovery.DEFAULT_PATH"),
+            underHome(dev.svod.engine.lifecycle.HostIdentity.DEFAULT_PATH, "HostIdentity.DEFAULT_PATH"),
+            underHome(dev.svod.engine.lifecycle.UpdateService.DEFAULT_LOG, "UpdateService.DEFAULT_LOG"),
+            underHome(dev.svod.engine.index.ModelManager.sharedCacheDir(), "ModelManager.sharedCacheDir()"),
+        ).forEach { assertBackticked(enc, it, where) }
+
+        // Files the engine writes next to the config file.
+        val node = Files.readString(main.resolve("lifecycle/SvodNode.kt"))
+        assertTrue("""parent?.resolve("secrets")""" in node, "SvodNode.kt no longer keeps secrets next to the config; update $PAGE")
+        assertBackticked(enc, "secrets/", where)
+        val configFiles = Regex("""configDir\.resolve\("([^"]+)"\)""").findAll(node).map { it.groupValues[1] }.toSet()
+        assertTrue("audit-api.log" in configFiles, "found no configDir files in SvodNode.kt: $configFiles")
+        configFiles.forEach { assertBackticked(enc, it, where) }
+
+        // Logs: the variable and its default come from logback.xml.
+        val logback = Files.readString(engineDir.resolve("src/main/resources/logback.xml"))
+        val logDir = assertNotNull(Regex("""\$\{(\w+):-\$\{user\.home\}/([^}]+)\}""").find(logback), "logback.xml log dir pattern changed")
+        assertBackticked(enc, "$" + logDir.groupValues[1], where)
+        assertBackticked(enc, "~/" + logDir.groupValues[2], where)
+
+        // What the volume does not cover, and who holds the key.
+        val lower = enc.lowercase()
+        assertTrue("remote" in lower && "sentry" in lower, "$PAGE '$where' must say sync/backup remotes and Sentry are outside the volume")
+        assertTrue("key" in lower && "never" in lower, "$PAGE '$where' must say the customer holds the key and Svod never sees it")
+        listOf("LUKS", "FileVault", "BitLocker").forEach { assertTrue(it in enc, "$PAGE '$where' does not name $it") }
+    }
+
+    @Test
+    fun encryptionAtRestAdrIsLinked() {
+        val adr = "docs/adr/0021-encryption-at-rest.md"
+        val adrPath = repoRoot.resolve(adr)
+        assertTrue(Files.exists(adrPath), "$adr does not exist")
+        val adrText = Files.readString(adrPath)
+        assertTrue(Regex("""Status:\s*\*\*Accepted\*\*""").containsMatchIn(adrText), "$adr must be Accepted")
+        assertTrue("## Revisit when" in adrText, "$adr must state when to revisit the decision")
+
+        val glance = page.lines().first { it.startsWith("| Is data encrypted at rest?") }
+        assertTrue("(adr/0021-encryption-at-rest.md)" in glance, "$PAGE '## At a glance' encryption row must link ADR-0021")
+        assertTrue("(#encryption-at-rest)" in glance, "$PAGE '## At a glance' encryption row must link the Encryption at rest section")
+        assertTrue("| No, not by Svod." !in glance, "$PAGE '## At a glance' still gives the old flat answer")
+        assertTrue("(adr/0021-encryption-at-rest.md)" in section("Known gaps"), "$PAGE '## Known gaps' must link ADR-0021")
+
+        val readme = Files.readString(repoRoot.resolve("README.md"))
+        val deferred = readme.lines().first { it.startsWith("Deferred") }
+        assertTrue("relies on disk encryption" !in deferred, "README.md 'Deferred' line still has the old encryption-at-rest wording")
+        assertTrue("($adr)" in deferred, "README.md 'Deferred' line must link $adr")
+        assertTrue("($PAGE#encryption-at-rest)" in deferred, "README.md 'Deferred' line must link $PAGE#encryption-at-rest")
+
+        val runbook = Files.readString(repoRoot.resolve("docs/runbook-central-instance.md"))
+        assertTrue("(adr/0021-encryption-at-rest.md)" in runbook, "the central-instance runbook must link ADR-0021")
+        assertTrue("RequiresMountsFor=" in runbook, "the central-instance runbook must order the engine after the encrypted mount")
+    }
+
     @Test
     fun outboundConnectionsListEveryNetworkClient() {
         val out = section("Outbound connections")
