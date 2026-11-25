@@ -165,6 +165,22 @@ class ObsidianGuideDocsTest {
             assertTrue(resolves(register, f), "RegisterSourceRequestDto has no `$f`")
             assertBackticked(sources, f, "## Notes that live elsewhere")
         }
+        // When sources sync on their own: autoSync sources are watched, so "only when you call the API"
+        // must be limited to sources without autoSync.
+        val watchManager = Files.readString(engineDir.resolve("src/main/kotlin/dev/svod/engine/sources/SourceWatchManager.kt"))
+        assertTrue(
+            "store.list().filter { it.autoSync && pathExists(it) }" in watchManager,
+            "SourceWatchManager no longer watches exactly the autoSync sources; update $PAGE '## Notes that live elsewhere'",
+        )
+        assertTrue(
+            Regex("""`autoSync`:[^\n]*watcher[^\n]*re-syncs""").containsMatchIn(sources),
+            "$PAGE must say an `autoSync` source is re-synced by a watcher when its files change",
+        )
+        val onlyApi = Regex("""(?s)[^.]*only when you call the API[^.]*""").findAll(sources).map { it.value }.toList()
+        assertTrue(onlyApi.isNotEmpty(), "$PAGE must say when a source syncs without a schedule")
+        onlyApi.forEach {
+            assertTrue("without `autoSync`" in it, "$PAGE: '${it.trim()}' must be limited to sources without `autoSync`")
+        }
         val server = Files.readString(engineDir.resolve("src/main/kotlin/dev/svod/engine/api/AppApiServer.kt"))
         assertTrue("post(\"/api/v1/sources\")" in server && "post(\"/api/v1/sources/sync\")" in server, "the sources routes moved; update $PAGE")
         assertTrue("/api/v1/sources" in sources, "$PAGE '## Notes that live elsewhere' must name /api/v1/sources")

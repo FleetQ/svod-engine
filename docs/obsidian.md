@@ -79,15 +79,22 @@ An import is a one-time copy. If some notes live outside the vault (in another p
 repository, say) and should keep coming in as they change, register that path as an external
 source instead. See [ADR-0016](adr/0016-external-sources-and-symlink-import.md) for the design.
 
-- `POST /api/v1/sources` registers an absolute `path`, with an optional `into` folder and the
-  options `followSymlinks`, `prune` (soft-delete vault copies of files removed from the source),
-  `autoSync` and `writeBack`. `GET /api/v1/sources` lists the registered sources.
+- `POST /api/v1/sources` registers an absolute `path`, with an optional `into` folder and these
+  options (all off by default):
+  - `followSymlinks`: copy symlinked files and folders in instead of skipping them.
+  - `prune`: soft-delete vault copies of files removed from the source.
+  - `autoSync`: watch the source path; a filesystem watcher re-syncs that source shortly after its
+    files change, with no config and no API call needed (only while the path exists).
+  - `writeBack`: two-way; a vault edit to a file that came from the source is written back to it,
+    unless the source file changed too (then it is a conflict).
+
+  `GET /api/v1/sources` lists the registered sources.
 - `POST /api/v1/sources/sync` syncs every source, and `POST /api/v1/sources/{id}/sync` syncs one.
   Changes made at the source come in; a vault copy you edited since is reported as a conflict, not
   overwritten.
 - To sync on a schedule, set `sourceSync` in the config: `sourceSync.onStartup` runs one sync when
   the engine starts, and `sourceSync.intervalMinutes` repeats it at that interval. With neither set,
-  sources sync only when you call the API.
+  a source without `autoSync` syncs only when you call the API.
 
 ## What Obsidian does not do here
 
