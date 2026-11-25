@@ -55,6 +55,9 @@ class InstallScriptConsistencyTest {
 
     @Test
     fun `install script archive names match UpdateService platforms`() {
+        // The update check looks up archiveName(hostLabel) in SHA256SUMS; its default stays tar.gz on every platform.
+        assertEquals("SvodEngine-windows-x64.tar.gz", UpdateService.archiveName("windows-x64"))
+        assertEquals("SvodEngine-windows-x64.zip", UpdateService.archiveName("windows-x64", "zip"))
         val allowed = UpdateService.PLATFORM_LABELS.map { UpdateService.archiveName(it) }.toSet()
         val names = scriptArchives()
         val unknown = names - allowed

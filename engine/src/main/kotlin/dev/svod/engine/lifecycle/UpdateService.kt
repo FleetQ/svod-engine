@@ -242,11 +242,10 @@ class UpdateService(
         internal val PLATFORM_LABELS = listOf(MACOS_LABEL, LINUX_LABEL, WINDOWS_LABEL)
 
         /**
-         * The app-image archive name for a platform label as the release publishes it, e.g.
-         * `SvodEngine-linux-x64.tar.gz` or `SvodEngine-windows-x64.zip`.
+         * The app-image archive name for a platform label, e.g. `SvodEngine-linux-x64.tar.gz`
+         * (the Windows release publishes `archiveName("windows-x64", "zip")`).
          */
-        internal fun archiveName(label: String, ext: String = if (label == WINDOWS_LABEL) "zip" else "tar.gz") =
-            "SvodEngine-$label.$ext"
+        internal fun archiveName(label: String, ext: String = "tar.gz") = "SvodEngine-$label.$ext"
 
         private fun currentHostLabel(): String {
             val os = System.getProperty("os.name").lowercase()
