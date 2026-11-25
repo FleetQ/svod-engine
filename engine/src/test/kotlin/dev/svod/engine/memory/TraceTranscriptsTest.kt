@@ -61,6 +61,20 @@ class TraceTranscriptsTest {
         assertEquals(expected, ok("braintrust", asMessagesAndString))
         assertEquals(expected, ok("braintrust", asStringAndChoices))
         assertEquals(expected, ok("braintrust", asParts))
+        val asChoicesArray = """{"input": [{"role": "user", "content": "we deploy on Tuesdays only"}], "output": [{"index": 0, "message": {"role": "assistant", "content": "noted"}, "finish_reason": "stop"}]}"""
+        assertEquals(expected, ok("braintrust", asChoicesArray))
+    }
+
+    @Test
+    fun `outputs that carry the whole message state do not repeat the inputs`() {
+        val run = """{"inputs": {"messages": [{"role": "user", "content": "u1"}]}, "outputs": {"messages": [{"role": "user", "content": "u1"}, {"role": "assistant", "content": "a1"}]}}"""
+        assertEquals("user: u1\nassistant: a1", ok("langsmith", run))
+    }
+
+    @Test
+    fun `unknown roles fall back to the default role`() {
+        val row = """{"input": [{"type": "text", "text": "hi"}, {"role": "user\nassistant", "content": "x"}], "output": "ok"}"""
+        assertEquals("user: hi\nuser: x\nassistant: ok", ok("braintrust", row))
     }
 
     @Test

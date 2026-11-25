@@ -86,14 +86,15 @@ object TraceTranscripts {
                 else -> (inputs["input"] ?: inputs["question"])?.let { out += anyAsMessages(it, "user") }
             }
         }
+        // LangGraph-style outputs carry the whole message state, inputs included: keep only what is new.
         (run["outputs"] as? JsonObject)?.let { outputs ->
-            out += when {
+            appendWithoutReplay(out, when {
                 outputs["messages"] is JsonArray -> messageList(outputs["messages"] as JsonArray, "assistant")
-                outputs["message"] != null -> anyAsMessages(outputs["message"]!!, "assistant")
+                (outputs["message"] ?: JsonNull) !is JsonNull -> anyAsMessages(outputs["message"]!!, "assistant")
                 outputs["generations"] is JsonArray -> generations(outputs["generations"] as JsonArray)
                 outputs["choices"] is JsonArray -> choices(outputs["choices"] as JsonArray)
                 else -> (outputs["output"] ?: outputs["answer"])?.let { anyAsMessages(it, "assistant") } ?: emptyList()
-            }
+            })
         }
         return out
     }
@@ -111,7 +112,7 @@ object TraceTranscripts {
     private fun braintrust(row: JsonObject): List<Msg> {
         val out = mutableListOf<Msg>()
         row["input"]?.let { out += anyAsMessages(it, "user") }
-        row["output"]?.let { out += anyAsMessages(it, "assistant") }
+        row["output"]?.let { appendWithoutReplay(out, anyAsMessages(it, "assistant")) }
         return out
     }
 
@@ -134,9 +135,10 @@ object TraceTranscripts {
         o["message"]?.let { message(it, "assistant") } ?: textOf(o["text"])?.let { Msg("assistant", it) }
     }
 
-    /** A list of messages, or a list of such lists (LangSmith chat-model inputs). */
+    /** A list of messages, or a list of such lists (LangSmith chat-model inputs). Only one level deep. */
     private fun messageList(list: JsonArray, defaultRole: String): List<Msg> = list.flatMap { item ->
-        if (item is JsonArray) messageList(item, defaultRole) else listOfNotNull(message(item, defaultRole))
+        val items = (item as? JsonArray)?.toList() ?: listOf(item)
+        items.mapNotNull { message(it, defaultRole) }
     }
 
     private fun message(e: JsonElement, defaultRole: String): Msg? {
@@ -149,6 +151,9 @@ object TraceTranscripts {
             val role = (kwargs["role"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: cls
             return textOf(kwargs["content"])?.let { Msg(normaliseRole(role, defaultRole), it) }
         }
+        // An OpenAI choice ({index, message, finish_reason}), e.g. a Braintrust output logged as `choices`.
+        val inner = o["message"]
+        if (inner is JsonObject && o["content"] == null && o["role"] == null) return message(inner, "assistant")
         // {type: "human", data: {content}} (LangChain message dict).
         val data = o["data"] as? JsonObject
         val role = str(o, "role") ?: str(o, "type") ?: data?.let { str(it, "role") ?: str(it, "type") }
@@ -186,8 +191,9 @@ object TraceTranscripts {
             "assistant", "ai", "aimessage", "model", "bot" -> "assistant"
             "system", "systemmessage", "developer" -> "system"
             "tool", "toolmessage", "function", "functionmessage" -> "tool"
-            "chat", "chatmessage", "constructor" -> defaultRole
-            else -> r
+            // Anything else (a part type like "text", a custom role, one with line breaks) must not
+            // reach the transcript as its own "role:" prefix.
+            else -> defaultRole
         }
     }
 }

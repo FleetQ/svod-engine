@@ -13,6 +13,7 @@ import dev.svod.engine.memory.ClassificationPlan
 import dev.svod.engine.memory.FactClassifier
 import dev.svod.engine.memory.MemoryAdjudicator
 import dev.svod.engine.memory.MemoryCandidate
+import dev.svod.engine.memory.TraceTranscripts
 import dev.svod.engine.memory.frontmatterFences
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
@@ -694,23 +695,26 @@ class SvodTools(
     }
 
     /**
-     * Turn a finished conversation [transcript] into memories: the configured [MemoryExtractor] proposes
+     * Turn a finished conversation [rawTranscript] into memories: the configured [MemoryExtractor] proposes
      * candidates and each goes through the same gate as [remember]. Every candidate is stored
      * `provisional` whatever `requireReview` says — a model-extracted memory is never trusted without a
      * person's review. A transcript with secrets is refused before any model sees it.
-     * A [format] of `langsmith` or `braintrust` reads [transcript] as a run export and converts it
-     * first ([dev.svod.engine.memory.TraceTranscripts]); the converted text then takes the same path.
+     * A [format] of `langsmith` or `braintrust` reads [rawTranscript] as a run export and converts it
+     * first ([TraceTranscripts]); the converted text then takes the same path.
      */
     suspend fun extractMemories(
         agent: AgentIdentity, rawTranscript: String, source: String?, maxMemories: Int = 10, format: String? = null,
     ): ToolResult = guarded(agent, "extract_memories", write = true) {
         val fmt = format?.trim()?.lowercase()?.takeIf { it.isNotEmpty() && it != "text" }
         val transcript = if (fmt == null) rawTranscript else {
+            if (fmt !in TraceTranscripts.FORMATS) {
+                return@guarded ToolResult.badRequest("unknown format '${fmt.take(40)}'; use text, ${TraceTranscripts.FORMATS.joinToString(" or ")}")
+            }
             val maxExport = maxTranscriptChars.toLong() * 10
             if (rawTranscript.length > maxExport) {
                 return@guarded ToolResult.badRequest("$fmt export is ${rawTranscript.length} characters; the limit is $maxExport (10 × memory.extractionMaxTranscriptChars)")
             }
-            dev.svod.engine.memory.TraceTranscripts.toTranscript(fmt, rawTranscript).getOrElse { e ->
+            TraceTranscripts.toTranscript(fmt, rawTranscript).getOrElse { e ->
                 audit.record(agent.agentId, "extract_memories", "bad_request", detail = "cannot read $fmt export")
                 return@guarded ToolResult.badRequest("cannot read $fmt export: ${e.message}")
             }
