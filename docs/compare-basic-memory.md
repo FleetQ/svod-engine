@@ -9,7 +9,8 @@ from this repository, and facts about Basic Memory come from its public pages (s
 ## What both share
 
 - **Markdown is the store of record.** Notes are ordinary `.md` files with frontmatter. You can
-  open, edit and grep them with any editor, including Obsidian.
+  open, edit and grep them with any editor, including Obsidian (see
+  [Using a Svod vault with Obsidian](obsidian.md)).
 - **MCP is the agent interface.** Agents read, search and write memory through MCP tools rather
   than a vendor SDK.
 - **Local-first.** Both run on your own machine against a folder you own. Neither needs a cloud
