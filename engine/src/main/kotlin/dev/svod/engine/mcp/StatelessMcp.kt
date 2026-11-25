@@ -41,19 +41,22 @@ object McpProtocol {
     const val HEADER_SESSION_ID = "Mcp-Session-Id"
 
     /**
-     * SEP-2549 cache hints for `tools/list`. Svod's catalogue is a compile-time constant — the same
-     * 15 tools with the same schemas for every agent — so a day is safe and a client that caches it
-     * can skip the call entirely. `cacheScope: "server"` says the response does not vary by client
-     * or session, so one cached copy serves every agent talking to this engine.
+     * SEP-2549 cache hints for `tools/list`. The catalogue is not the same for every agent: a
+     * READ_ONLY agent is offered only the reader tools (GrantResolver.advertised), and tool
+     * descriptions depend on the agent's requireReview setting. `cacheScope: "client"` says one
+     * cached copy must never be shared across tokens. The TTL is an hour, so a client that cached
+     * the list before a READ_ONLY↔WRITE role change refreshes soon; the server still refuses any
+     * call the agent may not make in the meantime.
      */
-    const val TOOLS_TTL_MS = 86_400_000L
-    const val TOOLS_CACHE_SCOPE = "server"
+    const val TOOLS_TTL_MS = 3_600_000L
+    const val TOOLS_CACHE_SCOPE = "client"
 }
 
 /**
  * One tool, independent of the wire format that reaches it: the legacy path registers these on the
  * SDK's `Server`, the stateless path serves `tools/list` and `tools/call` straight from them. One
- * catalogue, so the two formats can never advertise or accept different tools.
+ * catalogue, so the two formats can never advertise or accept different tools. The list is
+ * filtered per agent by GrantResolver.advertised: a tool left out is neither listed nor callable.
  */
 internal class ToolDef(
     val name: String,

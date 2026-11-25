@@ -34,6 +34,12 @@ class McpHttpIntegrationTest {
     private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolResult.text(): String =
         (content.firstOrNull { it is TextContent } as TextContent).text!!
 
+    /** How a call to [tool] fails, with the tool name blanked so two names can be compared. */
+    private suspend fun Client.outcome(tool: String): String = runCatching { callTool(tool, emptyMap<String, Any?>()) }.fold(
+        { "result isError=${it.isError} ${(it.content.firstOrNull() as? TextContent)?.text?.replace(tool, "<tool>")}" },
+        { "error ${it::class.simpleName} ${it.message?.replace(tool, "<tool>")}" },
+    )
+
     @Test
     fun `tools work over HTTP with bearer auth and identity flows to git`() = runBlocking {
         McpFixture().use { fx ->
@@ -60,13 +66,13 @@ class McpHttpIntegrationTest {
                     assertTrue(s.text().contains("http/a.md"), "search over HTTP returns the note")
                 } finally { scribe.close() }
 
-                // --- read-only agent is denied over the wire ---
+                // --- read-only agent is not offered write, and calling it looks like an unknown tool ---
                 val reader = connect(port, "read-token")
                 try {
-                    val denied = reader.callTool("write", mapOf("path" to "http/x.md", "content" to "no"))
-                    assertEquals(true, denied.isError, "read-only agent's write must be an error result")
-                    assertTrue(denied.text().contains("denied"))
-                    // and it can still read
+                    val names = reader.listTools().tools.map { it.name }
+                    assertTrue("write" !in names, "read-only agent must not see write: $names")
+                    assertTrue("read" in names)
+                    assertEquals(reader.outcome("no_such_tool"), reader.outcome("write"), "hidden write fails like an unknown tool")                    // and it can still read
                     val r = reader.callTool("read", mapOf("path" to "http/a.md"))
                     assertTrue(r.text().contains("written via mcp"))
                 } finally { reader.close() }

@@ -184,7 +184,7 @@ enforced *before* the engine is touched.
   gets 404 and re-initializes. Stateless (2026-07-28) requests keep no session.
 - `promote` moves a note from a scratch `messy/` namespace into the curated `vault/` (a
   revision-checked move) — the "draft → publish" path for agents.
-- A read-only agent's mutation is denied and audited; an over-quota agent gets `rate_limited`;
+- A `READ_ONLY` token is not offered write tools, and calling one fails as an unknown tool; an over-quota agent gets `rate_limited`;
   every action (including denials and conflicts) lands in an append-only audit log.
 
 ### Connecting an LLM agent

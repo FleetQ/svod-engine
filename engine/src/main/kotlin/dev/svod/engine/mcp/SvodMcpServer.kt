@@ -521,7 +521,9 @@ class SvodMcpServer(
         ) { req ->
             val (t, d) = routed(req, "graph_status"); d ?: t!!.graphStatus(agent).toCallToolResult()
         }
-        return tools
+        // A READ_ONLY agent is never offered (or able to reach) a writing tool: both wire formats
+        // serve this list, so a hidden name fails exactly like a tool that does not exist.
+        return tools.filter { GrantResolver.advertised(agent, it.name) }
     }
 
     companion object {

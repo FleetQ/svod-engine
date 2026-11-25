@@ -70,7 +70,9 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
   ([`lifecycle/AgentController.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/AgentController.kt)).
   Tokens may be given as secret references, and token comparison is constant-time
   ([`mcp/Agent.kt`](../engine/src/main/kotlin/dev/svod/engine/mcp/Agent.kt)). Each agent is
-  granted specific vaults with a role per vault (ADR-0020).
+  granted specific vaults with a role per vault (ADR-0020). A `READ_ONLY` agent is never offered
+  write tools: its `tools/list` lists only the reading tools, and a write tool called by name is
+  answered like a tool that does not exist.
 - **People (App API).** Personal keys are `svk_`-prefixed, 256 random bits from `SecureRandom`
   ([`lifecycle/UserController.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/UserController.kt)).
   The config holds only a reference to the key: `env:`, `file:` or `keychain:`.
@@ -123,13 +125,14 @@ Svod is software you run yourself. It is not a hosted service, and no Svod opera
 
 ## Audit trail
 
-- **Agents.** Every MCP write (successful, conflicting or blocked), every call refused for the
-  agent's role and every rate-limited call is appended as one JSON line to
+- **Agents.** Every MCP write (successful, conflicting or blocked), every call refused by a
+  per-vault grant role and every rate-limited call is appended as one JSON line to
   `.svod/audit/audit.log` inside each vault, created owner-only
   ([`mcp/AuditLog.kt`](../engine/src/main/kotlin/dev/svod/engine/mcp/AuditLog.kt),
   [`mcp/SvodTools.kt`](../engine/src/main/kotlin/dev/svod/engine/mcp/SvodTools.kt),
   wired in [`lifecycle/SvodNode.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/SvodNode.kt)).
   Successful read-only calls (`read`, `search`, `context_pack` and the like) are not logged.
+  A `READ_ONLY` agent's attempt to call a write tool never reaches a tool, so it is not logged.
 - **People.** Every keyed App API request, and every refusal, is one JSON line in
   `audit-api.log` in the config directory. The file is created 0600 and never contains request
   bodies, query strings (except the `vault` parameter) or `Authorization` values

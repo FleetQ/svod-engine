@@ -37,6 +37,12 @@ class McpGrantRolesTest {
     private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolResult.text(): String =
         (content.firstOrNull { it is TextContent } as TextContent).text!!
 
+    /** How a call to [tool] fails, with the tool name blanked so two names can be compared. */
+    private suspend fun Client.outcome(tool: String): String = runCatching { callTool(tool, emptyMap<String, Any?>()) }.fold(
+        { "result isError=${it.isError} ${(it.content.firstOrNull() as? TextContent)?.text?.replace(tool, "<tool>")}" },
+        { "error ${it::class.simpleName} ${it.message?.replace(tool, "<tool>")}" },
+    )
+
     private fun spec(token: String, role: AgentRole = AgentRole.WRITE, vaults: List<String> = listOf("work"),
                      user: String? = null, roles: Map<String, GrantRole> = emptyMap()) =
         AgentRegistry.AgentSpec(token, token, role, vaults = vaults, userId = user, grantRoles = roles)
@@ -143,8 +149,11 @@ class McpGrantRolesTest {
     fun `READ_ONLY ceiling wins over a maintainer grant`() = run(listOf(spec("ro", role = AgentRole.READ_ONLY, roles = mapOf("work" to GrantRole.MAINTAINER)))) { port ->
         val c = connect(port, "ro")
         try {
-            c.mayNot("write", mutations.getValue("write"), "reader", "ro")
-            c.mayNot("promote", mutations.getValue("promote"), "reader", "ro")
+            val names = c.listTools().tools.map { it.name }.toSet()
+            assertTrue("write" !in names && "promote" !in names, "READ_ONLY must not see write or promote: $names")
+            val unknown = c.outcome("no_such_tool")
+            assertEquals(unknown, c.outcome("write"), "hidden write fails like an unknown tool")
+            assertEquals(unknown, c.outcome("promote"), "hidden promote fails like an unknown tool")
             c.ok("list", emptyMap())
         } finally { c.close() }
     }
