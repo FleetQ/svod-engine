@@ -435,12 +435,16 @@ class SvodMcpServer(
                 "contradiction/supersede links). Every result is stored 'provisional': hidden from search and context_pack " +
                 "until a person approves it in the Svod app's review queue. A transcript containing secrets is refused before " +
                 "any model sees it. Not for scratch notes: write those under messy/. 'maxMemories' defaults to 10 (max 20). " +
-                "Without a configured model it returns an error and writes nothing.",
-            mapOf("transcript" to "string", "source" to "string", "maxMemories" to "integer"),
+                "Without a configured model it returns an error and writes nothing. " +
+                "'format' may be 'langsmith' or 'braintrust' to pass a run export (JSON object, array or JSONL) instead of a " +
+                "plain transcript; it is converted to a transcript first.",
+            mapOf("transcript" to "string", "source" to "string", "maxMemories" to "integer", "format" to "string"),
             listOf("transcript"),
         ) { req ->
             val (t, d) = routed(req, "extract_memories")
-            d ?: t!!.extractMemories(agent, req.str("transcript") ?: "", req.str("source"), req.int("maxMemories", 10)).toCallToolResult()
+            d ?: t!!.extractMemories(
+                agent, req.str("transcript") ?: "", req.str("source"), req.int("maxMemories", 10), format = req.str("format"),
+            ).toCallToolResult()
         }
         tool("list", "List every note path (optionally filtered by prefix). On a real vault that is thousands of paths: use tree to orient and search or grep to find a note.", mapOf("pathPrefix" to "string"), emptyList()) { req ->
             val (t, d) = routed(req, "list"); d ?: t!!.list(agent, req.str("pathPrefix")).toCallToolResult()

@@ -175,7 +175,9 @@ enforced *before* the engine is touched.
   gate. Its output is **always `provisional`**, whatever `requireReview` says, so it waits in the
   Memory review queue and stays out of recall until a person approves it. A transcript with secrets
   is refused before any model sees it. With no provider configured (the default) the tool answers
-  "not configured" and writes nothing.
+  "not configured" and writes nothing. Pass `format: "langsmith"` or `format: "braintrust"` to hand
+  it a run export (JSON object, array or JSONL) instead of a plain transcript: it is converted to a
+  `role: text` transcript first, which gets the same secret check and provisional review.
 - `write` / `delete` / `move` take an optional `expectedRevision` for optimistic concurrency —
   a mismatch returns a structured `conflict` (with current content), not a protocol error.
 - `move` rewrites all backlinks atomically.
