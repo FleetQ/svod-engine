@@ -13,7 +13,7 @@ independently of the engine; each entry notes the contract version it ships.
   `SHA256SUMS` when present (warns when not), unpacks it to `~/.svod/<tag>` with a `~/.svod/current` symlink, runs
   `init ~/svod` only when `~/svod/config.json` does not exist yet, and prints the next steps. `SVOD_HOME` and
   `SVOD_VAULT_DIR` override the paths. `InstallScriptConsistencyTest` keeps its archive names and binary paths in
-  step with `UpdateService.PLATFORM_LABELS` and the README table. No engine or contract change.
+  step with `UpdateService.PLATFORM_LABELS` and the README table (`UpdateService` now builds its archive names from them; no behaviour change). No contract change.
 - `svod-engine import-claude-memory <config.json> <memory-dir> [into]` (engine stopped) imports a Claude Code
   auto-memory folder under `into` (default `claude-memory`), one note per memory file. Frontmatter is kept; when
   it has no `tags`/`tag` key, a `tags: [claude-memory, <type>]` line is added, the type taken from `metadata.type` or
