@@ -18,12 +18,16 @@ In Obsidian choose **Open folder as vault** and pick the vault folder from your 
 - **Engine folders.** `.git/` holds history and `.svod/` holds the search index and engine state.
   Both belong to the engine; the watcher ignores them. Do not edit them by hand.
 - **Deleted notes.** When an agent or the App API deletes a note, it moves to `.trash/` (a soft
-  delete) and can be restored from there.
+  delete) and can be restored from there. A note you delete in Obsidian is handled by Obsidian
+  (its "Deleted files" setting decides where it goes), and the watcher commits the result as an
+  `external` change. The old version stays in git history either way.
 - **Obsidian's own settings.** Obsidian keeps its settings and window layout in `.obsidian/` inside
   the vault folder. The watcher commits the paths it sees change, and it does not read `.gitignore`,
   so changes Obsidian makes under `.obsidian/` (for example the workspace layout file it rewrites as
   you move around) are committed too, as `external`. Expect those commits in `git log`. They are not
-  notes and do not appear in search.
+  notes and do not appear in search. If the vault syncs between machines and Obsidian is open on
+  more than one of them, a `.obsidian/` file changed on both is a non-Markdown file changed on both
+  sides, so sync reports it as a conflict for you to resolve.
 
 ## Links and backlinks
 
@@ -60,6 +64,11 @@ curl -X POST http://127.0.0.1:7517/api/v1/import \
   -H 'Content-Type: application/json' \
   -d '{"source": "/path/to/obsidian-vault", "format": "obsidian", "into": "", "followSymlinks": false}'
 ```
+
+Import (and the sources routes below) need an engine admin. On your own machine with the default
+`localAdmin` setting, a request from `127.0.0.1` without a key is the admin; on a shared engine add
+`-H 'Authorization: Bearer <admin key>'`. With several vaults, add `?vault=<id>` to the URL to pick
+the vault to import into.
 
 What the import does:
 
@@ -105,8 +114,9 @@ source instead. See [ADR-0016](adr/0016-external-sources-and-symlink-import.md) 
   unless the plugin writes it to a file.
 - **Renames made in Obsidian are ordinary file changes.** When you rename a note in Obsidian,
   Obsidian updates the links itself (if that setting is on), and the watcher commits the result as
-  `external` edits. This does not go through the engine's `move`, so there is no single
-  link-rewriting commit and no `rewrittenBacklinks` list. To rename with that guarantee, let an
+  `external` edits. This does not go through the engine's `move`, so the rename and the link
+  updates are not guaranteed to land in one commit (the watcher groups whatever changed within a
+  short window), and there is no `rewrittenBacklinks` list. To rename with that guarantee, let an
   agent call `move` or use the App API.
 - **No Obsidian Sync integration.** Svod syncs vaults between machines through git. Running
   Obsidian Sync on the same folder as well is not something Svod knows about or coordinates with.

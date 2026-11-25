@@ -138,7 +138,9 @@ class ObsidianGuideDocsTest {
         val server = Files.readString(engineDir.resolve("src/main/kotlin/dev/svod/engine/api/AppApiServer.kt"))
         val relinkStart = server.indexOf("private suspend fun crossVaultRelink(")
         assertTrue(relinkStart >= 0, "AppApiServer.kt has no crossVaultRelink; update $PAGE '## Links and backlinks'")
-        val relink = server.substring(relinkStart, server.indexOf("\n    }\n", relinkStart))
+        val relinkEnd = server.indexOf("\n    }\n", relinkStart)
+        assertTrue(relinkEnd >= 0, "cannot find the end of crossVaultRelink in AppApiServer.kt; update this test")
+        val relink = server.substring(relinkStart, relinkEnd)
         assertTrue(
             "runCatching { v.engine.write(path, updated, fc.revision, author) }" in relink && "writeBatch" !in relink && "writeGuarded" !in relink,
             "crossVaultRelink no longer commits each note separately and best-effort; update $PAGE '## Links and backlinks'",
