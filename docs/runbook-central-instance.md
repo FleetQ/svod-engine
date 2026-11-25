@@ -270,11 +270,18 @@ a restart was exercised in the gate (users, agents and tokens come back from `co
 
 **[not run]** The engine does not encrypt anything itself; the supported setup is a LUKS2 volume
 whose passphrase or key you hold ([ADR-0021](adr/0021-encryption-at-rest.md)). Everything the
-engine writes on this host is under `/srv/svod` (section 2: the vaults, the config directory with
-`secrets/` and `audit-api.log`, and the service user's home with `~/.svod/logs`, `~/.config/svod`
-and `~/.cache/svod-models`), so one volume mounted at `/srv/svod` covers all of it. The full path
-list is in [security-overview.md, Encryption at rest](security-overview.md#encryption-at-rest).
-Set this up **before** section 2, on an empty disk or partition (`/dev/sdb` below is an example).
+engine writes in this runbook's layout is under `/srv/svod` (section 2: the vaults, the config
+directory with `secrets/` and `audit-api.log`, and the service user's home with `~/.svod/logs`,
+`~/.config/svod` and `~/.cache/svod-models`), so one volume mounted at `/srv/svod` covers it. That
+holds only while you keep it so: an external source folder (ADR-0016, imported from and, with
+`writeBack`, written back to), a local bare repository used as a sync or backup remote, or
+`SVOD_LOG_DIR` / `SVOD_DISCOVERY_FILE` pointing outside `/srv/svod` must sit on encrypted storage too.
+The full path list is in [security-overview.md, Encryption at rest](security-overview.md#encryption-at-rest).
+Set this up **before section 1**, on an empty disk or partition (`/dev/sdb` below is an example):
+section 1 installs the engine into `/srv/svod/engine`, and mounting a volume at `/srv/svod` later
+would hide that install. On a host that already has `/srv/svod`, stop the engine, mount the new
+volume elsewhere, copy `/srv/svod` onto it with `cp -a`, check the copy, and only then mount it at
+`/srv/svod`.
 
 ```bash
 sudo apt-get install -y cryptsetup

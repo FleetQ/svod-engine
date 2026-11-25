@@ -56,8 +56,10 @@ BitLocker on Windows ([ADR-0021](adr/0021-encryption-at-rest.md); for a Debian s
 you: Svod never sees, stores or needs it, because the engine only reads and writes files on a
 volume the operating system has already unlocked.
 
-Put **all** of these on the encrypted volume. The list is read from the code by
-`SecurityOverviewDocsTest`, so it fails CI when the engine starts writing somewhere new.
+Put **all** of these on the encrypted volume. `SecurityOverviewDocsTest` reads the fixed paths,
+the `.svod/` files and the path environment variables from the code and fails CI when this list
+misses one. It cannot follow paths that come from configuration at runtime (vaults, external
+sources, git remotes), so those are named here by the setting that holds them.
 
 - **Each vault**, at `vaults[].path` (or the legacy `vaultPath`). Vaults created through the API
   without a path go next to the first vault, or under `~/.svod/vaults` when there is none. A
@@ -65,14 +67,22 @@ Put **all** of these on the encrypted volume. The list is read from the code by
   - the notes and `.trash/`, and the git history in `.git/`;
   - `.svod/`, which holds the plain-text note content in another form: the search index
     `.svod/index` (note text, stored fields, embedding vectors), the graph sidecar `.svod/graph`,
-    the agent audit log under `.svod/audit`, the legacy model copy `.svod/models`, and
-    `.svod/backup.json`, `.svod/sync-resolutions.json` and the other engine state files.
+    the agent audit log under `.svod/audit`, the legacy model copy `.svod/models`, the
+    external-source registry and manifests `.svod/sources.json` and `.svod/source-manifests`,
+    the memory inbox `.svod/recall-proposals.json` and `.svod/recall-distill.json`, and
+    `.svod/backup.json`, `.svod/sync-resolutions.json` and the vault lock `.svod/lock`.
+- **Every external source folder** (ADR-0016): a folder registered as an external source of a
+  vault can be any absolute path. Svod imports the notes from it, and with `writeBack` on it
+  writes vault edits back into it. Keep those folders on the encrypted volume too.
+- **Local git remotes**: a sync or backup remote that is a path on this machine (a shared bare
+  repository, for example) holds the full git history and belongs on the volume as well.
 - **The config directory** (the folder holding the config file; `svod-engine init` defaults to
   `~/svod`): the config itself, the key and token files in `secrets/`, the App API audit log
   `audit-api.log` and `user-activity.json`. A start without a config file keeps secrets in
   `~/.svod/secrets` instead.
 - **Logs**: `$SVOD_LOG_DIR`, default `~/.svod/logs`.
-- **Files under the service user's home**: the discovery file `~/.config/svod/engine.json`, the
+- **Files under the service user's home**: the discovery file `~/.config/svod/engine.json` (or
+  wherever `$SVOD_DISCOVERY_FILE` points), the
   host id `~/.config/svod/host-id`, the self-update log `~/.config/svod/self-update.log`, and the
   downloaded model cache `~/.cache/svod-models` (model weights only, no note data).
 

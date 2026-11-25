@@ -233,14 +233,36 @@ class SecurityOverviewDocsTest {
         // Vault locations: the config keys, and every top-level directory inside a vault.
         listOf("vaults[].path", "vaultPath").forEach { assertBackticked(enc, it, where) }
         VaultPath.RESERVED_TOP.forEach { assertBackticked(enc, "$it/", where) }
-        // Every named file or directory the engine creates directly under a vault's .svod/.
-        val svodChildren = Files.walk(main).use { s ->
-            s.filter { it.toString().endsWith(".kt") }.toList().flatMap { f ->
-                Regex("""\.resolve\("\.svod"\)\.resolve\("([^"]+)"\)""").findAll(Files.readString(f)).map { it.groupValues[1] }.toList()
-            }
+        // Every named file or directory the engine creates directly under a vault's .svod/: either
+        // chained (`x.resolve(".svod").resolve("index")`) or through a variable
+        // (`val dir = root.resolve(".svod")` ... `dir.resolve("lock")`). Any other use of
+        // `.resolve(".svod")` fails, so a new style of access cannot slip past this list.
+        val sources = Files.walk(main).use { s -> s.filter { it.toString().endsWith(".kt") }.toList() }
+        val chained = Regex("""\.resolve\("\.svod"\)\.resolve\("([^"]+)"\)""")
+        val svodVar = Regex("""val (\w+)(?::\s*Path)?\s*=\s*[\w.]+\.resolve\("\.svod"\)[ \t]*\r?\n""")
+        val svodChildren = sources.flatMap { f ->
+            val text = Files.readString(f)
+            val vars = svodVar.findAll(text).map { it.groupValues[1] }.toList()
+            val bare = Regex("""\.resolve\("\.svod"\)""").findAll(text).count() - chained.findAll(text).count()
+            assertEquals(vars.size, bare, "$f uses .resolve(\".svod\") in a way this test cannot follow; extend it and update $PAGE '## Encryption at rest'")
+            chained.findAll(text).map { it.groupValues[1] }.toList() +
+                vars.flatMap { v -> Regex("""\b$v\.resolve\("([^"]+)"\)""").findAll(text).map { it.groupValues[1] }.toList() }
         }.toSet()
-        assertTrue("index" in svodChildren && "audit" in svodChildren, "found no .svod/index or .svod/audit in the sources: $svodChildren")
+        listOf("index", "audit", "lock", "sources.json").forEach {
+            assertTrue(it in svodChildren, "found no .svod/$it in the sources: $svodChildren")
+        }
         svodChildren.forEach { assertBackticked(enc, ".svod/$it", where) }
+
+        // Environment variables that move a file or directory the engine writes.
+        val envNames = (sources.map { Files.readString(it) } + Files.readString(engineDir.resolve("src/main/resources/logback.xml")))
+            .flatMap { t -> Regex("""\b(SVOD_\w+_(?:FILE|DIR))\b""").findAll(t).map { it.groupValues[1] }.toList() }.toSet()
+        assertTrue("SVOD_DISCOVERY_FILE" in envNames && "SVOD_LOG_DIR" in envNames, "found no path env vars: $envNames")
+        envNames.forEach { assertBackticked(enc, "$$it", where) }
+
+        // External sources (ADR-0016) live at any absolute path, and writeBack writes note text there.
+        assertEquals(false, dev.svod.engine.sources.ExternalSource(id = "a", path = "/x").writeBack, "ExternalSource.writeBack default changed")
+        assertTrue("external source" in enc.lowercase(), "$PAGE '$where' must list external source folders")
+        assertBackticked(enc, "writeBack", where)
 
         // Fixed paths under user.home spelled as literals in the sources, the way auditPathsMatchSource reads them.
         val homeLiteral = Regex("""System\.getProperty\("user\.home"\),\s*((?:"[^"]+"\s*,?\s*)+)\)""")

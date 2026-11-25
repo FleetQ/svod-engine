@@ -59,7 +59,11 @@ The full list of paths, checked against the code, is in
 - No engine code changes. The answer in security reviews becomes "supported through host volume
   encryption with a customer-held key", with a concrete path list instead of a flat "no".
 - [`SecurityOverviewDocsTest`](../../engine/src/test/kotlin/dev/svod/engine/security/SecurityOverviewDocsTest.kt)
-  reads the paths from the code, so a new place the engine writes to fails CI until the list names it.
+  reads the fixed paths, the files under `.svod/` and the path environment variables
+  (`SVOD_*_FILE`, `SVOD_*_DIR`) from the code, and fails CI when the list misses one of them. Paths
+  that come from configuration at runtime (vault paths, external source folders under ADR-0016,
+  local git remotes) cannot be found that way; the list names them by their setting, and a new
+  setting of that kind has to be added by hand.
 - The engine does not check whether it runs on an encrypted volume. Getting that right is the
   operator's job, and the runbook shows how.
 - A stolen disk or a copied volume image is protected. A running, unlocked host is not: anyone with
