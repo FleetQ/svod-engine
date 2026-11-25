@@ -32,8 +32,9 @@ class ExtractMemoriesToolTest {
     ) : MemoryExtractor {
         var calls = 0
         var lastMax = -1
+        var lastTranscript: String? = null
         override suspend fun extract(transcript: String, maxMemories: Int): List<ExtractedMemory>? {
-            calls++; lastMax = maxMemories
+            calls++; lastMax = maxMemories; lastTranscript = transcript
             return result
         }
     }
@@ -159,6 +160,49 @@ class ExtractMemoriesToolTest {
             val secret = "user: here is the key\n-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----"
             assertEquals("blocked", fx.tools.extractMemories(fx.write, secret, null).status)
             assertEquals(0, fake.calls, "the model never saw a refused transcript")
+            assertEquals(emptyList(), fx.memoryNotes())
+        }
+    }
+
+    @Test
+    fun `a LangSmith run export is converted before the model sees it`(): Unit = runBlocking {
+        val fake = FakeExtractor(listOf(ExtractedMemory("Deploys happen on Tuesdays only.", "policy", "deploy")))
+        val export = """
+            {"inputs": {"messages": [[{"type": "human", "content": "we deploy on Tuesdays only"}]]},
+             "outputs": {"generations": [[{"text": "noted", "message": {"type": "ai", "content": "noted"}}]]}}
+        """.trimIndent()
+        Fixture(fake).use { fx ->
+            val r = fx.tools.extractMemories(fx.write, export, null, format = "langsmith")
+            assertEquals("ok", str(r, "status"), r.data.toString())
+            assertEquals("user: we deploy on Tuesdays only\nassistant: noted", fake.lastTranscript)
+            val m = r.data["memories"]!!.jsonArray.single().jsonObject
+            assertEquals("provisional", m["memoryStatus"]!!.jsonPrimitive.content)
+            val parsed = MarkdownChunker.parse(fx.engine.read(m["path"]!!.jsonPrimitive.content)!!.text)
+            assertEquals("provisional", parsed.status)
+            assertEquals("langsmith", parsed.frontmatter["source"])
+        }
+    }
+
+    @Test
+    fun `a run export is refused when it has secrets, cannot be read or converts too long`(): Unit = runBlocking {
+        val fake = FakeExtractor(listOf(ExtractedMemory("x", "fact")))
+        Fixture(fake, maxTranscriptChars = 200).use { fx ->
+            val secret = """{"input": [{"role": "user", "content": "the key\n-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----"}], "output": "ok"}"""
+            assertEquals("blocked", fx.tools.extractMemories(fx.write, secret, null, format = "braintrust").status)
+            assertEquals(0, fake.calls, "the model never saw the secret")
+
+            val unknown = fx.tools.extractMemories(fx.write, """{"input": "hi"}""", null, format = "langfuse")
+            assertEquals("bad_request", unknown.status)
+            val unreadable = fx.tools.extractMemories(fx.write, "not { json", null, format = "langsmith")
+            assertEquals("bad_request", unreadable.status)
+            assertTrue("cannot read langsmith export" in str(unreadable, "message")!!, unreadable.data.toString())
+
+            val long = """{"input": "${"a".repeat(300)}", "output": "ok"}"""
+            assertEquals("bad_request", fx.tools.extractMemories(fx.write, long, null, format = "braintrust").status)
+            val huge = """{"input": "${"a".repeat(2_100)}", "output": "ok"}"""
+            assertEquals("bad_request", fx.tools.extractMemories(fx.write, huge, null, format = "braintrust").status)
+
+            assertEquals(0, fake.calls)
             assertEquals(emptyList(), fx.memoryNotes())
         }
     }
