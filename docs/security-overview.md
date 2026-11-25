@@ -78,11 +78,12 @@ sources, git remotes), so those are named here by the setting that holds them.
   repository, for example) holds the full git history and belongs on the volume as well.
 - **The config directory** (the folder holding the config file; `svod-engine init` defaults to
   `~/svod`): the config itself, the key and token files in `secrets/`, the App API audit log
-  `audit-api.log` and `user-activity.json`. A start without a config file keeps secrets in
-  `~/.svod/secrets` instead.
+  `audit-api.log` and `user-activity.json`. A start without a config file uses `~/.svod` as that
+  directory instead: secrets in `~/.svod/secrets`, plus `~/.svod/audit-api.log` and
+  `~/.svod/user-activity.json`.
 - **Logs**: `$SVOD_LOG_DIR`, default `~/.svod/logs`.
-- **Files under the service user's home**: the discovery file `~/.config/svod/engine.json` (or
-  wherever `$SVOD_DISCOVERY_FILE` points), the
+- **Files under the service user's home**, mostly in `~/.config/svod`: the discovery file
+  `~/.config/svod/engine.json` (or wherever `$SVOD_DISCOVERY_FILE` points), the
   host id `~/.config/svod/host-id`, the self-update log `~/.config/svod/self-update.log`, and the
   downloaded model cache `~/.cache/svod-models` (model weights only, no note data).
 

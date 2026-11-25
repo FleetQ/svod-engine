@@ -292,12 +292,13 @@ sudo mkdir -p /srv/svod
 sudo mount /dev/mapper/svod-data /srv/svod
 ```
 
-To unlock and mount it at boot, add it to `/etc/crypttab` and `/etc/fstab` (with `nofail` the host
-still boots when nobody types the passphrase; the engine then stays down, see below):
+To unlock and mount it at boot, add it to `/etc/crypttab` and `/etc/fstab` (with `nofail` in both
+files the host still boots when nobody types the passphrase; the engine then stays down, see below.
+Without `nofail` in `/etc/crypttab` the boot waits for the passphrase):
 
 ```
 # /etc/crypttab
-svod-data  UUID=<uuid of /dev/sdb from blkid>  none  luks
+svod-data  UUID=<uuid of /dev/sdb from blkid>  none  luks,nofail
 # /etc/fstab
 /dev/mapper/svod-data  /srv/svod  ext4  defaults,nofail  0  2
 ```
