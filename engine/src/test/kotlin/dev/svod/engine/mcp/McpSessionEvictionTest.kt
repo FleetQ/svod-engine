@@ -4,8 +4,10 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO as ClientCIO
 import io.ktor.client.plugins.DefaultRequest
 import io.ktor.client.plugins.sse.SSE
+import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.prepareGet
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -93,6 +95,40 @@ class McpSessionEvictionTest {
                     assertEquals(21, c.listTools().tools.size)
                     assertEquals(1, mcp.liveSessions())
                 } finally { again.close() }
+            } finally {
+                h.close()
+                server.stop()
+            }
+        }
+    }
+
+    /**
+     * 2026-11-24: an evicted session's GET stream answered 200 text/event-stream and closed at once
+     * (Ktor's `sse {}` commits the headers before the session check ran), so clients took it for a
+     * clean end and reopened it every second, forever. The 404 must be on the wire.
+     */
+    @Test
+    fun `GET on an unknown session gets a real 404, GET on a live session opens the stream`() = runBlocking {
+        McpFixture().use { fx ->
+            val mcp = SvodMcpServer({ fx.tools }, "default", fx.registry)
+            val server = mcp.start(0)
+            val h = http("write-token")
+            try {
+                val gone = h.get("http://127.0.0.1:${server.port}/mcp") {
+                    header("mcp-session-id", "00000000-0000-0000-0000-000000000000")
+                    header(HttpHeaders.Accept, "text/event-stream")
+                }
+                assertEquals(HttpStatusCode.NotFound, gone.status, "an unknown session id must get 404 on GET too")
+
+                val id = h.openSession(server.port, 1)
+                h.prepareGet("http://127.0.0.1:${server.port}/mcp") {
+                    header("mcp-session-id", id)
+                    header(HttpHeaders.Accept, "text/event-stream")
+                }.execute { live ->
+                    assertEquals(HttpStatusCode.OK, live.status)
+                    assertEquals("text/event-stream", live.headers[HttpHeaders.ContentType]?.substringBefore(';'))
+                    assertEquals("no-store", live.headers[HttpHeaders.CacheControl])
+                }
             } finally {
                 h.close()
                 server.stop()

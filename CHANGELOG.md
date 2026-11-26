@@ -3,7 +3,7 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
-## v1.34.3 — unreleased (App API contract 0.42.0, unchanged)
+## v1.35.0 — 2026-11-26 (App API contract 0.42.0, unchanged)
 
 ### Added
 
@@ -37,6 +37,16 @@ independently of the engine; each entry notes the contract version it ships.
 - README "How it compares": the Letta "Full version history / diff" cell said ❌ while the same column names
   git-backed Context Repositories; it now says ⚠️ via Context Repositories (newer, opt-in).
 - `ReadmeConsistencyTest` checks the link to the new page, that the file exists, and the corrected Letta cell.
+
+### Fixed
+
+- MCP: a GET (the server-to-client SSE stream) on an unknown or evicted session now gets HTTP 404.
+  Ktor's `sse {}` sent 200 `text/event-stream` before the session check ran, so the log said 404 while
+  the client saw an empty stream that ended cleanly and reopened it about once a second, forever
+  (two laptop clients from 24.11.2026). The session is now checked before the stream starts. No
+  contract change.
+
+## v1.34.3 — 2026-11-21 (App API contract 0.42.0, unchanged)
 
 ### Fixed
 
