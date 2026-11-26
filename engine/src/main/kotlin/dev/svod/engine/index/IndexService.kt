@@ -653,7 +653,7 @@ class IndexService(
             if (reranked == null) add(SearchResult.RERANK)
         }
         // What the lifecycle hiding removed from this query. Counting must never fail a search.
-        val withheld = if (q.filters.includeAll) emptyMap() else runCatching {
+        val withheld = runCatching {
             index.withheldCounts(parseUserQuery(q.text) ?: MatchAllDocsQuery(), q.filters, includeMessyInRecall, now)
         }.getOrDefault(emptyMap())
         return SearchResult(hits, q.mode, (System.nanoTime() - start) / 1_000_000, degraded, withheld = withheld)

@@ -68,7 +68,8 @@ data class SearchResult(
      * Matching notes the default lifecycle hiding removed, as reason → count of distinct notes
      * ([WITHHELD_REVOKED] / [WITHHELD_SUPERSEDED] / [WITHHELD_EXPIRED] / [WITHHELD_PROVISIONAL], in
      * that order; a note is counted once, under the first reason that applies). Keyword match only;
-     * `messy/` drafts and session transcripts are never counted. Empty when nothing was hidden, for
+     * session transcripts are never counted, `messy/` drafts only when the search itself would include
+     * them. Empty when nothing was hidden, for
      * an includeAll search and for an as-of search.
      */
     val withheld: Map<String, Int> = emptyMap(),
@@ -80,5 +81,8 @@ data class SearchResult(
         const val WITHHELD_SUPERSEDED = "superseded"
         const val WITHHELD_EXPIRED = "expired"
         const val WITHHELD_PROVISIONAL = "provisional"
+
+        /** The withheld reasons in their fixed precedence / reporting order. */
+        val WITHHELD_REASONS = listOf(WITHHELD_REVOKED, WITHHELD_SUPERSEDED, WITHHELD_EXPIRED, WITHHELD_PROVISIONAL)
     }
 }

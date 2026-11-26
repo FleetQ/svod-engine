@@ -278,6 +278,7 @@ class LuceneIndex(private val directory: Directory) : AutoCloseable {
             if (s.indexReader.numDocs() == 0) return@withSearcher emptyMap()
             val base = buildFilter(filters, includeMessy, nowEpoch, lifecycle = false)
             val statusHiding = filters.status == null
+            // In [SearchResult.WITHHELD_REASONS] order.
             val reasons = listOf(
                 SearchResult.WITHHELD_REVOKED to revokedClause().takeIf { statusHiding },
                 SearchResult.WITHHELD_SUPERSEDED to supersededClause(),
@@ -287,16 +288,19 @@ class LuceneIndex(private val directory: Directory) : AutoCloseable {
             val out = LinkedHashMap<String, Int>()
             val earlier = ArrayList<Query>()
             val sf = s.storedFields()
+            val pathOnly = setOf("path")
             for ((reason, clause) in reasons) {
                 if (clause == null) continue
+                // Only membership matters here, so the user query is a FILTER (no scoring) and only
+                // the stored `path` is loaded (not the chunk text / vector bytes).
                 val b = BooleanQuery.Builder()
-                    .add(userQuery, BooleanClause.Occur.MUST)
+                    .add(userQuery, BooleanClause.Occur.FILTER)
                     .add(clause, BooleanClause.Occur.FILTER)
                 if (base != null) b.add(base, BooleanClause.Occur.FILTER)
                 for (e in earlier) b.add(e, BooleanClause.Occur.MUST_NOT)
                 val td = s.search(b.build(), cap)
                 val paths = HashSet<String>()
-                for (sd in td.scoreDocs) paths.add(sf.document(sd.doc).get("path"))
+                for (sd in td.scoreDocs) paths.add(sf.document(sd.doc, pathOnly).get("path"))
                 if (paths.isNotEmpty()) out[reason] = paths.size
                 earlier.add(clause)
             }

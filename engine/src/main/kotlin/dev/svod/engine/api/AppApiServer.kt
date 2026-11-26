@@ -555,8 +555,7 @@ class AppApiServer(
                     }
                     hits.sortByDescending { it.score }
                     val order = listOf(SearchResult.SEMANTIC, SearchResult.RERANK)
-                    val reasons = listOf(SearchResult.WITHHELD_REVOKED, SearchResult.WITHHELD_SUPERSEDED, SearchResult.WITHHELD_EXPIRED, SearchResult.WITHHELD_PROVISIONAL)
-                    val withheldOrdered = reasons.mapNotNull { r -> withheld[r]?.let { r to it } }.toMap()
+                    val withheldOrdered = SearchResult.WITHHELD_REASONS.mapNotNull { r -> withheld[r]?.let { r to it } }.toMap()
                     call.respond(SearchResultDto(mode.name, hits.take(limit), order.filter { it in degraded }, withheldOrdered.takeIf { it.isNotEmpty() }))
                 } else {
                     val result = vc.index.search(SearchQuery(q, filters, mode, limit))

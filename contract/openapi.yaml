@@ -1831,7 +1831,8 @@ components:
             Present only when the default lifecycle hiding removed notes that match the query. Counts distinct
             notes whose text matches the query (keyword match), each counted once under the first reason that
             applies, in the order revoked, superseded, expired, provisional. With `across=true` it is the sum
-            over the searched vaults. `messy/` drafts and session transcripts are never counted. Retry with
+            over the searched vaults. Session transcripts are never counted; `messy/` drafts only when the search
+            itself would include them (`pathPrefix=messy/` or the vault's include-messy setting). Retry with
             `includeAll=true` to see them.
           properties:
             revoked: { type: integer, minimum: 1 }
