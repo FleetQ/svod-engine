@@ -15,7 +15,7 @@ class GrantResolverTest {
     ) = AgentIdentity("a1", role, Author("A", "a@x"), vaults, userId = user, grantRoles = roles)
 
     private val reads = listOf("read", "search", "context_pack", "list", "tree", "grep", "history", "diff", "get_revision", "link",
-        "graph_query", "graph_communities", "graph_community", "graph_status")
+        "recent_changes", "graph_query", "graph_communities", "graph_community", "graph_status")
     private val writes = listOf("write", "edit", "move", "delete", "remember", "extract_memories")
 
     @Test

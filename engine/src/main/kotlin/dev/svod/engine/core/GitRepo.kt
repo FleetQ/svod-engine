@@ -356,6 +356,83 @@ class GitRepo private constructor(
         }
     }
 
+    /**
+     * Vault-wide change feed, newest first (jgit only, no subprocess). Walks from HEAD — or from the parents of
+     * [before] when given — back to [since]: a commit id/ref (that commit and its ancestors are left out) or an
+     * ISO-8601 instant / date (start of that UTC day; the walk stops at the first older commit). At most [max]
+     * commits; [ChangesPage.nextCursor] is the last returned commit when older ones remain. Each commit's paths
+     * are diffed against its first parent with rename detection: a rename into `.trash/` is a DELETE, one out of
+     * it a RESTORE. Unparsable [since] or unknown [before] throws [IllegalArgumentException].
+     */
+    fun changes(since: String?, before: String?, max: Int): ChangesPage {
+        val sinceRaw = since?.trim()?.takeIf { it.isNotEmpty() }
+        val beforeRaw = before?.trim()?.takeIf { it.isNotEmpty() }
+        val sinceCommit = sinceRaw?.let { resolveCommitOrNull(it) }
+        val sinceEpoch = if (sinceRaw != null && sinceCommit == null) {
+            runCatching { java.time.Instant.parse(sinceRaw).epochSecond }
+                .recoverCatching { java.time.LocalDate.parse(sinceRaw).atStartOfDay(java.time.ZoneOffset.UTC).toEpochSecond() }
+                .getOrElse { throw IllegalArgumentException("since must be a commit id or an ISO-8601 instant or date, got '$sinceRaw'") }
+        } else null
+        val beforeCommit = beforeRaw?.let { resolveCommitOrNull(it) ?: throw IllegalArgumentException("unknown revision: $beforeRaw") }
+        val head = repo.resolve(Constants.HEAD) ?: return ChangesPage(null, emptyList(), null)
+
+        val out = ArrayList<ChangeEntry>()
+        var more = false
+        RevWalk(repo).use { rw ->
+            if (beforeCommit != null) {
+                rw.parseCommit(beforeCommit).parents.forEach { rw.markStart(rw.parseCommit(it)) }
+            } else {
+                rw.markStart(rw.parseCommit(head))
+            }
+            sinceCommit?.let { rw.markUninteresting(rw.parseCommit(it)) }
+            DiffFormatter(org.eclipse.jgit.util.io.DisabledOutputStream.INSTANCE).use { df ->
+                df.setRepository(repo)
+                df.setDetectRenames(true)
+                for (c in rw) {
+                    if (sinceEpoch != null && c.commitTime.toLong() < sinceEpoch) break
+                    if (out.size == max) { more = true; break }
+                    val parentTree = if (c.parentCount > 0) rw.parseCommit(c.getParent(0)).tree else null
+                    val all = df.scan(parentTree, c.tree).map(::pathChange)
+                    out += ChangeEntry(
+                        commit = c.name,
+                        authorName = c.authorIdent.name,
+                        authorEmail = c.authorIdent.emailAddress,
+                        epochSeconds = c.authorIdent.whenAsInstant.epochSecond,
+                        message = c.fullMessage.trim(),
+                        agent = agentTrailer(c.fullMessage),
+                        paths = all.take(CHANGES_MAX_PATHS),
+                        pathCount = all.size,
+                        pathsTruncated = all.size > CHANGES_MAX_PATHS,
+                    )
+                }
+            }
+        }
+        return ChangesPage(head.name, out, if (more) out.lastOrNull()?.commit else null)
+    }
+
+    private fun resolveCommitOrNull(rev: String): ObjectId? = try {
+        repo.resolve(rev)?.let { id -> RevWalk(repo).use { it.parseCommit(id).id } }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun pathChange(e: org.eclipse.jgit.diff.DiffEntry): PathChange = when (e.changeType) {
+        org.eclipse.jgit.diff.DiffEntry.ChangeType.ADD -> PathChange(e.newPath, ChangeKind.ADD)
+        org.eclipse.jgit.diff.DiffEntry.ChangeType.MODIFY -> PathChange(e.newPath, ChangeKind.MODIFY)
+        org.eclipse.jgit.diff.DiffEntry.ChangeType.DELETE -> PathChange(e.oldPath, ChangeKind.DELETE)
+        org.eclipse.jgit.diff.DiffEntry.ChangeType.COPY -> PathChange(e.newPath, ChangeKind.ADD, e.oldPath)
+        else -> {
+            val toTrash = e.newPath.startsWith(TRASH_PREFIX)
+            val fromTrash = e.oldPath.startsWith(TRASH_PREFIX)
+            val kind = when {
+                toTrash && !fromTrash -> ChangeKind.DELETE
+                fromTrash && !toTrash -> ChangeKind.RESTORE
+                else -> ChangeKind.RENAME
+            }
+            PathChange(e.newPath, kind, e.oldPath)
+        }
+    }
+
     /** Content of [path] as it existed at [revision] (a commit id, ref, or "HEAD"). */
     fun readAtRevision(path: String, revision: String): ByteArray? {
         val id = repo.resolve(revision) ?: return null
@@ -394,6 +471,10 @@ class GitRepo private constructor(
     companion object {
         /** macOS ships git at this stable path (Xcode CLT shim); avoids launchd PATH gaps. */
         private const val GIT_BIN = "/usr/bin/git"
+
+        /** Changed paths listed per commit in [changes]; the rest is counted, not listed. */
+        private const val CHANGES_MAX_PATHS = 200
+        private const val TRASH_PREFIX = ".trash/"
 
         fun openOrInit(root: Path, committer: Author? = null): GitRepo {
             val gitDir = root.resolve(".git").toFile()

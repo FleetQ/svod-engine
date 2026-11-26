@@ -487,6 +487,19 @@ class SvodMcpServer(
         tool("history", "Commit history for a note.", mapOf("path" to "string", "max" to "integer"), listOf("path")) { req ->
             val (t, d) = routed(req, "history"); d ?: t!!.history(agent, req.str("path")!!, req.int("max", 50)).toCallToolResult()
         }
+        tool(
+            "recent_changes",
+            "Vault-wide change feed, newest first: each commit with author, agent, message and changed paths " +
+                "(kind add/modify/delete/rename/restore). Use it at session start to catch up on what other agents or " +
+                "people changed. 'since' = a commit id (e.g. the 'head' from your last call) or an ISO date/instant; " +
+                "page older with 'before' = the previous 'nextCursor'. 'max' defaults to 50 (max 200). Lists paths " +
+                "only; use diff or get_revision for content.",
+            mapOf("since" to "string", "before" to "string", "max" to "integer"),
+            emptyList(),
+        ) { req ->
+            val (t, d) = routed(req, "recent_changes")
+            d ?: t!!.recentChanges(agent, req.str("since"), req.str("before"), req.int("max", 50)).toCallToolResult()
+        }
         tool("diff", "Unified diff of a note between two revisions.", mapOf("path" to "string", "from" to "string", "to" to "string"), listOf("path", "from", "to")) { req ->
             val (t, d) = routed(req, "diff"); d ?: t!!.diff(agent, req.str("path")!!, req.str("from")!!, req.str("to")!!).toCallToolResult()
         }

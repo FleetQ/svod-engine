@@ -61,6 +61,18 @@ data class CommitInfoDto(val commit: String, val author: String, val email: Stri
 data class HistoryDto(val commits: List<CommitInfoDto>)
 
 @Serializable
+data class PathChangeDto(val path: String, val kind: String, val oldPath: String? = null)
+
+@Serializable
+data class ChangeEntryDto(
+    val commit: String, val author: String, val email: String, val epochSeconds: Long, val message: String,
+    val agent: String? = null, val paths: List<PathChangeDto>, val pathCount: Int, val pathsTruncated: Boolean,
+)
+
+@Serializable
+data class ChangesDto(val head: String? = null, val changes: List<ChangeEntryDto>, val nextCursor: String? = null)
+
+@Serializable
 data class DiffResultDto(val path: String, val from: String, val to: String, val diff: String)
 
 @Serializable

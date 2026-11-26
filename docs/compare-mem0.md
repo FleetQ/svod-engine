@@ -25,7 +25,7 @@ from this repository, and facts about Mem0 come from its public pages (see
 | **Durability** | Atomic writes (temp file + rename), soft-delete to `.trash/` plus a commit, and startup crash recovery that completes or rolls back a partial write | ⚠️ Depends on the backing stores you configure |
 | **Search** | Hybrid BM25 + vector search fused with RRF | ⚠️ Vector-first. Check its docs for the current keyword and graph options |
 | **Runtime** | Fully in-process on one JVM, with in-process embeddings. No Python and no separate server | ⚠️ A Python or JS library with an external LLM, embedder and vector store, or the hosted platform |
-| **Agent interface** | MCP, with 21 MCP tools for reading, searching and writing memory | Python and JS SDKs and a hosted REST API. ⚠️ An MCP server (OpenMemory) is also offered |
+| **Agent interface** | MCP, with 22 MCP tools for reading, searching and writing memory | Python and JS SDKs and a hosted REST API. ⚠️ An MCP server (OpenMemory) is also offered |
 | **Lock-in** | None: leaving means keeping a git clone of Markdown files | ⚠️ Higher: memories live in its stores. Its export is JSON, which Svod can import (below) |
 
 What this means in practice: if you need to read your agent's memory yourself, fix a wrong fact

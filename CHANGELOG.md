@@ -3,6 +3,20 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## Unreleased (App API contract 0.43.0, additive)
+
+### Added
+
+- A vault-wide change feed for agents and clients to catch up on what changed: MCP read tool `recent_changes`
+  (`since`, `before`, `max`, `vault`) and App API `GET /api/v1/changes?since=&before=&max=&vault=`. Commits come
+  newest first, from HEAD back to `since` (a commit id, e.g. the `head` of the previous call, or an ISO-8601
+  instant or date). Each entry has commit, author, email, epochSeconds, message, the `Svod-Agent` agent and the
+  changed paths marked `add`/`modify`/`delete`/`rename`/`restore`. A soft delete into `.trash/` is a `delete`, a
+  move out of it a `restore`. At most 200 paths per commit (`pathCount`, `pathsTruncated`); page with
+  `before` = `nextCursor`. Paths and metadata only; content stays behind `diff`/`get_revision`. The tool is in
+  the reader set, so read-only agents and reader grants may call it; vault grants apply as for `history`. An
+  unparsable `since` or unknown `before` is `bad_request` / 400. MCP now has 22 tools.
+
 ## v1.35.0 — 2026-11-26 (App API contract 0.42.0, unchanged)
 
 ### Added
