@@ -84,6 +84,11 @@ data class SearchResultDto(
     val hits: List<SearchHitDto>,
     /** Retrieval legs the result went without: `semantic`, `rerank` (contract 0.34.0). Empty when complete. */
     val degraded: List<String> = emptyList(),
+    /**
+     * Matching notes hidden by the default lifecycle hiding, reason → count (revoked / superseded /
+     * expired / provisional). Null (left out of the JSON) when nothing was hidden.
+     */
+    val withheld: Map<String, Int>? = null,
 )
 
 @Serializable

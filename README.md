@@ -147,7 +147,9 @@ enforced *before* the engine is touched.
   note's latest commit + author), the one-call "recall my memory about X" primitive for an agent.
 - **Typed memory + two retrieval paths.** A note's frontmatter `type` (policy/preference/fact/
   episode/procedure) classifies it; `status` (`active`/`provisional`/`revoked`), `superseded_by` and `expires_at`
-  give it a lifecycle (recall hides revoked/provisional/superseded/expired by default). `context_pack`
+  give it a lifecycle (recall hides revoked/provisional/superseded/expired by default; `search` and
+  `context_pack` report the hidden matches per reason in `withheld`, with a hint to retry with
+  `includeAll=true`). `context_pack`
   with `enumerate=true` returns *every* note matching a `type`/`tags` filter **in full, unranked** —
   the "rule book" (all active policies/preferences) loaded verbatim, vs. the ranked semantic recall.
 - **Procedures.** `type: procedure` holds ordered how-to steps (one per line) for a `subject`. A new

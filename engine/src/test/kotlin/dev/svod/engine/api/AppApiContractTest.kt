@@ -68,6 +68,27 @@ class AppApiContractTest {
     }
 
     @Test
+    fun `search reports lifecycle-withheld matches and conforms to the contract`() = runBlocking {
+        ApiFixture.create().use { fx ->
+            val ui = Author("ui", "ui@svod.local")
+            fx.engine.write("memory/fact/live.md", "---\ntype: fact\nstatus: active\n---\nwithheldneedle current", null, ui)
+            fx.engine.write("memory/fact/gone.md", "---\ntype: fact\nstatus: revoked\n---\nwithheldneedle revoked", null, ui)
+            fx.index.waitIdle()
+            val ap = "/api/v1"
+
+            val hidden = fx.get("$ap/search?q=withheldneedle")
+            assertEquals(200, hidden.statusCode(), hidden.body())
+            validate("$ap/search", Request.Method.GET, 200, hidden.body())
+            assertTrue(Regex("\"withheld\":\\{\"revoked\":1}").containsMatchIn(hidden.body().replace(" ", "")), hidden.body())
+
+            val clean = fx.get("$ap/search?q=current")
+            assertEquals(200, clean.statusCode(), clean.body())
+            validate("$ap/search", Request.Method.GET, 200, clean.body())
+            assertTrue("\"withheld\"" !in clean.body(), clean.body())
+        }
+    }
+
+    @Test
     fun `write, conflict, move and delete responses conform to the contract`() = runBlocking {
         ApiFixture.create().use { fx ->
             val ap = "/api/v1"
