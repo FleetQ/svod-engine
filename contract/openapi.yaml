@@ -295,7 +295,7 @@ paths:
         - { name: pathPrefix, in: query, required: false, schema: { type: string } }
         - { name: type, in: query, required: false, schema: { type: string }, description: "Memory typing: match only notes with this frontmatter `type` (policy/preference/fact/episode/…)." }
         - { name: status, in: query, required: false, schema: { type: string }, description: "Match only notes with this frontmatter `status` (overrides the default lifecycle hiding for it)." }
-        - { name: includeAll, in: query, required: false, schema: { type: boolean, default: false }, description: "Bypass the default lifecycle hiding (revoked/provisional/superseded/expired memories)." }
+        - { name: includeAll, in: query, required: false, schema: { type: boolean, default: false }, description: "Bypass the default lifecycle hiding (revoked/provisional/superseded/expired memories). Without it, the response's `withheld` counts the matching notes that were hidden." }
       responses:
         "200":
           description: Search results
@@ -1888,6 +1888,20 @@ components:
             query embed failed has none). `rerank`: the active reranker failed — the hits keep the fused order.
             Empty for a complete result. With `across=true` it is the union over the searched vaults.
           items: { type: string, enum: [semantic, rerank] }
+        withheld:
+          type: object
+          description: >
+            Present only when the default lifecycle hiding removed notes that match the query. Counts distinct
+            notes whose text matches the query (keyword match), each counted once under the first reason that
+            applies, in the order revoked, superseded, expired, provisional. With `across=true` it is the sum
+            over the searched vaults. Session transcripts are never counted; `messy/` drafts only when the search
+            itself would include them (`pathPrefix=messy/` or the vault's include-messy setting). Retry with
+            `includeAll=true` to see them.
+          properties:
+            revoked: { type: integer, minimum: 1 }
+            superseded: { type: integer, minimum: 1 }
+            expired: { type: integer, minimum: 1 }
+            provisional: { type: integer, minimum: 1 }
 
     SearchHit:
       type: object

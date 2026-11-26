@@ -2,6 +2,7 @@ package dev.svod.engine.index
 
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -35,6 +36,52 @@ class RecallExclusionTest {
             // Same index dir, but with the config toggle on ⇒ messy/ participates in default recall.
             IndexService(fx.root, fx.indexDir, FakeEmbedder("f"), includeMessyInRecall = true).start().use { idx ->
                 assertTrue("messy/draft.md" in q(idx), "includeMessyInRecall=true un-quarantines messy/")
+            }
+        }
+    }
+
+    @Test
+    fun `withheld counts lifecycle-hidden matches per reason`() {
+        IndexFixture.create().use { fx ->
+            runBlocking {
+                fx.seed("plain.md", "# Plain\ncommon body, no frontmatter at all")
+                fx.seed("active.md", "---\ntype: fact\nstatus: active\n---\n# Active\ncommon body active")
+                fx.seed("prov.md", "---\ntype: fact\nstatus: provisional\n---\n# Prov\ncommon body provisional")
+                // Two sections → two chunks, still one note.
+                fx.seed("revoked.md", "---\ntype: fact\nstatus: revoked\n---\n# Revoked\ncommon body revoked\n\n## More\ncommon again")
+                // Revoked AND superseded → counted once, under revoked.
+                fx.seed("both.md", "---\ntype: fact\nstatus: revoked\nsuperseded_by: active.md\n---\n# Both\ncommon body both")
+                fx.seed("superseded.md", "---\ntype: fact\nsuperseded_by: active.md\n---\n# Old\ncommon body superseded")
+                fx.seed("expired.md", "---\ntype: fact\nexpires_at: 2000-01-01\n---\n# Expired\ncommon body expired")
+                fx.seed("future.md", "---\ntype: fact\nexpires_at: 2999-01-01\n---\n# Future\ncommon body future")
+                // Not matching the query → not counted.
+                fx.seed("other.md", "---\ntype: fact\nstatus: revoked\n---\n# Other\nunrelated words")
+                // messy/ drafts are never counted as withheld.
+                fx.seed("messy/draft.md", "---\ntype: fact\nstatus: revoked\n---\n# Draft\ncommon draft")
+            }
+            fx.newIndex(FakeEmbedder("f")).use { idx ->
+                fun w(f: SearchFilters = SearchFilters(), text: String = "common") =
+                    idx.search(SearchQuery(text, f, SearchMode.KEYWORD, limit = 50)).withheld
+
+                val withheld = w()
+                assertEquals(
+                    mapOf(
+                        SearchResult.WITHHELD_REVOKED to 2,
+                        SearchResult.WITHHELD_SUPERSEDED to 1,
+                        SearchResult.WITHHELD_EXPIRED to 1,
+                        SearchResult.WITHHELD_PROVISIONAL to 1,
+                    ),
+                    withheld,
+                )
+                assertEquals(listOf("revoked", "superseded", "expired", "provisional"), withheld.keys.toList(), "fixed order")
+                // includeAll hides nothing, so nothing is withheld.
+                assertEquals(emptyMap<String, Int>(), w(SearchFilters(includeAll = true)))
+                // A status filter turns off status hiding: only superseded/expired remain.
+                assertEquals(emptyMap<String, Int>(), w(SearchFilters(status = "provisional")))
+                // status=revoked: both.md is revoked AND superseded, so it is withheld as superseded.
+                assertEquals(mapOf("superseded" to 1), w(SearchFilters(status = "revoked")))
+                // Nothing hidden → empty.
+                assertEquals(emptyMap<String, Int>(), w(text = "future"))
             }
         }
     }

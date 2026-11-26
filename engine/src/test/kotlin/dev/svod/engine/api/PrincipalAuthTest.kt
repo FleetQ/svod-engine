@@ -314,6 +314,46 @@ class PrincipalAuthTest {
     }
 
     @Test
+    fun `federated search sums withheld over readable vaults only`(): Unit = runBlocking {
+        Fixture().use { fx ->
+            fx.write("a", "gone.md", "---\ntype: fact\nstatus: revoked\n---\n# Gone\nokapi revoked", key = "k-admin")
+            fx.write("a", "live.md", "---\ntype: fact\nstatus: active\n---\n# Live\nokapi current", key = "k-admin")
+            fx.write("b", "gone.md", "---\ntype: fact\nstatus: revoked\n---\n# Gone\nokapi revoked", key = "k-admin")
+            fx.write("b", "old.md", "---\ntype: fact\nsuperseded_by: live.md\n---\n# Old\nokapi old", key = "k-admin")
+            fx.a.index.waitIdle(); fx.b.index.waitIdle()
+
+            val spec = java.nio.file.Paths.get(System.getProperty("user.dir")).parent.resolve("contract/openapi.yaml")
+            val validator = com.atlassian.oai.validator.OpenApiInteractionValidator
+                .createForSpecificationUrl(spec.toUri().toString()).build()
+            fun conforms(body: String) {
+                val resp = com.atlassian.oai.validator.model.SimpleResponse.Builder(200)
+                    .withContentType("application/json").withBody(body).build()
+                val report = validator.validateResponse("/api/v1/search", com.atlassian.oai.validator.model.Request.Method.GET, resp)
+                assertFalse(report.hasErrors(), "contract violation: ${report.messages}")
+            }
+
+            val all = fx.get("/api/v1/search?q=okapi&across=true&mode=keyword", key = "k-admin")
+            assertEquals(200, all.statusCode(), all.body())
+            conforms(all.body())
+            val allWithheld = kotlinx.serialization.json.Json.parseToJsonElement(all.body()).jsonObject["withheld"]!!.jsonObject
+            assertEquals(mapOf("revoked" to 2, "superseded" to 1), allWithheld.mapValues { it.value.jsonPrimitive.content.toInt() }, all.body())
+            assertEquals(listOf("revoked", "superseded"), allWithheld.keys.toList(), "fixed reason order")
+
+            // An editor of `a` only: vault b's hidden notes are not counted (nothing about b leaks).
+            val mine = fx.get("/api/v1/search?q=okapi&across=true&mode=keyword", key = "k-editor")
+            assertEquals(200, mine.statusCode(), mine.body())
+            conforms(mine.body())
+            val mineWithheld = kotlinx.serialization.json.Json.parseToJsonElement(mine.body()).jsonObject["withheld"]!!.jsonObject
+            assertEquals(mapOf("revoked" to 1), mineWithheld.mapValues { it.value.jsonPrimitive.content.toInt() }, mine.body())
+
+            // Nothing hidden anywhere → no key.
+            val clean = fx.get("/api/v1/search?q=current&across=true&mode=keyword", key = "k-admin").body()
+            conforms(clean)
+            assertFalse("\"withheld\"" in clean, clean)
+        }
+    }
+
+    @Test
     fun `a doubled slash or an encoded segment cannot slip past the auth check`(): Unit = runBlocking {
         Fixture(localAdmin = false).use { fx ->
             // Ktor routes `//api/v1/vaults` and `/api/v1/%76aults` to the real handlers; the

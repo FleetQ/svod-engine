@@ -18,6 +18,14 @@ object GrantResolver {
     /** An agent opts in to role enforcement when it is bound to a user or has an explicit `{vault, role}` grant. */
     fun optedIn(agent: AgentIdentity): Boolean = agent.userId != null || agent.grantRoles.isNotEmpty()
 
+    /**
+     * Whether [tool] is offered to [agent] in tools/list at all. Only the global READ_ONLY role hides
+     * tools: it sees just the READER tools (an unknown tool counts as MAINTAINER, so it stays hidden).
+     * Per-vault grants never hide tools, because one token reaches several vaults; [deny] checks those per call.
+     */
+    fun advertised(agent: AgentIdentity, tool: String): Boolean =
+        agent.role != AgentRole.READ_ONLY || REQUIRED[tool] == GrantRole.READER
+
     /** null = allowed; otherwise the denial message. Call after the vault grant itself has passed. */
     fun deny(agent: AgentIdentity, vault: String, tool: String): String? {
         if (!optedIn(agent)) return null

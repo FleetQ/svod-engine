@@ -3,6 +3,7 @@ package dev.svod.engine.mcp
 import dev.svod.engine.core.Author
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -71,6 +72,17 @@ class GrantResolverTest {
     fun `an unknown tool needs maintainer`() {
         assertTrue(GrantResolver.deny(agent(user = "ann"), "v", "new_tool") != null)
         assertNull(GrantResolver.deny(agent(roles = mapOf("v" to GrantRole.MAINTAINER)), "v", "new_tool"))
+    }
+
+    @Test
+    fun `advertised hides only non-reader tools and only from READ_ONLY agents`() {
+        val writer = agent(roles = mapOf("v" to GrantRole.READER))
+        (reads + writes + "promote").forEach { assertTrue(GrantResolver.advertised(writer, it), it) }
+        assertTrue(GrantResolver.advertised(agent(), "promote"))
+        val ro = agent(role = AgentRole.READ_ONLY, roles = mapOf("v" to GrantRole.MAINTAINER))
+        reads.forEach { assertTrue(GrantResolver.advertised(ro, it), it) }
+        (writes + "promote").forEach { assertFalse(GrantResolver.advertised(ro, it), it) }
+        assertFalse(GrantResolver.advertised(agent(role = AgentRole.READ_ONLY), "unknown_tool"))
     }
 
     @Test

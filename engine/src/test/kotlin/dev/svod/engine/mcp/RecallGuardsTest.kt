@@ -88,6 +88,34 @@ class RecallGuardsTest {
     }
 
     @Test
+    fun `search and context_pack report withheld memories with an includeAll hint`() = runBlocking {
+        McpFixture().use { fx ->
+            fx.engine.write("notes/new.md", "---\ntype: fact\nstatus: active\n---\n# New\nWITHHELD_NEEDLE current", null, fx.write.author)
+            fx.engine.write("notes/gone.md", "---\ntype: fact\nstatus: revoked\n---\n# Gone\nWITHHELD_NEEDLE revoked", null, fx.write.author)
+            fx.engine.write("notes/old.md", "---\ntype: fact\nsuperseded_by: notes/new.md\n---\n# Old\nWITHHELD_NEEDLE old", null, fx.write.author)
+            fx.index.waitIdle()
+
+            for (r in listOf(
+                fx.tools.search(fx.write, SearchQuery("WITHHELD_NEEDLE")),
+                fx.tools.contextPack(fx.write, SearchQuery("WITHHELD_NEEDLE"), tokenBudget = 10_000),
+            )) {
+                val withheld = r.data["withheld"]!!.jsonObject
+                assertEquals(1, withheld["revoked"]!!.jsonPrimitive.content.toInt())
+                assertEquals(1, withheld["superseded"]!!.jsonPrimitive.content.toInt())
+                assertEquals(setOf("revoked", "superseded"), withheld.keys)
+                val hint = r.data["hint"]!!.jsonPrimitive.content
+                assertTrue("includeAll=true" in hint, "hint names includeAll: $hint")
+            }
+
+            // Nothing hidden → neither key.
+            val clean = fx.tools.search(fx.write, SearchQuery("current"))
+            assertTrue("withheld" !in clean.data && "hint" !in clean.data, "no withheld/hint when nothing hidden")
+            val all = fx.tools.search(fx.write, SearchQuery("WITHHELD_NEEDLE", SearchFilters(includeAll = true)))
+            assertTrue("withheld" !in all.data, "includeAll hides nothing")
+        }
+    }
+
+    @Test
     fun `commit_created carries agentId`() = runBlocking {
         McpFixture().use { fx ->
             val payload = async(Dispatchers.Default) {

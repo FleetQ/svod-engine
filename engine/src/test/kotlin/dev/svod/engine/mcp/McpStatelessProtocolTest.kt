@@ -128,15 +128,17 @@ class McpStatelessProtocolTest {
                     // the bearer identity still reaches git — statelessness does not lose the author
                     assertEquals("Scribe", fx.engine.history("stateless/a.md").first().authorName)
 
-                    // and a read-only agent is still denied over the stateless path
+                    // and a read-only agent's write is answered like a tool that does not exist
                     val denied = http.rpc(
                         server.port,
                         """{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"write",""" +
                             """"arguments":{"path":"stateless/x.md","content":"no"},${meta()}}}""",
                         token = "read-token",
                     )
-                    val result = denied.jsonBody()["result"]!!.jsonObject
-                    assertEquals(true, result["isError"]!!.jsonPrimitive.content.toBoolean())
+                    assertNull(denied.jsonBody()["result"])
+                    val error = denied.jsonBody()["error"]!!.jsonObject
+                    assertEquals(-32602, error["code"]!!.jsonPrimitive.int)
+                    assertEquals("Unknown tool: write", error["message"]!!.jsonPrimitive.content)
                 }
             } finally { server.stop() }
         }

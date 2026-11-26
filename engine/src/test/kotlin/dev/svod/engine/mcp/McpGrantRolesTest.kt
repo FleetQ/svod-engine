@@ -145,8 +145,11 @@ class McpGrantRolesTest {
     fun `READ_ONLY ceiling wins over a maintainer grant`() = run(listOf(spec("ro", role = AgentRole.READ_ONLY, roles = mapOf("work" to GrantRole.MAINTAINER)))) { port ->
         val c = connect(port, "ro")
         try {
-            c.mayNot("write", mutations.getValue("write"), "reader", "ro")
-            c.mayNot("promote", mutations.getValue("promote"), "reader", "ro")
+            val names = c.listTools().tools.map { it.name }.toSet()
+            assertTrue("write" !in names && "promote" !in names, "READ_ONLY must not see write or promote: $names")
+            val unknown = c.outcome("no_such_tool")
+            assertEquals(unknown, c.outcome("write"), "hidden write fails like an unknown tool")
+            assertEquals(unknown, c.outcome("promote"), "hidden promote fails like an unknown tool")
             c.ok("list", emptyMap())
         } finally { c.close() }
     }

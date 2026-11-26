@@ -64,9 +64,25 @@ data class SearchResult(
     val degraded: List<String> = emptyList(),
     /** For an as-of query ([SearchQuery.asOfEpoch]): the commit answered from; null when none existed then. */
     val asOfCommit: String? = null,
+    /**
+     * Matching notes the default lifecycle hiding removed, as reason → count of distinct notes
+     * ([WITHHELD_REVOKED] / [WITHHELD_SUPERSEDED] / [WITHHELD_EXPIRED] / [WITHHELD_PROVISIONAL], in
+     * that order; a note is counted once, under the first reason that applies). Keyword match only;
+     * session transcripts are never counted, `messy/` drafts only when the search itself would include
+     * them. Empty when nothing was hidden, for
+     * an includeAll search and for an as-of search.
+     */
+    val withheld: Map<String, Int> = emptyMap(),
 ) {
     companion object {
         const val SEMANTIC = "semantic"
         const val RERANK = "rerank"
+        const val WITHHELD_REVOKED = "revoked"
+        const val WITHHELD_SUPERSEDED = "superseded"
+        const val WITHHELD_EXPIRED = "expired"
+        const val WITHHELD_PROVISIONAL = "provisional"
+
+        /** The withheld reasons in their fixed precedence / reporting order. */
+        val WITHHELD_REASONS = listOf(WITHHELD_REVOKED, WITHHELD_SUPERSEDED, WITHHELD_EXPIRED, WITHHELD_PROVISIONAL)
     }
 }
