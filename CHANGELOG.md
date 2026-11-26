@@ -40,6 +40,12 @@ independently of the engine; each entry notes the contract version it ships.
 
 ### Fixed
 
+- MCP: a GET (the server-to-client SSE stream) on an unknown or evicted session now gets HTTP 404.
+  Ktor's `sse {}` sent 200 `text/event-stream` before the session check ran, so the log said 404 while
+  the client saw an empty stream that ended cleanly and reopened it about once a second, forever
+  (two laptop clients from 24.11.2026). The session is now checked before the stream starts. No
+  contract change.
+
 - **`user.home` in a native binary without a passwd entry.** A container run with `--user <uid>` (the hosted team
   engines) has no passwd entry for that uid; the JVM then takes `user.home` from `$HOME`, a native image sets it to
   `"?"`. That broke logback's rolling file (`PatternSyntaxException` on `?/.svod/logs/...`) and made JGit log

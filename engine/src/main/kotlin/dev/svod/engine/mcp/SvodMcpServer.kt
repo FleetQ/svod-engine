@@ -4,6 +4,7 @@ import dev.svod.engine.index.SearchFilters
 import dev.svod.engine.index.SearchMode
 import dev.svod.engine.index.SearchQuery
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
@@ -22,15 +23,18 @@ import io.ktor.server.engine.embeddedServer
 import io.ktor.server.engine.sslConnector
 import io.ktor.server.netty.Netty
 import io.ktor.server.request.header
+import io.ktor.server.request.httpVersion
 import io.ktor.server.request.receiveText
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.delete
+import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.sse.SSE
-import io.ktor.server.sse.sse
+import io.ktor.server.sse.SSEServerContent
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.server.StreamableHttpServerTransport
@@ -184,10 +188,18 @@ class SvodMcpServer(
         routing {
             authenticate("mcp") {
                 route("/mcp") {
-                    sse {
-                        val session = findSession(call) ?: return@sse
+                    // Not Ktor's `sse {}`: it commits 200 text/event-stream before its block runs, so the
+                    // 404 for an unknown session never reached the client. The client saw an empty
+                    // stream that ended cleanly and reopened it every second, forever (2026-11-24).
+                    // The session is checked first; the SSE headers are the ones `sse {}` sets.
+                    get {
+                        val session = findSession(call) ?: return@get
                         session.lastSeen = clock()
-                        session.transport.handleRequest(this, call)
+                        call.response.header(HttpHeaders.ContentType, ContentType.Text.EventStream.toString())
+                        call.response.header(HttpHeaders.CacheControl, "no-store")
+                        if (call.request.httpVersion.startsWith("HTTP/1.")) call.response.header(HttpHeaders.Connection, "keep-alive")
+                        call.response.header("X-Accel-Buffering", "no")
+                        call.respond(SSEServerContent(call) { session.transport.handleRequest(this, call) })
                     }
                     post {
                         // The body is read here to pick a wire format and then again by the legacy
