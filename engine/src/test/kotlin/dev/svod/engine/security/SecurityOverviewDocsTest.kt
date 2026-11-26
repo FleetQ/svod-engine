@@ -135,6 +135,7 @@ class SecurityOverviewDocsTest {
         assertTrue("opt-in" in lower, "$PAGE '## Personal data review' must say it is opt-in")
         assertBackticked(review, "status: provisional", "## Personal data review")
         assertTrue("git history" in lower, "$PAGE '## Personal data review' must say flagged notes still enter git history")
+        assertTrue("not a security boundary" in lower, "$PAGE '## Personal data review' must not present the review queue as a security boundary")
         val init = dev.svod.engine.lifecycle.ConfigInit.generate(Paths.get("x"), "none", "sva_t")
         assertEquals(false, init.personalDataScanning, "svod-engine init now enables personalDataScanning; update $PAGE")
     }

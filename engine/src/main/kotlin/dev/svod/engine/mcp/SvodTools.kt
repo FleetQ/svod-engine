@@ -564,19 +564,28 @@ class SvodTools(
             outcomeResult("write", agent, engine.write(path, text, expectedRevision, agent.author), path, personalData = personal)
         }
 
-    /** Findings in [newContent] whose (rule, value) [previousContent] did not already hold. */
+    /**
+     * The findings that make this write wait for a person: those in [newContent] whose (rule, value)
+     * [previousContent] did not already hold, or — when the previous version is still `provisional` —
+     * every finding still present, so an agent cannot clear the review itself by rewriting the note
+     * (or its `status`) while the personal data stays in it.
+     */
     private fun personalDataGate(newContent: String, previousContent: String?): List<dev.svod.engine.security.PersonalDataScanner.Finding> {
         val found = personalDataScanner.scan(newContent)
         if (found.isEmpty() || previousContent == null) return found
+        if (statusOf(previousContent) == "provisional") return found
         val before = personalDataScanner.scan(previousContent).mapTo(HashSet()) { it.rule to it.value }
         return found.filter { (it.rule to it.value) !in before }
     }
 
-    /** [text] with frontmatter `status: provisional`; other keys and the body kept as written. */
+    /**
+     * [text] with frontmatter `status: provisional`; other keys and the body kept as written. Frontmatter
+     * that does not parse is kept verbatim below the new header (it becomes body text), never dropped.
+     */
     private fun markProvisional(text: String): String {
         dev.svod.engine.memory.patchFrontmatter(text, mapOf("status" to "provisional"), emptySet())?.let { return it }
         val parsed = dev.svod.engine.index.MarkdownChunker.parse(text)
-        if (parsed.frontmatter.isEmpty() && !text.startsWith("---")) return "---\nstatus: provisional\n---\n$text"
+        if (parsed.frontmatter.isEmpty()) return "---\nstatus: provisional\n---\n$text"
         val fm = LinkedHashMap<String, Any?>(parsed.frontmatter)
         fm["status"] = "provisional"
         return frontmatterFences(fm) + parsed.body

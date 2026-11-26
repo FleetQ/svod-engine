@@ -153,6 +153,42 @@ class PersonalDataReviewTest {
     }
 
     @Test
+    fun `an agent cannot clear the review by rewriting or editing the status`() {
+        Fixture().use { fx ->
+            runBlocking { fx.tools.write(fx.agent, "notes/contact.md", "Mail $email\n", null) }
+            assertEquals("provisional", fx.status("notes/contact.md"))
+
+            val rev = runBlocking { fx.engine.read("notes/contact.md")!!.revision }
+            val rewrite = runBlocking {
+                fx.tools.write(fx.agent, "notes/contact.md", "---\nstatus: active\n---\nMail $email\n", rev)
+            }
+            assertEquals("ok", rewrite.status)
+            assertEquals(listOf("email (line 4)"), personalData(rewrite))
+            assertEquals("provisional", fx.status("notes/contact.md"))
+
+            val edit = runBlocking { fx.tools.edit(fx.agent, "notes/contact.md", "status: provisional", "status: active", false, null) }
+            assertEquals("ok", edit.status)
+            assertEquals("provisional", fx.status("notes/contact.md"))
+            assertEquals(setOf("notes/contact.md"), fx.queued())
+
+            // Once the personal data is gone the agent's write stands as written.
+            val cleared = runBlocking { fx.tools.edit(fx.agent, "notes/contact.md", "Mail $email", "Mail the team", false, null) }
+            assertNull(cleared.data["personalData"])
+        }
+    }
+
+    @Test
+    fun `malformed frontmatter is kept, not dropped`() {
+        Fixture().use { fx ->
+            val content = "---\nfoo: [x\n---\nMail $email\n"
+            val r = runBlocking { fx.tools.write(fx.agent, "notes/odd.md", content, null) }
+            assertEquals("ok", r.status)
+            assertEquals("provisional", fx.status("notes/odd.md"))
+            assertTrue(fx.text("notes/odd.md").endsWith(content), "the original text, malformed header included, is kept")
+        }
+    }
+
+    @Test
     fun `approving a flagged note does not flag it again`() {
         Fixture().use { fx ->
             runBlocking { fx.tools.write(fx.agent, "notes/contact.md", "Mail $email\n", null) }
@@ -162,6 +198,10 @@ class PersonalDataReviewTest {
             assertTrue(outcome is MemoryReview.ReviewOutcome.Written)
             assertEquals("active", fx.status("notes/contact.md"))
             assertTrue(fx.queued().isEmpty())
+            // An agent edit after approval that adds nothing new is not sent back for review.
+            val later = runBlocking { fx.tools.edit(fx.agent, "notes/contact.md", "Mail", "Write to", false, null) }
+            assertNull(later.data["personalData"])
+            assertEquals("active", fx.status("notes/contact.md"))
         }
     }
 }

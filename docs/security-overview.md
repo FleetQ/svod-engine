@@ -183,6 +183,13 @@ not a running, unlocked host.
 - A matching note is not blocked: it is committed with `status: provisional`, so it **does** enter
   git history, but it is hidden from search and `context_pack` and waits in the Memory review
   queue until a person approves it. For `remember` this overrides any `status` the agent asked for.
+  While a note is `provisional`, an agent's `write` or `edit` that keeps the personal data in it
+  keeps it `provisional`, even if the agent sets another `status`.
+- Frontmatter is updated in place; other keys and the body are kept. Frontmatter that does not
+  parse is kept as it was, below a new header.
+- It is **not a security boundary**. The review queue only controls what recall shows by default:
+  an agent with write access can still read the note, delete it, or remove the personal data and
+  then change its `status`, and the rules miss many formats (see below).
 - The tool result lists each finding as rule and line only (for example `email (line 2)`); the
   audit log records the rule names. Matched values are never returned or logged.
 - It is a review aid, not a GDPR erasure tool: approving or declining a note does not remove

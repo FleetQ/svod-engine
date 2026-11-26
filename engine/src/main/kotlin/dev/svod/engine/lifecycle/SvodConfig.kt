@@ -54,7 +54,9 @@ data class SvodConfig(
     /**
      * Opt-in personal-data review: an agent's MCP write, edit or remember that adds an email address,
      * a `+` phone number, an IBAN or a card number is stored `provisional` and waits in the Memory
-     * review queue until a person approves it. Nothing is blocked; values are never logged.
+     * review queue, out of default recall, until a person approves it. Nothing is blocked; values are
+     * never logged. A review aid, not a security boundary: an agent with write access can still delete
+     * the note or strip the data.
      */
     val personalDataScanning: Boolean = false,
     /** Optional TLS for the MCP endpoint. */
