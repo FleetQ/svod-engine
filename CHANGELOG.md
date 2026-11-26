@@ -3,7 +3,7 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
-## v1.34.3 — unreleased (App API contract 0.42.0, unchanged)
+## v1.35.0 — 2026-11-26 (App API contract 0.42.0, unchanged)
 
 ### Added
 
@@ -45,6 +45,10 @@ independently of the engine; each entry notes the contract version it ships.
   the client saw an empty stream that ended cleanly and reopened it about once a second, forever
   (two laptop clients from 24.11.2026). The session is now checked before the stream starts. No
   contract change.
+
+## v1.34.3 — 2026-11-21 (App API contract 0.42.0, unchanged)
+
+### Fixed
 
 - **`user.home` in a native binary without a passwd entry.** A container run with `--user <uid>` (the hosted team
   engines) has no passwd entry for that uid; the JVM then takes `user.home` from `$HOME`, a native image sets it to
