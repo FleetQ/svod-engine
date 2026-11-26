@@ -124,6 +124,7 @@ class SvodNode private constructor(
                         vc.engine, vc.index, audit, rateLimiter, eventBus, graph = vc.graph, vaultId = vc.id,
                         requireReview = config.memory.requireReview,
                         extractor = extractor, maxTranscriptChars = extractionConfig.maxTranscriptChars,
+                        personalDataScanner = dev.svod.engine.security.PersonalDataScanner(config.personalDataScanning),
                     )
                 }
                 for (vc in vaults.contexts()) toolsByVault[vc.id] = toolsFor(vc)
