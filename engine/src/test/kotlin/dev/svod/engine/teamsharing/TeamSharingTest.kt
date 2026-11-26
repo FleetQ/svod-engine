@@ -81,6 +81,13 @@ class TeamSharingTest {
                         assertEquals(false, r.isError, label)
                         assertTrue(r.status in setOf("ok", "written"), label)
                         if (action in mutating) assertTrue(fx.head() != before, "HEAD must move: $label")
+                    } else if (a.readOnlyCeiling) {
+                        // a READ_ONLY token is never offered writer tools: the call answers like an unknown tool
+                        val unknown = c.call("no_such_tool", args(a, action))
+                        assertEquals(true, r.isError, label)
+                        assertEquals(unknown.isError, r.isError, label)
+                        assertEquals(unknown.text.replace("no_such_tool", "‹tool›"), r.text.replace(action, "‹tool›"), label)
+                        assertEquals(before, fx.head(), "a hidden tool call must change nothing: $label")
                     } else {
                         assertEquals(true, r.isError, label)
                         assertEquals("denied", r.status, label)
