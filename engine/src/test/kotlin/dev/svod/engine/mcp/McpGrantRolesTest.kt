@@ -37,12 +37,6 @@ class McpGrantRolesTest {
     private fun io.modelcontextprotocol.kotlin.sdk.types.CallToolResult.text(): String =
         (content.firstOrNull { it is TextContent } as TextContent).text!!
 
-    /** How a call to [tool] fails, with the tool name blanked so two names can be compared. */
-    private suspend fun Client.outcome(tool: String): String = runCatching { callTool(tool, emptyMap<String, Any?>()) }.fold(
-        { "result isError=${it.isError} ${(it.content.firstOrNull() as? TextContent)?.text?.replace(tool, "<tool>")}" },
-        { "error ${it::class.simpleName} ${it.message?.replace(tool, "<tool>")}" },
-    )
-
     private fun spec(token: String, role: AgentRole = AgentRole.WRITE, vaults: List<String> = listOf("work"),
                      user: String? = null, roles: Map<String, GrantRole> = emptyMap()) =
         AgentRegistry.AgentSpec(token, token, role, vaults = vaults, userId = user, grantRoles = roles)
