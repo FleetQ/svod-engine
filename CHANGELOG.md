@@ -3,6 +3,16 @@
 All notable changes to the Svod engine. The App API contract (`contract/openapi.yaml`) is versioned
 independently of the engine; each entry notes the contract version it ships.
 
+## v1.36.0 — unreleased (App API contract 0.42.0, unchanged)
+
+### Added
+
+- Secret scanning (`secretScanning`) has seven new high-confidence rules: `openai-api-key` (`sk-proj-`, `sk-svcacct-`,
+  `sk-admin-` and legacy keys), `anthropic-api-key`, `stripe-live-key` (live secret and restricted keys; Stripe test
+  keys and publishable keys are not blocked), `github-fine-grained-token`, `gitlab-token`, `npm-token` and
+  `huggingface-token`. With the scan on, a note write containing one is blocked before commit.
+  `docs/security-overview.md` now lists every rule id, kept in sync by `SecurityOverviewDocsTest`. No contract change.
+
 ## v1.35.0 — 2026-11-26 (App API contract 0.42.0, unchanged)
 
 ### Added

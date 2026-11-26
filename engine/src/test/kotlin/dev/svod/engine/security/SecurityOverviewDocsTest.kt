@@ -126,6 +126,17 @@ class SecurityOverviewDocsTest {
     }
 
     @Test
+    fun secretScanRulesAreListed() {
+        val scan = section("Pre-commit secret scan")
+        listOf(
+            "openai-api-key", "anthropic-api-key", "stripe-live-key", "github-fine-grained-token",
+            "gitlab-token", "npm-token", "huggingface-token",
+        ).forEach { assertTrue(it in SecretScanner.RULE_NAMES, "SecretScanner.RULE_NAMES has no $it: ${SecretScanner.RULE_NAMES}") }
+        assertTrue("private-key" in SecretScanner.RULE_NAMES, "SecretScanner.RULE_NAMES has no private-key")
+        SecretScanner.RULE_NAMES.forEach { assertBackticked(scan, it, "## Pre-commit secret scan") }
+    }
+
+    @Test
     fun secretScanExceptionsAreDocumented() = runBlocking {
         // With the scan ON, a note write is blocked but writeBytes commits the same text unscanned.
         val root = Files.createTempDirectory("svod-scan-bypass-")

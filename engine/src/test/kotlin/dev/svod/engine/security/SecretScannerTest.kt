@@ -105,7 +105,69 @@ class SecretScannerTest {
         }
     }
 
+    // ---- LLM-provider, payment and package-registry tokens. Every token is joined from a prefix
+    //      and a generated body at runtime, so no committed key literal exists in this file. ----
+
+    @Test
+    fun `detects LLM-provider, payment and package-registry tokens`() {
+        val cases = listOf(
+            "openai-api-key" to "sk-" + "proj-" + alnum(48) + "_" + alnum(20),
+            "openai-api-key" to "sk-" + "svcacct-" + alnum(40),
+            "openai-api-key" to "sk-" + "admin-" + alnum(40),
+            "openai-api-key" to "sk-" + alnum(20) + "T3Blbk" + "FJ" + alnum(20),
+            "anthropic-api-key" to "sk-" + "ant-" + "api03-" + alnum(80) + "-" + alnum(10),
+            "anthropic-api-key" to "sk-" + "ant-" + "admin01-" + alnum(80),
+            "stripe-live-key" to "sk_" + "live_" + alnum(24),
+            "stripe-live-key" to "rk_" + "live_" + alnum(99),
+            "github-fine-grained-token" to "github_" + "pat_" + alnum(22) + "_" + alnum(59),
+            "gitlab-token" to "glpat" + "-" + alnum(20),
+            "npm-token" to "npm" + "_" + alnum(36),
+            "huggingface-token" to "hf" + "_" + alnum(34),
+        )
+        cases.forEach { (rule, token) ->
+            val note = "# Config\nthe key is $token for now\n"
+            assertEquals(listOf(SecretScanner.Finding(rule, 2)), scanner.scan(note), "token for $rule")
+        }
+    }
+
+    @Test
+    fun `an Anthropic key is not reported as an OpenAI key`() {
+        val rules = scanner.scan("key: " + "sk-" + "ant-" + "api03-" + alnum(90)).map { it.rule }
+        assertTrue("anthropic-api-key" in rules, "got $rules")
+        assertTrue("openai-api-key" !in rules, "got $rules")
+    }
+
+    @Test
+    fun `near-miss prose and test-mode keys are clean`() {
+        listOf(
+            "sk_" + "test_" + alnum(24),
+            "pk_" + "live_" + alnum(24),
+            "OpenAI keys start with sk-proj- and Anthropic keys with sk-ant-api03-, Hugging Face with hf_.",
+            "Set npm_config_registry and use a github_pat_ or glpat- token from the vault, never inline.",
+            "the flag sk_live_mode_enabled_for_checkout_flow is read in billing",
+            "short ones: hf_" + alnum(10) + " npm_" + alnum(12) + " glpat-" + alnum(8) + " sk-proj-" + alnum(8),
+            "an npm token with a longer body: npm_" + alnum(40),
+        ).forEach { text -> assertEquals(emptyList(), scanner.scan(text), "expected clean: $text") }
+    }
+
+    @Test
+    fun `engine refuses to commit an Anthropic key`() = runBlocking {
+        val root = Files.createTempDirectory("svod-secret-ant-")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        SvodEngine.open(root, scope, SecretScanner(enabled = true)).use { e ->
+            val secret = "ANTHROPIC_API_KEY=" + "sk-" + "ant-" + "api03-" + alnum(90)
+            val out = e.write("notes/llm.md", secret, expectedRevision = null, author = Author("a", "a@x"))
+            assertTrue(out is WriteOutcome.Blocked, "got $out")
+            assertTrue((out as WriteOutcome.Blocked).findings.any { it.contains("anthropic-api-key") })
+            assertNull(e.read("notes/llm.md"))
+            assertEquals(emptyList(), e.history("notes/llm.md"))
+        }
+    }
+
     private companion object {
+        /** A mixed-case alphanumeric body of length [n], with no underscore or dash. */
+        fun alnum(n: Int): String = "aB3dE5gH7jK9mN2pQ4rS6tU8vW".repeat(n / 26 + 1).take(n)
+
         // Built at runtime: no literal key header or key material is committed.
         const val DASHES = "-----"
         val BEGIN = DASHES + "BEGIN " + "PRIVATE KEY" + DASHES
