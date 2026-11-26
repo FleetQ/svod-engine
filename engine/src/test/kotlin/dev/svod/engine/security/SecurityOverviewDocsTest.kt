@@ -126,6 +126,20 @@ class SecurityOverviewDocsTest {
     }
 
     @Test
+    fun personalDataReviewIsDescribedAsOptIn() {
+        assertEquals(false, defaults.personalDataScanning, "personalDataScanning default changed; update $PAGE '## Personal data review'")
+        val review = section("Personal data review")
+        assertBackticked(review, "personalDataScanning", "## Personal data review")
+        val lower = review.lowercase()
+        assertTrue("off by default" in lower, "$PAGE '## Personal data review' must say it is off by default")
+        assertTrue("opt-in" in lower, "$PAGE '## Personal data review' must say it is opt-in")
+        assertBackticked(review, "status: provisional", "## Personal data review")
+        assertTrue("git history" in lower, "$PAGE '## Personal data review' must say flagged notes still enter git history")
+        val init = dev.svod.engine.lifecycle.ConfigInit.generate(Paths.get("x"), "none", "sva_t")
+        assertEquals(false, init.personalDataScanning, "svod-engine init now enables personalDataScanning; update $PAGE")
+    }
+
+    @Test
     fun secretScanExceptionsAreDocumented() = runBlocking {
         // With the scan ON, a note write is blocked but writeBytes commits the same text unscanned.
         val root = Files.createTempDirectory("svod-scan-bypass-")

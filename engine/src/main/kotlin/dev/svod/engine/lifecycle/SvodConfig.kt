@@ -51,6 +51,12 @@ data class SvodConfig(
     val mergeAuthority: Boolean = false,
     /** Secret scanning before commit (blocks leaked credentials from entering git). */
     val secretScanning: Boolean = false,
+    /**
+     * Opt-in personal-data review: an agent's MCP write, edit or remember that adds an email address,
+     * a `+` phone number, an IBAN or a card number is stored `provisional` and waits in the Memory
+     * review queue until a person approves it. Nothing is blocked; values are never logged.
+     */
+    val personalDataScanning: Boolean = false,
     /** Optional TLS for the MCP endpoint. */
     val mcpTls: TlsSettings? = null,
     /** Externally reachable MCP URL (behind a proxy); `GET /agents` reports it as `mcpUrl` instead of the bind address. */

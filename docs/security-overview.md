@@ -170,6 +170,26 @@ not a running, unlocked host.
   ([`sync/SyncEngine.kt`](../engine/src/main/kotlin/dev/svod/engine/sync/SyncEngine.kt)).
 - The rules are tuned for few false positives, so they are not a complete DLP control.
 
+## Personal data review
+
+- The review is **opt-in**: `personalDataScanning` is off by default, and `svod-engine init` does
+  not turn it on. Enable it in the config to use it.
+- When it is enabled, [`security/PersonalDataScanner.kt`](../engine/src/main/kotlin/dev/svod/engine/security/PersonalDataScanner.kt)
+  looks for email addresses, international phone numbers written with a `+` prefix, IBANs that pass
+  the mod-97 check and card numbers that pass the Luhn check.
+- It applies only to an **agent's** MCP `write`, `edit` and `remember`, and only to personal data
+  the call **adds** (data the note already held does not count). The App API, sync, import and
+  session capture are not scanned, and neither is a person's approval in the review queue.
+- A matching note is not blocked: it is committed with `status: provisional`, so it **does** enter
+  git history, but it is hidden from search and `context_pack` and waits in the Memory review
+  queue until a person approves it. For `remember` this overrides any `status` the agent asked for.
+- The tool result lists each finding as rule and line only (for example `email (line 2)`); the
+  audit log records the rule names. Matched values are never returned or logged.
+- It is a review aid, not a GDPR erasure tool: approving or declining a note does not remove
+  anything from git history.
+- Known false negatives: local phone numbers without a `+` prefix, names, postal addresses and
+  national ID numbers are not detected.
+
 ## Audit trail
 
 - **Agents.** Every MCP write (successful, conflicting or blocked), every call refused for the
