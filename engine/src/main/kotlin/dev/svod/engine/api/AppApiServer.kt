@@ -544,21 +544,25 @@ class AppApiServer(
                     // Federated: query every vault, tag each hit with its vault, merge by score.
                     val hits = ArrayList<SearchHitDto>()
                     val degraded = HashSet<String>()
+                    val withheld = HashMap<String, Int>()
                     val p = principal()
                     for (v in vaults.all()) {
                         if (!p.canRead(v.id)) continue
                         val r = v.index.search(SearchQuery(q, filters, mode, limit))
                         degraded.addAll(r.degraded)
+                        r.withheld.forEach { (reason, n) -> withheld.merge(reason, n, Int::plus) }
                         r.hits.forEach { hits.add(SearchHitDto(it.path, it.heading, it.snippet, it.score, it.matchedKeyword, it.matchedSemantic, it.tags, v.id, dev.svod.engine.index.estimateTokens(it.snippet))) }
                     }
                     hits.sortByDescending { it.score }
                     val order = listOf(SearchResult.SEMANTIC, SearchResult.RERANK)
-                    call.respond(SearchResultDto(mode.name, hits.take(limit), order.filter { it in degraded }))
+                    val reasons = listOf(SearchResult.WITHHELD_REVOKED, SearchResult.WITHHELD_SUPERSEDED, SearchResult.WITHHELD_EXPIRED, SearchResult.WITHHELD_PROVISIONAL)
+                    val withheldOrdered = reasons.mapNotNull { r -> withheld[r]?.let { r to it } }.toMap()
+                    call.respond(SearchResultDto(mode.name, hits.take(limit), order.filter { it in degraded }, withheldOrdered.takeIf { it.isNotEmpty() }))
                 } else {
                     val result = vc.index.search(SearchQuery(q, filters, mode, limit))
                     call.respond(SearchResultDto(result.mode.name, result.hits.map {
                         SearchHitDto(it.path, it.heading, it.snippet, it.score, it.matchedKeyword, it.matchedSemantic, it.tags, vc.id, dev.svod.engine.index.estimateTokens(it.snippet))
-                    }, result.degraded))
+                    }, result.degraded, result.withheld.takeIf { it.isNotEmpty() }))
                 }
             }
 

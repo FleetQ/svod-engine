@@ -234,6 +234,16 @@ class SvodTools(
         })
     }
 
+    /** `withheld` (reason → count) and a retry `hint`, only when lifecycle hiding removed matching notes. */
+    private fun JsonObjectBuilder.putWithheld(withheld: Map<String, Int>) {
+        if (withheld.isEmpty()) return
+        put("withheld", buildJsonObject { withheld.forEach { (reason, n) -> put(reason, n) } })
+        val total = withheld.values.sum()
+        val parts = withheld.entries.joinToString(", ") { "${it.value} ${it.key}" }
+        val noun = if (total == 1) "memory" else "memories"
+        put("hint", "$total matching $noun hidden ($parts); retry with includeAll=true to see them.")
+    }
+
     suspend fun search(agent: AgentIdentity, query: SearchQuery, asOf: String? = null): ToolResult = guarded(agent, "search", write = false) {
         val (q, bad) = withAsOf(query, asOf)
         if (q == null) return@guarded bad!!
@@ -242,6 +252,7 @@ class SvodTools(
             put("mode", result.mode.name)
             putAsOf(q, asOf, result.asOfCommit)
             putJsonArray("degraded") { result.degraded.forEach { add(it) } }
+            putWithheld(result.withheld)
             putJsonArray("hits") {
                 result.hits.forEach { h ->
                     addJsonObject {
@@ -428,6 +439,7 @@ class SvodTools(
             var total = 0
             val mode: String
             var degraded = emptyList<String>()
+            var withheld = emptyMap<String, Int>()
             val asOfEpoch = q.asOfEpoch
             // The commit an as-of answer comes from; stays null when no commit existed then (no paths/hits).
             var asOfCommit: String? = null
@@ -464,6 +476,7 @@ class SvodTools(
                 val result = index.search(q)
                 mode = result.mode.name
                 degraded = result.degraded
+                withheld = result.withheld
                 asOfCommit = result.asOfCommit
                 val seenPaths = HashSet<String>()
                 for (h in result.hits) {
@@ -487,6 +500,7 @@ class SvodTools(
                 put("tokenBudget", tokenBudget); put("estimatedTokens", total)
                 putAsOf(q, asOf, asOfCommit)
                 putJsonArray("degraded") { degraded.forEach { add(it) } }
+                putWithheld(withheld)
                 putJsonArray("blocks") {
                     blocks.forEach { b ->
                         addJsonObject {

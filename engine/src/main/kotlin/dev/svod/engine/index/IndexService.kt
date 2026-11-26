@@ -593,7 +593,8 @@ class IndexService(
         // Blank text AND no user-facing filter ⇒ nothing to search (the lifecycle defaults alone must
         // not turn an empty query into a match-all browse). The App API already 400s this case.
         if (q.text.isBlank() && q.filters.isEmpty) return SearchResult(emptyList(), q.mode, 0)
-        val filter = index.buildFilter(q.filters, includeMessy = includeMessyInRecall)
+        val now = System.currentTimeMillis() / 1000
+        val filter = index.buildFilter(q.filters, includeMessy = includeMessyInRecall, nowEpoch = now)
         val cand = maxOf(q.limit * 5, 50)
 
         // A filter-only query (blank text, e.g. "browse by tag") matches every doc passing the filter,
@@ -651,7 +652,11 @@ class IndexService(
             if (semanticDegraded) add(SearchResult.SEMANTIC)
             if (reranked == null) add(SearchResult.RERANK)
         }
-        return SearchResult(hits, q.mode, (System.nanoTime() - start) / 1_000_000, degraded)
+        // What the lifecycle hiding removed from this query. Counting must never fail a search.
+        val withheld = if (q.filters.includeAll) emptyMap() else runCatching {
+            index.withheldCounts(parseUserQuery(q.text) ?: MatchAllDocsQuery(), q.filters, includeMessyInRecall, now)
+        }.getOrDefault(emptyMap())
+        return SearchResult(hits, q.mode, (System.nanoTime() - start) / 1_000_000, degraded, withheld = withheld)
     }
 
     private fun keywordLeg(text: String, filter: Query?, k: Int): List<Pair<String, Float>> = keywordLeg(index, text, filter, k)
