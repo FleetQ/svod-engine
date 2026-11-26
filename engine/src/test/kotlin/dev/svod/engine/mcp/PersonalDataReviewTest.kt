@@ -178,6 +178,38 @@ class PersonalDataReviewTest {
     }
 
     @Test
+    fun `an agent cannot undo a decline while the personal data stays`() {
+        Fixture().use { fx ->
+            runBlocking { fx.tools.write(fx.agent, "notes/contact.md", "Mail $email\n", null) }
+            val declined = runBlocking {
+                MemoryReview.apply(fx.engine, "notes/contact.md", MemoryReview.Action.DECLINE, null, Author("Person", "p@x"))
+            }
+            assertTrue(declined is MemoryReview.ReviewOutcome.Written)
+            assertEquals("revoked", fx.status("notes/contact.md"))
+
+            // An edit that leaves it declined is not sent back for review.
+            val kept = runBlocking { fx.tools.edit(fx.agent, "notes/contact.md", "Mail", "Write to", false, null) }
+            assertNull(kept.data["personalData"])
+            assertEquals("revoked", fx.status("notes/contact.md"))
+
+            val revived = runBlocking { fx.tools.edit(fx.agent, "notes/contact.md", "status: revoked", "status: active", false, null) }
+            assertTrue(personalData(revived).single().startsWith("email (line "))
+            assertEquals("provisional", fx.status("notes/contact.md"))
+        }
+    }
+
+    @Test
+    fun `remember scans subject and source too`() {
+        Fixture().use { fx ->
+            val r = runBlocking {
+                fx.tools.remember(fx.agent, "Prefers short replies", "preference", email, null, null, null, null, null)
+            }
+            assertEquals("provisional", r.data["memoryStatus"]?.jsonPrimitive?.content)
+            assertEquals(listOf("email (line 2)"), personalData(r))
+        }
+    }
+
+    @Test
     fun `malformed frontmatter is kept, not dropped`() {
         Fixture().use { fx ->
             val content = "---\nfoo: [x\n---\nMail $email\n"

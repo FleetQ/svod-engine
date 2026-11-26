@@ -36,6 +36,18 @@ class PersonalDataScannerTest {
     }
 
     @Test
+    fun `a following group does not hide an IBAN or a card`() {
+        assertEquals(listOf("iban" to 1), rules("Pay ES91 2100 0418 4502 0005 1332 EUR 40"))
+        assertEquals(listOf("payment-card" to 1), rules("Card 4111 1111 1111 1111 123"))
+    }
+
+    @Test
+    fun `date ranges and number lists are not cards`() {
+        assertTrue(rules("From 2026-11-26 2026-11-30 and 2026-12-01").isEmpty())
+        assertTrue(rules("Primes 2 3 5 7 11 13 17 19 23 29 31 37 41 43").isEmpty())
+    }
+
+    @Test
     fun `ignores numbers that fail their check and plain prose`() {
         assertTrue(rules("Card 4111 1111 1111 1112").isEmpty(), "Luhn fails")
         assertTrue(rules("IBAN GB83 WEST 1234 5698 7654 32").isEmpty(), "mod-97 fails")

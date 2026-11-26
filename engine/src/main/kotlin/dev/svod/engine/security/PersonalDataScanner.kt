@@ -11,7 +11,7 @@ package dev.svod.engine.security
  *
  * Off by default; the lifecycle layer enables it via config.
  */
-class PersonalDataScanner(private val enabled: Boolean) {
+class PersonalDataScanner(val enabled: Boolean) {
 
     data class Finding(val rule: String, val line: Int, internal val value: String) {
         /** `rule (line N)`: what a tool result or audit entry may show; never the value. */
@@ -27,15 +27,26 @@ class PersonalDataScanner(private val enabled: Boolean) {
             EMAIL.findAll(line).forEach { findings += Finding("email", n, it.value.lowercase()) }
             PHONE.findAll(line).forEach { findings += Finding("phone", n, it.value.filter(Char::isDigit)) }
             IBAN.findAll(line).forEach { m ->
-                val v = m.value.filterNot(Char::isWhitespace)
-                if (v.length in 15..34 && ibanValid(v)) findings += Finding("iban", n, v)
+                prefixes(m.value) { it == ' ' }.map { it.filterNot(Char::isWhitespace) }
+                    .firstOrNull { it.length in 15..34 && ibanValid(it) }
+                    ?.let { findings += Finding("iban", n, it) }
             }
             CARD.findAll(line).forEach { m ->
-                val v = m.value.filter(Char::isDigit)
-                if (v.length in 13..19 && luhnValid(v)) findings += Finding("payment-card", n, v)
+                prefixes(m.value) { it == ' ' || it == '-' }.map { it.filter(Char::isDigit) }
+                    .firstOrNull { it.length in 13..19 && luhnValid(it) }
+                    ?.let { findings += Finding("payment-card", n, it) }
             }
         }
         return findings
+    }
+
+    /**
+     * [match] and each prefix of it that ends before a separator, longest first. The regexes are greedy,
+     * so a following group (`EUR`, a CVV, a year) can be swallowed into the match and fail the check.
+     */
+    private fun prefixes(match: String, isSeparator: (Char) -> Boolean): Sequence<String> = sequence {
+        yield(match)
+        for (i in match.indices.reversed()) if (isSeparator(match[i])) yield(match.substring(0, i))
     }
 
     companion object {
@@ -47,8 +58,13 @@ class PersonalDataScanner(private val enabled: Boolean) {
         private val PHONE = Regex("(?<![\\w+])\\+\\d(?:[ .-]?\\d){7,14}(?![\\d])")
         /** Two letters, two check digits, then 11–30 alphanumerics, plain or in space-separated groups of 4. */
         private val IBAN = Regex("\\b[A-Z]{2}\\d{2}(?:[A-Z0-9]{11,30}|(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,4})?)\\b")
-        /** 13–19 digits starting with 2–6, optionally in groups split by spaces or dashes. */
-        private val CARD = Regex("(?<![\\w+.-])[2-6](?:[ -]?\\d){12,18}(?![\\d])")
+        /**
+         * 13–19 digits starting with 2–6: unbroken, in groups of 4 split by spaces or dashes, or Amex 4-6-5.
+         * A separator is not allowed between any two digits, or date ranges and number lists would match.
+         */
+        private val CARD = Regex(
+            "(?<![\\w+.-])(?:[2-6]\\d{12,18}|[2-6]\\d{3}(?:[ -]\\d{4}){2,3}(?:[ -]\\d{1,4})?|3[47]\\d{2}[ -]\\d{6}[ -]\\d{5})(?![\\d])",
+        )
 
         internal fun ibanValid(iban: String): Boolean {
             val rearranged = iban.substring(4) + iban.substring(0, 4)

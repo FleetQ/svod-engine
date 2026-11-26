@@ -559,21 +559,29 @@ class SvodTools(
 
     suspend fun write(agent: AgentIdentity, path: String, content: String, expectedRevision: String?): ToolResult =
         guarded(agent, "write", write = true) {
-            val personal = personalDataGate(content, engine.read(path)?.text)
+            val prev = if (personalDataScanner.enabled) engine.read(path) else null
+            val personal = personalDataGate(content, prev?.text)
             val text = if (personal.isEmpty()) content else markProvisional(content)
-            outcomeResult("write", agent, engine.write(path, text, expectedRevision, agent.author), path, personalData = personal)
+            // The gate judged the note as read above; without a caller revision, pin the write to that read
+            // so a change in between surfaces as a conflict rather than a verdict on stale content.
+            val expected = expectedRevision ?: prev?.revision
+            outcomeResult("write", agent, engine.write(path, text, expected, agent.author), path, personalData = personal)
         }
 
     /**
      * The findings that make this write wait for a person: those in [newContent] whose (rule, value)
-     * [previousContent] did not already hold, or — when the previous version is still `provisional` —
-     * every finding still present, so an agent cannot clear the review itself by rewriting the note
-     * (or its `status`) while the personal data stays in it.
+     * [previousContent] did not already hold, or — when the previous version is still `provisional`, or
+     * was declined (`revoked`) and the write would take it out of that state — every finding still present,
+     * so an agent cannot clear or undo the review itself by rewriting the note (or its `status`) while the
+     * personal data stays in it.
      */
     private fun personalDataGate(newContent: String, previousContent: String?): List<dev.svod.engine.security.PersonalDataScanner.Finding> {
         val found = personalDataScanner.scan(newContent)
         if (found.isEmpty() || previousContent == null) return found
-        if (statusOf(previousContent) == "provisional") return found
+        when (statusOf(previousContent)) {
+            "provisional" -> return found
+            "revoked" -> return if (statusOf(newContent) == "revoked") emptyList() else found
+        }
         val before = personalDataScanner.scan(previousContent).mapTo(HashSet()) { it.rule to it.value }
         return found.filter { (it.rule to it.value) !in before }
     }
@@ -826,7 +834,11 @@ class SvodTools(
             return ToolResult.blocked(path, secrets)
         }
         // Personal data the memory adds makes it wait for a person, whatever status was asked for.
-        val personal = personalDataGate(content, engine.read(path)?.text)
+        // `subject` and `source` land in the note's frontmatter, so they are scanned too (after the content,
+        // so a finding's line number is the content's own for anything in the content).
+        val personal = if (!personalDataScanner.enabled) emptyList() else personalDataGate(
+            listOfNotNull(content, subject, source).joinToString("\n"), engine.read(path)?.text,
+        )
         val st = if (personal.isNotEmpty()) "provisional" else callerStatus ?: defaultStatusFor(t, agent)
 
         // Plan off the actor, apply inside it. If a candidate moved in between, the apply is refused
@@ -873,9 +885,8 @@ class SvodTools(
             }
 
             val related = plan.related
-            val noteStatus = if (personal.isNotEmpty()) "provisional" else callerStatus ?: defaultStatusFor(t, agent)
             val note = buildMemoryNote(
-                t, noteStatus, subject, confidence, source, content.trim(),
+                t, st, subject, confidence, source, content.trim(),
                 contradicts = related?.path?.takeIf { plan.classification == Classification.CONTRADICTION },
                 supersedes = related?.path?.takeIf { plan.classification == Classification.UPDATE },
                 needsReview = plan.classification == Classification.UNCERTAIN,
@@ -900,7 +911,7 @@ class SvodTools(
                     eventBus.publish(EventTypes.AGENT_ACTIVITY) { put("agentId", agent.agentId); put("tool", "remember"); put("path", path); put("commit", outcome.commit); putVault() }
                     eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", outcome.commit); put("path", path); put("author", agent.author.name); put("agentId", agent.agentId); putVault() }
                     return ToolResult.ok {
-                        put("status", "written"); put("path", path); put("type", t); put("memoryStatus", noteStatus)
+                        put("status", "written"); put("path", path); put("type", t); put("memoryStatus", st)
                         put("revision", outcome.revisions[path]); put("commit", outcome.commit)
                         put("classification", plan.classification.name)
                         put("confidence", plan.confidence); put("rationale", plan.rationale)

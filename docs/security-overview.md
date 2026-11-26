@@ -184,7 +184,9 @@ not a running, unlocked host.
   git history, but it is hidden from search and `context_pack` and waits in the Memory review
   queue until a person approves it. For `remember` this overrides any `status` the agent asked for.
   While a note is `provisional`, an agent's `write` or `edit` that keeps the personal data in it
-  keeps it `provisional`, even if the agent sets another `status`.
+  keeps it `provisional`, even if the agent sets another `status`. The same holds for a declined
+  (`revoked`) note: an agent that moves it out of `revoked` with the personal data still in it sends
+  it back to the review queue. For `remember`, the `subject` and `source` are scanned with the content.
 - Frontmatter is updated in place; other keys and the body are kept. Frontmatter that does not
   parse is kept as it was, below a new header.
 - It is **not a security boundary**. The review queue only controls what recall shows by default:
