@@ -107,6 +107,36 @@ class ChangesFeedTest {
     }
 
     @Test
+    fun `paging across a merge loses no side-branch commit`() {
+        val dir = java.nio.file.Files.createTempDirectory("svod-changes-merge-")
+        GitRepo.openOrInit(dir).use { repo ->
+            fun commit(name: String): String {
+                java.nio.file.Files.writeString(dir.resolve("$name.md"), name)
+                return repo.commitAll(name, ui)!!
+            }
+            val base = commit("base")
+            val side = commit("side")
+            org.eclipse.jgit.api.Git.open(dir.toFile()).use {
+                it.reset().setMode(org.eclipse.jgit.api.ResetCommand.ResetType.HARD).setRef(base).call()
+            }
+            val m1 = commit("m1")
+            val m2 = commit("m2")
+            java.nio.file.Files.writeString(dir.resolve("side.md"), "side")
+            val merge = repo.commitMerge("merge", ui, side, expectedHead = m2)!!
+
+            val seen = ArrayList<String>()
+            var cursor: String? = null
+            do {
+                val page = repo.changes(null, cursor, 2)
+                seen += page.changes.map { it.commit }
+                cursor = page.nextCursor
+            } while (cursor != null)
+            assertEquals(setOf(merge, m2, m1, side, base), seen.toSet())
+            assertEquals(5, seen.size, "no commit listed twice")
+        }
+    }
+
+    @Test
     fun `kinds - add, modify, rename, soft delete, restore`() {
         VaultFixture.create().use { fx ->
             val engine = fx.open()

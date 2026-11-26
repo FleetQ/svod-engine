@@ -357,7 +357,7 @@ class GitRepo private constructor(
     }
 
     /**
-     * Vault-wide change feed, newest first (jgit only, no subprocess). Walks from HEAD — or from the parents of
+     * Vault-wide change feed, newest first (jgit only, no subprocess). Walks from HEAD — skipping through
      * [before] when given — back to [since]: a commit id/ref (that commit and its ancestors are left out) or an
      * ISO-8601 instant / date (start of that UTC day; the walk stops at the first older commit). At most [max]
      * commits; [ChangesPage.nextCursor] is the last returned commit when older ones remain. Each commit's paths
@@ -378,8 +378,12 @@ class GitRepo private constructor(
 
         val out = ArrayList<ChangeEntry>()
         var more = false
+        // Page by re-walking from HEAD and skipping through the cursor: starting at the cursor's parents would drop
+        // the commits of a merged side branch that sort after the cursor but are not its ancestors. Only when the
+        // cursor is no longer reachable from HEAD (history rewritten) does the walk fall back to its ancestry.
+        var skipping = beforeCommit != null && RevWalk(repo).use { it.isMergedInto(it.parseCommit(beforeCommit), it.parseCommit(head)) }
         RevWalk(repo).use { rw ->
-            if (beforeCommit != null) {
+            if (beforeCommit != null && !skipping) {
                 rw.parseCommit(beforeCommit).parents.forEach { rw.markStart(rw.parseCommit(it)) }
             } else {
                 rw.markStart(rw.parseCommit(head))
@@ -389,6 +393,10 @@ class GitRepo private constructor(
                 df.setRepository(repo)
                 df.setDetectRenames(true)
                 for (c in rw) {
+                    if (skipping) {
+                        if (c == beforeCommit) skipping = false
+                        continue
+                    }
                     if (sinceEpoch != null && c.commitTime.toLong() < sinceEpoch) break
                     if (out.size == max) { more = true; break }
                     val parentTree = if (c.parentCount > 0) rw.parseCommit(c.getParent(0)).tree else null
