@@ -39,6 +39,8 @@ class CompareHindsightDocsConsistencyTest {
 
         val DATE = Regex("""\b\d{4}-\d{2}-\d{2}\b""")
 
+        val URL = Regex("""https?://""")
+
         /** The tool names a WRITE agent sees over a stateless tools/list, fetched once per test class. */
         val ADVERTISED_TOOLS: List<String> by lazy { fetchAdvertisedToolNames() }
     }
@@ -70,10 +72,24 @@ class CompareHindsightDocsConsistencyTest {
         val sources = section("Sources and date")
         assertTrue("https://" in sources, "$PAGE '## Sources and date' links no https:// source")
         assertTrue(DATE.containsMatchIn(sources), "$PAGE '## Sources and date' has no YYYY-MM-DD date")
-        val sourceLines = sources.lines().toSet()
-        val undated = page.lines().withIndex()
-            .filter { (_, line) -> "https://" in line && line !in sourceLines && !DATE.containsMatchIn(line) }
+        // Exclude the Sources section by position, not by line text, so an identical line elsewhere is still checked.
+        val lines = page.lines()
+        val sourcesStart = lines.indexOfFirst { it.startsWith("## Sources and date") }
+        val sourcesEnd = (sourcesStart + 1 until lines.size).firstOrNull { lines[it].startsWith("## ") } ?: lines.size
+        val undated = lines.withIndex()
+            .filter { (i, line) -> URL.containsMatchIn(line) && i !in sourcesStart until sourcesEnd && !DATE.containsMatchIn(line) }
             .map { (i, line) -> "line ${i + 1}: '${line.trim()}'" }
         assertTrue(undated.isEmpty(), "$PAGE links outside '## Sources and date' must carry a date: $undated")
+    }
+
+    @Test
+    fun `every Hindsight cell in the comparison table is marked and dated`() {
+        val rows = section("Where Svod differs").lines().filter { it.startsWith("| **") }
+        assertTrue(rows.isNotEmpty(), "$PAGE '## Where Svod differs' has no comparison table rows")
+        val bad = rows.filter { row ->
+            val hindsight = row.trimEnd().removeSuffix("|").substringAfterLast('|')
+            "⚠️" !in hindsight || !DATE.containsMatchIn(hindsight)
+        }
+        assertTrue(bad.isEmpty(), "$PAGE Hindsight cells must be marked ⚠️ with a YYYY-MM-DD date: $bad")
     }
 }
