@@ -80,7 +80,21 @@ class AuditLog(private val file: Path, private val clock: () -> Long = System::c
             if (!Files.isRegularFile(file)) return AuditPage(emptyList(), 0, 0, null)
             var skipped = 0
             val matches = ArrayList<AuditRecord>()
-            Files.readAllLines(file).forEachIndexed { i, line ->
+            // Split raw bytes on '\n' and decode each line on its own with a strict UTF-8 decoder, so a
+            // torn multi-byte character spoils only its own line (skipped), never the whole read.
+            val bytes = Files.readAllBytes(file)
+            val lines = ArrayList<ByteArray>()
+            var start = 0
+            for (k in bytes.indices) if (bytes[k] == '\n'.code.toByte()) { lines += bytes.copyOfRange(start, k); start = k + 1 }
+            if (start < bytes.size) lines += bytes.copyOfRange(start, bytes.size)
+            lines.forEachIndexed { i, raw ->
+                val line = runCatching {
+                    Charsets.UTF_8.newDecoder()
+                        .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                        .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                        .decode(java.nio.ByteBuffer.wrap(raw)).toString()
+                }.getOrNull()
+                if (line == null) { skipped++; return@forEachIndexed }
                 if (line.isBlank()) return@forEachIndexed
                 val e = runCatching { lenient.decodeFromString(AuditEntry.serializer(), line) }.getOrNull()
                 if (e == null) { skipped++; return@forEachIndexed }

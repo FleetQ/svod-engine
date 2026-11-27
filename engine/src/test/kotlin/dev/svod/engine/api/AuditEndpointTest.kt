@@ -198,6 +198,20 @@ class AuditEndpointTest {
     }
 
     @Test
+    fun `a line torn inside a multi-byte character is skipped and counted, not a 500`(): Unit = runBlocking {
+        Fx().use { fx ->
+            fx.produceTrail()
+            val torn = """{"ts":1,"agentId":"scribe","tool":"write","outcome":"ok","path":"бел""".toByteArray(Charsets.UTF_8)
+            Files.write(fx.auditFile, torn.copyOfRange(0, torn.size - 1), StandardOpenOption.APPEND)   // cut mid-letter
+            val res = fx.get("?vault=main")
+            assertEquals(200, res.statusCode(), res.body())
+            val j = obj(res.body())
+            assertEquals(1, j["skipped"]!!.jsonPrimitive.int)
+            assertEquals(3, j["total"]!!.jsonPrimitive.int)
+        }
+    }
+
+    @Test
     fun `reading never creates or changes the trail`(): Unit = runBlocking {
         Fx().use { fx ->
             Files.deleteIfExists(fx.auditFile)

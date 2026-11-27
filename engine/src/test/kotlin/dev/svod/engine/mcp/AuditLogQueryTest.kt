@@ -59,6 +59,30 @@ class AuditLogQueryTest {
     }
 
     @Test
+    fun `a line torn inside a multi-byte character is skipped and counted, not thrown`() {
+        val root = Files.createTempDirectory("svod-audit-query-utf8-")
+        val f = AuditLog.fileFor(root)
+        Files.createDirectories(f.parent)
+        val good = line(1000, "a", "ok", path = "бележки/н.md").toByteArray(Charsets.UTF_8)
+        val torn = line(2000, "a", "ok", path = "бележки/ж.md").toByteArray(Charsets.UTF_8)
+        val cut = torn.indexOf(0xD0.toByte()) + 1   // keep only the first byte of a 2-byte Cyrillic letter
+        val nl = "\n".toByteArray()
+        // A torn line in the middle (a crash, then later appends) and a torn last line.
+        Files.write(f, good + nl + torn.copyOfRange(0, cut) + nl + good + nl + torn.copyOfRange(0, cut))
+        val p = AuditLog.query(f, limit = 100)
+        assertEquals(listOf(3L, 1L), p.entries.map { it.seq })
+        assertEquals("бележки/н.md", p.entries.first().path)
+        assertEquals(2, p.skipped)
+        assertEquals(2, p.total)
+        // Invalid UTF-8 that would still be valid JSON once replaced is also skipped, not decoded.
+        Files.write(f, good + nl + """{"ts":3,"agentId":"a","tool":"write","outcome":"ok","path":"""".toByteArray() +
+            byteArrayOf(0xD0.toByte()) + "\"}".toByteArray() + nl)
+        val q = AuditLog.query(f, limit = 100)
+        assertEquals(listOf(1L), q.entries.map { it.seq })
+        assertEquals(1, q.skipped)
+    }
+
+    @Test
     fun `unknown fields are tolerated`() {
         val f = trail("""{"ts":5,"agentId":"a","tool":"write","outcome":"ok","extra":42}""")
         val p = AuditLog.query(f, limit = 10)
