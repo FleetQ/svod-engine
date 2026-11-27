@@ -434,7 +434,10 @@
   const conflictList = $("conflictList");
   const conflictMsg = $("conflictMsg");
   const conflictItems = new Map(); // path → entry, from the last list
-  const conflictDrafts = new Map(); // path → unsaved merge text, kept across reloads
+  // path → { ts, text }: unsaved merge text, kept across reloads while the conflict is unchanged
+  // (the store gives a re-raised conflict, with a new incoming or local version, a new ts).
+  const conflictDrafts = new Map();
+  const conflictBusy = new Set(); // paths with a resolve request in flight
   let openConflict = null; // path of the expanded row
 
   let conflictSeq = 0;
@@ -467,7 +470,22 @@
     conflictItems.clear();
     for (const c of items) conflictItems.set(c.path, c);
     if (openConflict && !conflictItems.has(openConflict)) openConflict = null;
-    for (const p of [...conflictDrafts.keys()]) if (!conflictItems.has(p)) conflictDrafts.delete(p);
+    for (const [p, d] of [...conflictDrafts]) {
+      const c = conflictItems.get(p);
+      if (!c) { conflictDrafts.delete(p); continue; }
+      if (c.ts !== d.ts) {
+        // Saving a merge built against the old versions would also answer the new incoming one.
+        conflictDrafts.delete(p);
+        conflictMsg.textContent = `${p} changed since you started merging it; the unsaved merge was discarded`;
+      }
+    }
+
+    // Sync reloads this list after every cycle: keep the caret and scroll of a merge being typed.
+    const prevEdit = conflictList.querySelector(".conflict-item.open .merge-edit");
+    const caret = prevEdit && document.activeElement === prevEdit
+      ? { path: openConflict, start: prevEdit.selectionStart, end: prevEdit.selectionEnd, top: prevEdit.scrollTop, height: prevEdit.style.height }
+      : null;
+    const listTop = conflictList.scrollTop;
 
     $("conflictCount").textContent = items.length ? `${items.length} open` : "";
     conflictList.innerHTML = "";
@@ -479,10 +497,21 @@
       return;
     }
     for (const c of items) conflictList.append(conflictRow(c));
+    conflictList.scrollTop = listTop;
+    const edit = caret && caret.path === openConflict && conflictList.querySelector(".conflict-item.open .merge-edit");
+    if (edit) {
+      edit.style.height = caret.height;
+      edit.focus({ preventScroll: true });
+      edit.setSelectionRange(caret.start, caret.end);
+      edit.scrollTop = caret.top;
+    }
   }
 
   // Binary files cannot take the incoming version as is (the server answers 422 unsupported).
   const canTakeTheirs = (c) => c.path.endsWith(".md") || c.quarantined;
+  // Sync decodes every side as UTF-8, so a binary file shows replacement characters or NULs.
+  const looksBinary = (c) =>
+    !c.path.endsWith(".md") && [c.base, c.ours, c.theirs].some((t) => t != null && (t.includes("\u{FFFD}") || t.includes("\0")));
 
   function conflictRow(c) {
     const li = document.createElement("li");
@@ -540,8 +569,8 @@
     edit.className = "merge-edit";
     edit.spellcheck = false;
     edit.setAttribute("aria-label", "Merged content for " + c.path);
-    edit.value = conflictDrafts.has(c.path) ? conflictDrafts.get(c.path) : (c.ours ?? c.theirs ?? "");
-    edit.addEventListener("input", () => conflictDrafts.set(c.path, edit.value));
+    edit.value = conflictDrafts.has(c.path) ? conflictDrafts.get(c.path).text : (c.ours ?? c.theirs ?? "");
+    edit.addEventListener("input", () => conflictDrafts.set(c.path, { ts: c.ts, text: edit.value }));
 
     const actions = document.createElement("div");
     actions.className = "conflict-actions";
@@ -554,6 +583,14 @@
       take.disabled = true;
       take.title = "Only a text note can take the incoming version as is; save a merge instead.";
     }
+    if (looksBinary(c)) {
+      // The listed text is a lossy UTF-8 decode: saving it back would corrupt the file.
+      edit.readOnly = true;
+      const save = actions.querySelector('[data-conflict-action="content"]');
+      save.disabled = true;
+      save.title = "A binary file cannot be merged as text; keep ours, or write the file you want.";
+    }
+    if (conflictBusy.has(c.path)) actions.querySelectorAll("button").forEach((b) => { b.disabled = true; });
 
     detail.append(grid, edit, actions);
     li.append(detail);
@@ -562,6 +599,7 @@
   async function resolveConflict(path, resolution, content, ack) {
     const row = [...conflictList.querySelectorAll(".conflict-item")].find((li) => li.dataset.path === path);
     (row ? row.querySelectorAll("button") : []).forEach((b) => { b.disabled = true; });
+    conflictBusy.add(path); // a reload mid-request redraws the row: keep its buttons disabled
     conflictMsg.textContent = `${resolution} ${path}…`;
     const body = { path, resolution };
     if (resolution === "content") body.content = content;
@@ -599,6 +637,7 @@
     } catch (err) {
       conflictMsg.textContent = `${resolution} failed: ${err}`;
     }
+    conflictBusy.delete(path);
     await loadConflicts();
   }
 
@@ -699,7 +738,13 @@
     conflictMsg.textContent = ""; // the open merge editor and its draft belong to the previous engine
     openConflict = null;
     conflictDrafts.clear();
-    conflictList.querySelectorAll(".conflict-detail").forEach((d) => d.remove());
+    // Its rows too: a resolve clicked on one would be sent to the new engine. A list request still
+    // in flight to the old engine must not draw them back.
+    conflictSeq++;
+    clearTimeout(conflictTimer);
+    conflictItems.clear();
+    conflictList.innerHTML = "";
+    $("conflictCount").textContent = "";
     if (ws) try { ws.close(); } catch (_) {}
     connect();
   });
