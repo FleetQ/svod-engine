@@ -11,7 +11,7 @@ object GrantResolver {
             "read", "search", "context_pack", "list", "tree", "grep", "history", "diff", "get_revision", "link",
             "graph_query", "graph_communities", "graph_community", "graph_status",
         ).forEach { put(it, GrantRole.READER) }
-        listOf("write", "edit", "move", "delete", "remember", "extract_memories").forEach { put(it, GrantRole.WRITER) }
+        listOf("write", "edit", "move", "delete", "remember", "extract_memories", "restore_revision").forEach { put(it, GrantRole.WRITER) }
         put("promote", GrantRole.MAINTAINER)
     }
 

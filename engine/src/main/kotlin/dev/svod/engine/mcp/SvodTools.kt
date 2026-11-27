@@ -583,6 +583,33 @@ class SvodTools(
         }
 
     /**
+     * Put [path] back to its content at the commit [revision] in one attributed commit. The restored text
+     * goes through the same personal-data review as [write], so a restore cannot bring back a version a
+     * person declined without that review. Without [expectedRevision] the restore is pinned to the
+     * revision read here, so a concurrent change surfaces as a conflict.
+     */
+    suspend fun restoreRevision(agent: AgentIdentity, path: String, revision: String, expectedRevision: String?): ToolResult =
+        guarded(agent, "restore_revision", write = true) {
+            val cur = engine.read(path)
+            val expected = expectedRevision ?: cur?.revision
+            val target = runCatching { engine.getRevision(path, revision) }.getOrElse { e ->
+                if (e is IllegalArgumentException || e is java.io.IOException) {
+                    return@guarded ToolResult.badRequest("unknown revision: $revision")
+                }
+                throw e
+            }
+            // target == null: the engine tells an unknown revision (bad_request) from a note absent at that commit (not_found).
+            val personal = target?.let { personalDataGate(it.text, cur?.text) } ?: emptyList()
+            val content = if (personal.isEmpty()) null else markProvisional(target!!.text)
+            val outcome = try {
+                engine.restoreRevision(path, revision, expected, agent.author, content)
+            } catch (e: IllegalArgumentException) {
+                return@guarded ToolResult.badRequest(e.message ?: "invalid revision")
+            }
+            outcomeResult("restore_revision", agent, outcome, path, personalData = personal)
+        }
+
+    /**
      * The findings that make this write wait for a person: those in [newContent] whose (rule, value)
      * [previousContent] did not already hold, or — when the previous version is still `provisional`, or
      * was declined (`revoked`) and the write would take it out of that state — every finding still present,

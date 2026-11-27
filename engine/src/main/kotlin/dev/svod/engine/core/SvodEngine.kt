@@ -202,6 +202,24 @@ class SvodEngine private constructor(
         FileContent(vp.value, git.blobId(bytes), String(bytes, UTF_8))
     }
 
+    /**
+     * Put [path] back to its content at [revision] (a commit id / ref) in one attributed commit
+     * `restore: ‹path› to ‹commit id›`. [expectedRevision] is the live blob id the caller last read
+     * (null ⇒ the file must not exist); a mismatch is a [WriteOutcome.Conflict]. [content] overrides
+     * the restored text (e.g. a provisional-marked copy); null ⇒ the bytes at [revision]. A note absent
+     * at [revision] is [WriteOutcome.NotFound]; an unknown revision or a non-commit object is an
+     * [IllegalArgumentException].
+     */
+    suspend fun restoreRevision(
+        path: String,
+        revision: String,
+        expectedRevision: Revision?,
+        author: Author,
+        content: String? = null,
+    ): WriteOutcome =
+        timed { actor.submit { doRestoreRevision(VaultPath.of(path), revision, expectedRevision, author, content) } }
+            .also(::notifyCommit)
+
     /** Unified diff of [path] between two revisions (commit ids / refs). */
     suspend fun diff(path: String, fromRevision: String, toRevision: String): String =
         actor.submit { git.diff(VaultPath.of(path).value, fromRevision, toRevision) }
@@ -387,6 +405,45 @@ class SvodEngine private constructor(
         val bytes = content.toByteArray(UTF_8)
         AtomicFile.write(target, bytes, crash)
         val commit = git.commitPaths(listOf(vp.value), "write: ${vp.value}", author) ?: git.headId()!!
+        return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)
+    }
+
+    private fun doRestoreRevision(
+        vp: VaultPath,
+        revision: String,
+        expected: Revision?,
+        author: Author,
+        override: String?,
+    ): WriteOutcome {
+        val commitId = try {
+            git.resolveRev(revision)
+        } catch (e: org.eclipse.jgit.errors.RevisionSyntaxException) {
+            null
+        } catch (e: org.eclipse.jgit.errors.AmbiguousObjectException) {
+            null
+        } ?: throw IllegalArgumentException("unknown revision: $revision")
+        val old = try {
+            git.readAtRevision(vp.value, commitId)
+        } catch (e: org.eclipse.jgit.errors.IncorrectObjectTypeException) {
+            throw IllegalArgumentException("not a commit: $revision")
+        } catch (e: org.eclipse.jgit.errors.MissingObjectException) {
+            throw IllegalArgumentException("unknown revision: $revision")
+        } ?: return WriteOutcome.NotFound("${vp.value}@$revision")
+        val text = override ?: String(old, UTF_8)
+        val secrets = secretScanner.scan(text)
+        if (secrets.isNotEmpty()) {
+            return WriteOutcome.Blocked(vp.value, secrets.map { "${it.rule} (line ${it.line})" })
+        }
+        val target = vp.resolveAgainst(root)
+        val exists = Files.isRegularFile(target)
+        val current = if (exists) git.blobId(Files.readAllBytes(target)) else null
+        if (current != expected) {
+            val live = if (exists) Files.readString(target, UTF_8) else null
+            return WriteOutcome.Conflict(vp.value, expected, current, live)
+        }
+        val bytes = if (override != null) override.toByteArray(UTF_8) else old
+        AtomicFile.write(target, bytes, crash)
+        val commit = git.commitPaths(listOf(vp.value), "restore: ${vp.value} to $commitId", author) ?: git.headId()!!
         return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)
     }
 

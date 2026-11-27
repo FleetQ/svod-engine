@@ -116,6 +116,35 @@ class AppApiContractTest {
         }
     }
 
+    /** 0.43.0: a note can be put back to its content at an earlier commit. */
+    @Test
+    fun `restore-revision responses conform to the contract`(): Unit = runBlocking {
+        ApiFixture.create().use { fx ->
+            val ap = "/api/v1"
+            val ui = Author("ui", "ui@svod.local")
+            val v1 = fx.engine.write("n/r.md", "# R\none\n", null, ui) as dev.svod.engine.core.WriteOutcome.Success
+            val v2 = fx.engine.write("n/r.md", "# R\ntwo\n", v1.revision, ui) as dev.svod.engine.core.WriteOutcome.Success
+
+            val stale = fx.post("$ap/file/restore-revision", """{"path":"n/r.md","revision":"${v1.commit}","expectedRevision":"${v1.revision}"}""")
+            assertEquals(409, stale.statusCode(), stale.body())
+            validate("$ap/file/restore-revision", Request.Method.POST, 409, stale.body())
+
+            val ok = fx.post("$ap/file/restore-revision", """{"path":"n/r.md","revision":"${v1.commit}","expectedRevision":"${v2.revision}"}""")
+            assertEquals(200, ok.statusCode(), ok.body())
+            validate("$ap/file/restore-revision", Request.Method.POST, 200, ok.body())
+            assertEquals("# R\none\n", fx.engine.read("n/r.md")!!.text)
+            assertTrue(fx.engine.history("n/r.md", 1).single().message.startsWith("restore: n/r.md to ${v1.commit}"))
+
+            val missing = fx.post("$ap/file/restore-revision", """{"path":"n/none.md","revision":"${v1.commit}"}""")
+            assertEquals(404, missing.statusCode(), missing.body())
+            validate("$ap/file/restore-revision", Request.Method.POST, 404, missing.body())
+
+            val bad = fx.post("$ap/file/restore-revision", """{"path":"n/r.md","revision":"no-such-ref"}""")
+            assertEquals(400, bad.statusCode(), bad.body())
+            validate("$ap/file/restore-revision", Request.Method.POST, 400, bad.body())
+        }
+    }
+
     /**
      * 0.36.0: a conflict can be settled without writing content. `acceptIncoming` on a quarantined
      * file needs an explicit acknowledgeSecrets and lands in the audit trail; `keepMine` just clears.
@@ -497,7 +526,7 @@ class AppApiContractTest {
         val declared = openApi.paths.keys.toSet()
         val implemented = setOf(
             "/health", "/ready", "/api/v1/tree", "/api/v1/trash", "/api/v1/file", "/api/v1/file/move", "/api/v1/file/restore",
-            "/api/v1/file/history", "/api/v1/file/diff", "/api/v1/file/revision", "/api/v1/file/links",
+            "/api/v1/file/restore-revision", "/api/v1/file/history", "/api/v1/file/diff", "/api/v1/file/revision", "/api/v1/file/links",
             "/api/v1/search", "/api/v1/graph",
             "/api/v1/graph/communities", "/api/v1/graph/community", "/api/v1/graph/status", "/api/v1/graph/rebuild",
             "/api/v1/tags", "/api/v1/settings", "/api/v1/index/status",

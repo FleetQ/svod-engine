@@ -236,6 +236,29 @@ class PrincipalAuthTest {
     }
 
     @Test
+    fun `restore-revision is 403 for a viewer and restores for an editor`(): Unit = runBlocking {
+        Fixture().use { fx ->
+            assertEquals(200, fx.write("a", "rr.md", "# one", key = "k-editor").statusCode())
+            val v1 = fx.a.engine.history("rr.md", 1).single().commit
+            val rev1 = fx.a.engine.read("rr.md")!!.revision
+            assertEquals(200, fx.req("PUT", "/api/v1/file?vault=a&path=rr.md", "k-editor", """{"content":"# two","expectedRevision":"$rev1"}""").statusCode())
+            val head = fx.a.engine.head()
+            val body = """{"path":"rr.md","revision":"$v1"}"""
+
+            val denied = fx.req("POST", "/api/v1/file/restore-revision?vault=a", "k-reader", body)
+            assertEquals(403, denied.statusCode(), denied.body())
+            assertEquals(head, fx.a.engine.head(), "a forbidden restore must not move HEAD")
+
+            val ok = fx.req("POST", "/api/v1/file/restore-revision?vault=a", "k-editor", body)
+            assertEquals(200, ok.statusCode(), ok.body())
+            assertEquals("# one", fx.a.engine.read("rr.md")!!.text)
+            val c = fx.a.engine.history("rr.md", 1).single()
+            assertTrue(c.message.startsWith("restore: rr.md to $v1"), c.message)
+            assertEquals("maria@co", c.authorEmail)
+        }
+    }
+
+    @Test
     fun `editor writes as the person, and the commit event names them`(): Unit = runBlocking {
         Fixture().use { fx ->
             val received = CopyOnWriteArrayList<String>()

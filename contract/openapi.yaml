@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.42.0
+  version: 0.43.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -176,6 +176,37 @@ paths:
               schema: { $ref: "#/components/schemas/WriteResult" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/file/restore-revision:
+    post:
+      tags: [files]
+      summary: Put a note back to its content at an earlier commit
+      description: >
+        Since 0.43.0. Writes the note's content at `revision` (a commit id or ref from the note's history)
+        in one commit named `restore: ‹path› to ‹commit id›`, authored by the caller. `expectedRevision` is
+        the note revision (blob id) the caller last read; when omitted the engine pins to the current one.
+        A note changed since then is 409 with the live content. An unknown revision is 400; a note absent
+        at that commit is 404; restored content that trips the secret scanner is 422.
+      operationId: restoreRevision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RestoreRevisionRequest" }
+      responses:
+        "200":
+          description: Restored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WriteResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422":
+          description: The restored content was blocked by the secret scanner.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api/v1/file/history:
     get:
@@ -1767,6 +1798,14 @@ components:
       properties:
         trashPath: { type: string }
         to: { type: string, nullable: true }
+
+    RestoreRevisionRequest:
+      type: object
+      required: [path, revision]
+      properties:
+        path: { type: string }
+        revision: { type: string, description: A commit id or ref from the note's history (not a blob revision). }
+        expectedRevision: { type: string, nullable: true }
 
     TreeNode:
       type: object

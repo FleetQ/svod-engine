@@ -477,6 +477,17 @@ class AppApiServer(
                 val req = call.receive<RestoreRequestDto>()
                 respondOutcome(vc, vc.engine.restore(req.trashPath, req.to, principal().author), "restore")
             }
+            post("/api/v1/file/restore-revision") {
+                val vc = vault() ?: return@post call.notFound("vault")
+                val req = call.receive<RestoreRevisionRequestDto>()
+                val outcome = try {
+                    val expected = req.expectedRevision ?: vc.engine.read(req.path)?.revision
+                    vc.engine.restoreRevision(req.path, req.revision, expected, principal().author)
+                } catch (e: IllegalArgumentException) {
+                    return@post call.badRequest(e.message ?: "invalid revision")
+                }
+                respondOutcome(vc, outcome, "restore-revision")
+            }
 
             get("/api/v1/file/history") {
                 val vc = vault() ?: return@get call.notFound("vault")
