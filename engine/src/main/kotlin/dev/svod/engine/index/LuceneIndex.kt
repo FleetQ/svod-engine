@@ -214,8 +214,15 @@ class LuceneIndex(private val directory: Directory) : AutoCloseable {
      * [SearchFilters.includeAll]): revoked / provisional / superseded / expired memories are
      * excluded from recall. Notes that don't carry these frontmatter fields never match an
      * exclusion, so ordinary notes are unaffected. [nowEpoch] is the expiry cutoff (now).
+     * With [lifecycle] false only those four lifecycle exclusions are skipped; the user filters, the
+     * `messy/` quarantine and the session-transcript exclusion stay (used by [withheldCounts]).
      */
-    fun buildFilter(filters: SearchFilters, includeMessy: Boolean = false, nowEpoch: Long = System.currentTimeMillis() / 1000): Query? {
+    fun buildFilter(
+        filters: SearchFilters,
+        includeMessy: Boolean = false,
+        nowEpoch: Long = System.currentTimeMillis() / 1000,
+        lifecycle: Boolean = true,
+    ): Query? {
         val b = BooleanQuery.Builder()
         var positives = 0
         for (tag in filters.tags) { b.add(TermQuery(Term("tag", tag)), BooleanClause.Occur.FILTER); positives++ }
@@ -228,13 +235,13 @@ class LuceneIndex(private val directory: Directory) : AutoCloseable {
         if (filters.status != null) {
             // Explicit status request → positive filter; the default status-hiding is skipped for it.
             b.add(TermQuery(Term("status", filters.status.lowercase())), BooleanClause.Occur.FILTER); positives++
-        } else if (!filters.includeAll) {
-            b.add(TermQuery(Term("status", "revoked")), BooleanClause.Occur.MUST_NOT); negatives++
-            b.add(TermQuery(Term("status", "provisional")), BooleanClause.Occur.MUST_NOT); negatives++
+        } else if (!filters.includeAll && lifecycle) {
+            b.add(revokedClause(), BooleanClause.Occur.MUST_NOT); negatives++
+            b.add(provisionalClause(), BooleanClause.Occur.MUST_NOT); negatives++
         }
-        if (!filters.includeAll) {
-            b.add(TermQuery(Term("superseded", "true")), BooleanClause.Occur.MUST_NOT); negatives++
-            b.add(LongPoint.newRangeQuery("expiresAt", Long.MIN_VALUE, nowEpoch), BooleanClause.Occur.MUST_NOT); negatives++
+        if (!filters.includeAll && lifecycle) {
+            b.add(supersededClause(), BooleanClause.Occur.MUST_NOT); negatives++
+            b.add(expiredClause(nowEpoch), BooleanClause.Occur.MUST_NOT); negatives++
         }
         // `messy/` quarantine: drafts are hidden from default recall unless includeAll, the
         // `includeMessyInRecall` config toggle, or the caller explicitly browses into `messy/`.
@@ -249,6 +256,56 @@ class LuceneIndex(private val directory: Directory) : AutoCloseable {
         // Lucene: a clause set with only MUST_NOT matches nothing — anchor with match-all.
         if (positives == 0) b.add(MatchAllDocsQuery(), BooleanClause.Occur.MUST)
         return b.build()
+    }
+
+    // The lifecycle exclusion clauses, shared by [buildFilter] and [withheldCounts] so they cannot drift.
+    private fun revokedClause(): Query = TermQuery(Term("status", "revoked"))
+    private fun provisionalClause(): Query = TermQuery(Term("status", "provisional"))
+    private fun supersededClause(): Query = TermQuery(Term("superseded", "true"))
+    private fun expiredClause(nowEpoch: Long): Query = LongPoint.newRangeQuery("expiresAt", Long.MIN_VALUE, nowEpoch)
+
+    /**
+     * How many distinct notes matching [userQuery] (and the user filters) the default lifecycle
+     * hiding removes, per reason: revoked › superseded › expired › provisional, each note counted
+     * once under the first reason that applies. Only reasons with a count › 0 are present, in that
+     * order. Empty for [SearchFilters.includeAll]; with a [SearchFilters.status] filter the status
+     * reasons are skipped (the filter turns status hiding off). `messy/` and session transcripts are
+     * excluded as in [buildFilter]. Each reason counts at most [cap] chunks.
+     */
+    fun withheldCounts(userQuery: Query, filters: SearchFilters, includeMessy: Boolean, nowEpoch: Long, cap: Int = 1000): Map<String, Int> {
+        if (filters.includeAll) return emptyMap()
+        return withSearcher { s ->
+            if (s.indexReader.numDocs() == 0) return@withSearcher emptyMap()
+            val base = buildFilter(filters, includeMessy, nowEpoch, lifecycle = false)
+            val statusHiding = filters.status == null
+            // In [SearchResult.WITHHELD_REASONS] order.
+            val reasons = listOf(
+                SearchResult.WITHHELD_REVOKED to revokedClause().takeIf { statusHiding },
+                SearchResult.WITHHELD_SUPERSEDED to supersededClause(),
+                SearchResult.WITHHELD_EXPIRED to expiredClause(nowEpoch),
+                SearchResult.WITHHELD_PROVISIONAL to provisionalClause().takeIf { statusHiding },
+            )
+            val out = LinkedHashMap<String, Int>()
+            val earlier = ArrayList<Query>()
+            val sf = s.storedFields()
+            val pathOnly = setOf("path")
+            for ((reason, clause) in reasons) {
+                if (clause == null) continue
+                // Only membership matters here, so the user query is a FILTER (no scoring) and only
+                // the stored `path` is loaded (not the chunk text / vector bytes).
+                val b = BooleanQuery.Builder()
+                    .add(userQuery, BooleanClause.Occur.FILTER)
+                    .add(clause, BooleanClause.Occur.FILTER)
+                if (base != null) b.add(base, BooleanClause.Occur.FILTER)
+                for (e in earlier) b.add(e, BooleanClause.Occur.MUST_NOT)
+                val td = s.search(b.build(), cap)
+                val paths = HashSet<String>()
+                for (sd in td.scoreDocs) paths.add(sf.document(sd.doc, pathOnly).get("path"))
+                if (paths.isNotEmpty()) out[reason] = paths.size
+                earlier.add(clause)
+            }
+            out
+        }
     }
 
     /**

@@ -165,8 +165,8 @@ await mcp.disconnect();
 
 - **TLS:** plain HTTP is for loopback only. For any non-loopback access configure `mcpTls` and use
   `https://` with your own host name.
-- **Roles:** a `READ_ONLY` token can search and read, but `remember` (and every other write) returns
-  `denied`.
+- **Roles:** a `READ_ONLY` token can search and read, but it is not offered write tools (`remember`
+  included), and calling one fails as an unknown tool.
 - **Errors:** if a tool returns `rate_limited` or `denied`, stop and report it; don't retry in a loop.
 - **System prompt:** give the agent the README's
   [ready-to-paste system prompt](../README.md#ready-to-paste-system-prompt) so it recalls before

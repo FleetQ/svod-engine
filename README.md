@@ -79,7 +79,7 @@ index. The result:
 | **Team vault sharing** | People are App API principals with personal keys, an `admin` flag and per-vault grants ([ADR-0019](docs/adr/0019-app-api-principals.md)). An agent can be bound to a person (`agents[].user`) and get a role per vault (`reader` / `writer` / `maintainer`); a bound agent's commits are authored by the person with a `Svod-Agent:` trailer, so history shows who stands behind each change. See [ADR-0020](docs/adr/0020-team-sharing-users-and-roles.md). |
 | **Multiple vaults** | Run N vaults in one engine (e.g. `personal` + `work`), each its own git repo, lock, index, and sync remote. Routes select a vault via `?vault=`; agents are scoped to their granted vault. Cross-vault `[[vault:note]]` links resolve and surface as backlinks. |
 | **Multi-host sync** | Replicate the vault across machines over git transport. Frontmatter-aware structured merge (YAML keys union, body via git 3-way). A designated merge authority keeps history deterministic; real conflicts are *surfaced*, never auto-resolved. |
-| **Hardening** | Opt-in pre-commit secret scanning of note writes (`secretScanning`; transcript capture and binary files are not scanned, see [`docs/security-overview.md`](docs/security-overview.md)), live metrics (write latency, queue depth, index lag, conflicts, sync status), secret refs (`env:` / `file:` / macOS `keychain:`) instead of plaintext tokens. |
+| **Hardening** | Opt-in pre-commit secret scanning of note writes (`secretScanning`; transcript capture and binary files are not scanned, see [`docs/security-overview.md`](docs/security-overview.md)), opt-in personal-data review (`personalDataScanning`: agent writes that add emails, phone numbers, IBANs or card numbers wait in the Memory review queue), live metrics (write latency, queue depth, index lag, conflicts, sync status), secret refs (`env:` / `file:` / macOS `keychain:`) instead of plaintext tokens. |
 | **Obsidian import, zero lock-in** | One-shot migration of an existing Obsidian vault — markdown + **attachments** (images/PDF) preserved, frontmatter + wikilinks intact, `.obsidian/` skipped. Idempotent (re-run reconciles, never clobbers). Symlinks are skipped by default or, with `followSymlinks`, materialized (file + whole directory links copied in). Leaving is just `git clone`. See [Using a Svod vault with Obsidian](docs/obsidian.md). |
 | **Basic Memory import** | `svod-engine import-basic-memory <config.json> <dir> [into]` (engine stopped) imports a Basic Memory project the same way: observations, relations and frontmatter kept verbatim, and relations that point at a note's `title` or `permalink` turned into resolvable `[[path\|Original]]` wikilinks. Idempotent, never clobbers. |
 | **Claude Code memory import** | `svod-engine import-claude-memory <config.json> <memory-dir> [into]` (engine stopped) imports a Claude Code auto-memory folder (`~/.claude/projects/*/memory/`) under `into` (default `claude-memory`), one note per memory: frontmatter and body kept, the memory's type (`metadata.type` or `type`) added as a tag next to `claude-memory`, and `[[name]]` links to another memory's `name` turned into resolvable `[[path\|name]]` wikilinks. The top-level `MEMORY.md` index is skipped. Idempotent, never clobbers. |
@@ -147,7 +147,9 @@ enforced *before* the engine is touched.
   note's latest commit + author), the one-call "recall my memory about X" primitive for an agent.
 - **Typed memory + two retrieval paths.** A note's frontmatter `type` (policy/preference/fact/
   episode/procedure) classifies it; `status` (`active`/`provisional`/`revoked`), `superseded_by` and `expires_at`
-  give it a lifecycle (recall hides revoked/provisional/superseded/expired by default). `context_pack`
+  give it a lifecycle (recall hides revoked/provisional/superseded/expired by default; `search` and
+  `context_pack` report the hidden matches per reason in `withheld`, with a hint to retry with
+  `includeAll=true`). `context_pack`
   with `enumerate=true` returns *every* note matching a `type`/`tags` filter **in full, unranked** —
   the "rule book" (all active policies/preferences) loaded verbatim, vs. the ranked semantic recall.
 - **Procedures.** `type: procedure` holds ordered how-to steps (one per line) for a `subject`. A new
@@ -186,7 +188,7 @@ enforced *before* the engine is touched.
   gets 404 and re-initializes. Stateless (2026-07-28) requests keep no session.
 - `promote` moves a note from a scratch `messy/` namespace into the curated `vault/` (a
   revision-checked move) — the "draft → publish" path for agents.
-- A read-only agent's mutation is denied and audited; an over-quota agent gets `rate_limited`;
+- A `READ_ONLY` token is not offered write tools, and calling one fails as an unknown tool; an over-quota agent gets `rate_limited`;
   every action (including denials and conflicts) lands in an append-only audit log.
 
 ### Connecting an LLM agent
