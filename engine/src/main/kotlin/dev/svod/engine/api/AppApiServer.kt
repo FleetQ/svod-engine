@@ -484,6 +484,22 @@ class AppApiServer(
                 val max = call.request.queryParameters["max"]?.toIntOrNull() ?: 100
                 call.respond(HistoryDto(vc.engine.history(path, max).map { CommitInfoDto(it.commit, it.authorName, it.authorEmail, it.epochSeconds, it.message, it.agent) }))
             }
+            get("/api/v1/changes") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                val q = call.request.queryParameters
+                val max = q["max"]?.toIntOrNull() ?: 50
+                val page = try {
+                    vc.engine.changes(q["since"], q["before"], max)
+                } catch (e: IllegalArgumentException) {
+                    return@get call.badRequest(e.message ?: "invalid since/before")
+                }
+                call.respond(ChangesDto(page.head, page.changes.map { c ->
+                    ChangeEntryDto(
+                        c.commit, c.authorName, c.authorEmail, c.epochSeconds, c.message, c.agent,
+                        c.paths.map { PathChangeDto(it.path, it.kind.name.lowercase(), it.oldPath) }, c.pathCount, c.pathsTruncated,
+                    )
+                }, page.nextCursor))
+            }
             get("/api/v1/file/diff") {
                 val vc = vault() ?: return@get call.notFound("vault")
                 val path = call.path() ?: return@get call.badRequest("missing path")
