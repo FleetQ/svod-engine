@@ -63,7 +63,7 @@ class McpToolAllowlistTest {
                     val stateless = http.statelessToolNames(server.port, narrow.token)
                     assertEquals(3, stateless.size, "stateless: $stateless")
                     assertEquals(expected, stateless.toSet())
-                    assertEquals(21, http.statelessToolNames(server.port, WRITE_AGENT.token).size, "no allowlist: unchanged")
+                    assertEquals(GrantResolver.REQUIRED.keys, http.statelessToolNames(server.port, WRITE_AGENT.token).toSet(), "no allowlist: unchanged")
                 }
                 val c = connect(server.port, narrow.token)
                 try {

@@ -532,6 +532,11 @@ data class SvodConfig(
                 if (listed.isEmpty()) errors += "agent '${a.agentId}' tools must list at least one tool (omit it for all tools)"
                 val known = GrantResolver.REQUIRED.keys
                 for (t in listed) if (t !in known) errors += "agent '${a.agentId}' lists unknown tool '$t'; known: ${known.sorted()}"
+                // The allowlist never widens the role: a READ_ONLY agent naming only write tools would be offered none.
+                val readOnly = !a.role.equals("WRITE", ignoreCase = true)
+                if (readOnly && listed.isNotEmpty() && listed.all { it in known } && listed.none { GrantResolver.REQUIRED[it] == GrantRole.READER }) {
+                    errors += "agent '${a.agentId}' is READ_ONLY and its tools list only write tools, so it would be offered none"
+                }
             }
         }
         if (syncRemotes.isNotEmpty() && hostId.isBlank()) errors += "hostId must be set when syncRemotes is configured"
