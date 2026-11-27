@@ -590,19 +590,16 @@ class SvodTools(
      */
     suspend fun restoreRevision(agent: AgentIdentity, path: String, revision: String, expectedRevision: String?): ToolResult =
         guarded(agent, "restore_revision", write = true) {
+            // Resolve once: a moving ref (HEAD~1) re-resolved after the gate could restore content the gate never saw.
+            val commit = engine.resolveCommit(revision) ?: return@guarded ToolResult.badRequest("unknown revision: $revision")
             val cur = engine.read(path)
             val expected = expectedRevision ?: cur?.revision
-            val target = runCatching { engine.getRevision(path, revision) }.getOrElse { e ->
-                if (e is IllegalArgumentException || e is java.io.IOException) {
-                    return@guarded ToolResult.badRequest("unknown revision: $revision")
-                }
-                throw e
-            }
-            // target == null: the engine tells an unknown revision (bad_request) from a note absent at that commit (not_found).
+            // target == null: the note is absent at that commit; the engine answers not_found.
+            val target = if (personalDataScanner.enabled) engine.getRevision(path, commit) else null
             val personal = target?.let { personalDataGate(it.text, cur?.text) } ?: emptyList()
             val content = if (personal.isEmpty()) null else markProvisional(target!!.text)
             val outcome = try {
-                engine.restoreRevision(path, revision, expected, agent.author, content)
+                engine.restoreRevision(path, commit, expected, agent.author, content)
             } catch (e: IllegalArgumentException) {
                 return@guarded ToolResult.badRequest(e.message ?: "invalid revision")
             }

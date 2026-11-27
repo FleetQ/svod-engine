@@ -220,6 +220,21 @@ class SvodEngine private constructor(
         timed { actor.submit { doRestoreRevision(VaultPath.of(path), revision, expectedRevision, author, content) } }
             .also(::notifyCommit)
 
+    /**
+     * The full id of the commit [revision] (a commit id / ref, annotated tags peeled) names, or null when it
+     * names no commit. Resolve a moving ref (`HEAD~1`, a branch) once with this, then pass the id on, so
+     * every later step sees the same commit.
+     */
+    suspend fun resolveCommit(revision: String): String? = actor.submit { resolveCommitOnActor(revision) }
+
+    private fun resolveCommitOnActor(revision: String): String? = try {
+        git.resolveRev("$revision^{commit}")
+    } catch (e: org.eclipse.jgit.errors.RevisionSyntaxException) {
+        null
+    } catch (e: IOException) {
+        null // missing object, ambiguous abbreviation, or not a commit (a blob / tree id)
+    }
+
     /** Unified diff of [path] between two revisions (commit ids / refs). */
     suspend fun diff(path: String, fromRevision: String, toRevision: String): String =
         actor.submit { git.diff(VaultPath.of(path).value, fromRevision, toRevision) }
@@ -415,20 +430,8 @@ class SvodEngine private constructor(
         author: Author,
         override: String?,
     ): WriteOutcome {
-        val commitId = try {
-            git.resolveRev(revision)
-        } catch (e: org.eclipse.jgit.errors.RevisionSyntaxException) {
-            null
-        } catch (e: org.eclipse.jgit.errors.AmbiguousObjectException) {
-            null
-        } ?: throw IllegalArgumentException("unknown revision: $revision")
-        val old = try {
-            git.readAtRevision(vp.value, commitId)
-        } catch (e: org.eclipse.jgit.errors.IncorrectObjectTypeException) {
-            throw IllegalArgumentException("not a commit: $revision")
-        } catch (e: org.eclipse.jgit.errors.MissingObjectException) {
-            throw IllegalArgumentException("unknown revision: $revision")
-        } ?: return WriteOutcome.NotFound("${vp.value}@$revision")
+        val commitId = resolveCommitOnActor(revision) ?: throw IllegalArgumentException("unknown revision: $revision")
+        val old = git.readAtRevision(vp.value, commitId) ?: return WriteOutcome.NotFound("${vp.value}@$revision")
         val text = override ?: String(old, UTF_8)
         val secrets = secretScanner.scan(text)
         if (secrets.isNotEmpty()) {
