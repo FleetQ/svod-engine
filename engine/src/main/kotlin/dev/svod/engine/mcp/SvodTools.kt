@@ -286,6 +286,42 @@ class SvodTools(
         }
     }
 
+    /**
+     * The vault-wide change feed: commits newest first back to [since] (a commit id or an ISO date/instant),
+     * paged with [before] = the previous `nextCursor`. Paths and metadata only, never content.
+     */
+    suspend fun recentChanges(agent: AgentIdentity, since: String?, before: String?, max: Int): ToolResult =
+        guarded(agent, "recent_changes", write = false) {
+            val page = try {
+                engine.changes(since, before, max)
+            } catch (e: IllegalArgumentException) {
+                return@guarded ToolResult.badRequest(e.message ?: "invalid since/before")
+            }
+            ToolResult.ok {
+                put("head", page.head)
+                putVault()
+                putJsonArray("changes") {
+                    page.changes.forEach { c ->
+                        addJsonObject {
+                            put("commit", c.commit); put("author", c.authorName); put("email", c.authorEmail)
+                            put("epochSeconds", c.epochSeconds); put("message", c.message)
+                            c.agent?.let { put("agent", it) }
+                            put("pathCount", c.pathCount); put("pathsTruncated", c.pathsTruncated)
+                            putJsonArray("paths") {
+                                c.paths.forEach { p ->
+                                    addJsonObject {
+                                        put("path", p.path); put("kind", p.kind.name.lowercase())
+                                        p.oldPath?.let { put("oldPath", it) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                put("nextCursor", page.nextCursor)
+            }
+        }
+
     suspend fun diff(agent: AgentIdentity, path: String, from: String, to: String): ToolResult =
         guarded(agent, "diff", write = false) {
             val unified = try {

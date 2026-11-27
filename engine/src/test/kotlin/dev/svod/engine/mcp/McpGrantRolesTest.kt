@@ -100,6 +100,8 @@ class McpGrantRolesTest {
             c.ok("get_revision", mapOf("path" to "n.md", "revision" to rev))
             c.ok("diff", mapOf("path" to "n.md", "from" to rev, "to" to rev))
             c.ok("link", mapOf("path" to "n.md"))
+            c.ok("recent_changes", emptyMap())
+            assertTrue(c.callTool("recent_changes", mapOf("max" to 5)).text().contains("\"path\":\"n.md\""))
             c.ok("graph_query", mapOf("path" to "n.md"))
             // an unknown community id is a not_found from the tool, which proves the role check let it through
             assertTrue(c.callTool("graph_community", mapOf("id" to "none")).text().contains("not_found"))
@@ -171,6 +173,9 @@ class McpGrantRolesTest {
                 val r = c.callTool("read", mapOf("path" to "x.md", "vault" to "other"))
                 assertEquals(true, r.isError)
                 assertTrue(r.text().contains("vault 'other' is not granted to agent '$tok'"), r.text())
+                val rc = c.callTool("recent_changes", mapOf("vault" to "other"))
+                assertEquals(true, rc.isError)
+                assertTrue(rc.text().contains("vault 'other' is not granted to agent '$tok'"), rc.text())
             } finally { c.close() }
         }
     }
