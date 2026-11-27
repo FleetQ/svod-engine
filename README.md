@@ -345,7 +345,9 @@ versioned single source of truth for every client — currently **0.42.0**):
 
 The `conflicts` endpoint carries each conflict's `base`/`ours`/`theirs` so a client can render a
 3-way merge; `conflicts/resolve` commits the merged content through the single writer and clears
-it — the engine half of the UI's conflict-resolution screen.
+it. The reference web viewer's **Sync conflicts** pane (`examples/web-viewer`) is a ready-made
+client: it shows base / ours / theirs side by side and resolves with keep ours (`keepMine`), take
+theirs (`acceptIncoming`) or an edited merge (`content`).
 
 The WebSocket streams `agent.activity` / `commit.created` / `index.updated` / `index.progress` /
 `file.changed` / `conflict` / `engine.status` live — what powers the "watch your agents think" feed.
@@ -554,7 +556,8 @@ did we decide X, and which agent proposed it?" with `git log`.
 Your laptop and a server both run Svod over the same git remote. Edits on either replicate;
 YAML frontmatter merges key-by-key, note bodies merge via git's 3-way, and a genuine conflict
 is surfaced at `/api/v1/conflicts` (both versions preserved) rather than silently picking a
-winner. Each host holds the full history — lose a machine, lose nothing.
+winner; the reference web viewer's Sync conflicts pane lets you settle it side by side. Each
+host holds the full history — lose a machine, lose nothing.
 
 **5. A custom dashboard / second-brain UI.**
 Point any client at the loopback API and subscribe to `/api/v1/events`. You get a live feed of

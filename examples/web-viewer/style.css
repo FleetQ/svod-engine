@@ -102,20 +102,24 @@ body {
   gap: 1px; background: var(--line);
   height: calc(100vh - var(--header-h)); height: calc(100dvh - var(--header-h));
 }
-.search-pane, .feed-pane, .diff-pane, .review-pane { background: var(--bg); display: flex; flex-direction: column; min-height: 0; }
-/* Wide screens: the review queue gets its own column on the right. */
+.search-pane, .feed-pane, .diff-pane, .review-pane, .conflicts-pane { background: var(--bg); display: flex; flex-direction: column; min-height: 0; }
+/* Wide screens: the review queue gets its own column on the right, sync conflicts a full-width row below. */
 @media (min-width: 1500px) {
-  .grid { grid-template-columns: minmax(280px, 1fr) minmax(300px, 1fr) minmax(380px, 1.3fr) minmax(320px, 1fr); }
+  .grid { grid-template-columns: minmax(280px, 1fr) minmax(300px, 1fr) minmax(380px, 1.3fr) minmax(320px, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto; height: auto; min-height: calc(100vh - var(--header-h)); min-height: calc(100dvh - var(--header-h)); }
+  .search-pane, .feed-pane, .diff-pane, .review-pane { height: calc(100vh - var(--header-h)); height: calc(100dvh - var(--header-h)); }
+  .conflicts-pane { grid-column: 1 / -1; max-height: 70vh; max-height: 70dvh; }
 }
-/* Medium screens: the three panes stay side by side and the review queue gets a full-width row below. */
+/* Medium screens: the three panes stay side by side; the review queue and sync conflicts get full-width rows below. */
 @media (min-width: 1101px) and (max-width: 1499px) {
   .grid { grid-template-rows: minmax(0, 1fr) auto; height: auto; min-height: calc(100vh - var(--header-h)); min-height: calc(100dvh - var(--header-h)); }
   .search-pane, .feed-pane, .diff-pane { height: calc(100vh - var(--header-h)); height: calc(100dvh - var(--header-h)); }
-  .review-pane { grid-column: 1 / -1; max-height: 60vh; max-height: 60dvh; }
+  .review-pane, .conflicts-pane { grid-column: 1 / -1; max-height: 60vh; max-height: 60dvh; }
 }
 @media (max-width: 1100px) {
   .grid { grid-template-columns: 1fr; height: auto; }
-  .search-pane, .feed-pane, .diff-pane, .review-pane { max-height: 80vh; max-height: 80dvh; }
+  .search-pane, .feed-pane, .diff-pane, .review-pane, .conflicts-pane { max-height: 80vh; max-height: 80dvh; }
+  .conflicts .merge3 { grid-template-columns: 1fr; } /* beats the 3-column rule below */
 }
 /* Phones: drop the tagline and let the URL field shrink so the status pill stays on screen. */
 @media (max-width: 640px) {
@@ -254,6 +258,34 @@ button {
 button.ghost { background: var(--panel-2); color: var(--ink-dim); border: 1px solid var(--line); }
 button.ghost:hover { color: var(--ink); border-color: var(--accent); }
 button:disabled { opacity: 0.5; cursor: default; }
+
+/* sync conflicts pane */
+.conflicts { list-style: none; margin: 0; padding: 4px 8px 24px; overflow: auto; }
+.conflicts .empty { color: var(--ink-faint); padding: 24px 8px; font-style: italic; }
+.conflict-item {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 10px 8px; border-radius: 8px; border: 1px solid transparent; cursor: pointer;
+}
+.conflict-item:hover { background: var(--panel); }
+.conflict-item.open { background: var(--panel); border-color: var(--line); cursor: default; }
+.conflict-item.quarantined { border-color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
+.badge.bad { color: var(--bad); border-color: var(--bad); border-color: color-mix(in srgb, var(--bad) 40%, transparent); }
+.conflict-detail { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; cursor: auto; }
+.merge3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.merge3 pre {
+  margin: 2px 0 0; padding: 8px 10px; overflow: auto; max-height: 30vh;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+}
+.merge3 pre.absent { color: var(--ink-faint); font-style: italic; }
+.merge-edit {
+  width: 100%; min-height: 10em; resize: vertical; padding: 8px 10px; border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--ink);
+  font-family: var(--mono); font-size: 12px; line-height: 1.5;
+}
+.merge-edit:focus { border-color: var(--accent); }
+.conflict-actions { display: flex; gap: 6px; margin-top: 4px; }
+.conflict-actions button { margin: 0; padding: 4px 12px; font-size: 12px; }
 
 @keyframes rise { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) {

@@ -428,6 +428,190 @@
     act(path, btn.dataset.action, li.dataset.revision, item);
   });
 
+  // ── sync conflicts ────────────────────────────────────────────────────
+  // GET /api/v1/conflicts lists what sync could not merge, with base/ours/theirs for a 3-way view.
+  // A row is settled with POST /api/v1/conflicts/resolve: keepMine, acceptIncoming or an edited merge.
+  const conflictList = $("conflictList");
+  const conflictMsg = $("conflictMsg");
+  const conflictItems = new Map(); // path → entry, from the last list
+  const conflictDrafts = new Map(); // path → unsaved merge text, kept across reloads
+  let openConflict = null; // path of the expanded row
+
+  let conflictSeq = 0;
+  let conflictTimer = null;
+
+  function scheduleConflicts() {
+    clearTimeout(conflictTimer);
+    conflictTimer = setTimeout(loadConflicts, 500);
+  }
+
+  async function loadConflicts() {
+    clearTimeout(conflictTimer);
+    const seq = ++conflictSeq;
+    try {
+      const r = await api(`${base}/api/v1/conflicts`, { cache: "no-store" });
+      if (!r.ok) {
+        const msg = await errorText(r, "conflict list failed");
+        if (seq === conflictSeq) { conflictMsg.textContent = msg; $("conflictCount").textContent = ""; }
+        return;
+      }
+      const j = await r.json();
+      if (seq === conflictSeq) renderConflicts(j);
+    } catch (err) {
+      if (seq === conflictSeq) conflictMsg.textContent = "conflict list failed: " + err;
+    }
+  }
+
+  function renderConflicts(j) {
+    const items = j.conflicts || [];
+    conflictItems.clear();
+    for (const c of items) conflictItems.set(c.path, c);
+    if (openConflict && !conflictItems.has(openConflict)) openConflict = null;
+    for (const p of [...conflictDrafts.keys()]) if (!conflictItems.has(p)) conflictDrafts.delete(p);
+
+    $("conflictCount").textContent = items.length ? `${items.length} open` : "";
+    conflictList.innerHTML = "";
+    if (!items.length) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "No open sync conflicts.";
+      conflictList.append(li);
+      return;
+    }
+    for (const c of items) conflictList.append(conflictRow(c));
+  }
+
+  // Binary files cannot take the incoming version as is (the server answers 422 unsupported).
+  const canTakeTheirs = (c) => c.path.endsWith(".md") || c.quarantined;
+
+  function conflictRow(c) {
+    const li = document.createElement("li");
+    li.className = "conflict-item" + (c.quarantined ? " quarantined" : "");
+    li.dataset.path = c.path;
+    const badges =
+      (c.reasons || []).map((r) => `<span class="badge">${esc(r)}</span>`).join("") +
+      (c.quarantined ? `<span class="badge bad">quarantined (secrets)</span>` : "");
+    const when = c.ts ? new Date(c.ts).toLocaleString() : "";
+    li.innerHTML =
+      `<div class="result-head"><span class="path">${esc(c.path)}</span>` +
+      `<span class="badges">${badges}</span></div>` +
+      (when ? `<div class="muted">recorded ${esc(when)}</div>` : "");
+    activatable(li, (ev) => {
+      if (ev.target.closest(".conflict-detail")) return; // clicks in the merge view don't collapse it
+      const open = openConflict !== c.path;
+      conflictList.querySelectorAll(".conflict-item.open").forEach((x) => closeConflict(x));
+      if (open) openConflictRow(li, c);
+    });
+    li.setAttribute("aria-expanded", "false");
+    if (openConflict === c.path) openConflictRow(li, c);
+    return li;
+  }
+
+  function closeConflict(li) {
+    li.classList.remove("open");
+    li.setAttribute("aria-expanded", "false");
+    li.querySelector(".conflict-detail")?.remove();
+    if (openConflict === li.dataset.path) openConflict = null;
+  }
+
+  function openConflictRow(li, c) {
+    openConflict = c.path;
+    li.classList.add("open");
+    li.setAttribute("aria-expanded", "true");
+    const detail = document.createElement("div");
+    detail.className = "conflict-detail";
+
+    const grid = document.createElement("div");
+    grid.className = "merge3";
+    for (const [label, text] of [["base", c.base], ["ours (this machine)", c.ours], ["theirs (incoming)", c.theirs]]) {
+      const col = document.createElement("div");
+      const h = document.createElement("div");
+      h.className = "muted";
+      h.textContent = label;
+      const pre = document.createElement("pre");
+      // textContent only: a conflict's text is untrusted note content.
+      if (text == null) { pre.textContent = "(absent on this side)"; pre.classList.add("absent"); }
+      else pre.textContent = text;
+      col.append(h, pre);
+      grid.append(col);
+    }
+
+    const edit = document.createElement("textarea");
+    edit.className = "merge-edit";
+    edit.spellcheck = false;
+    edit.setAttribute("aria-label", "Merged content for " + c.path);
+    edit.value = conflictDrafts.has(c.path) ? conflictDrafts.get(c.path) : (c.ours ?? c.theirs ?? "");
+    edit.addEventListener("input", () => conflictDrafts.set(c.path, edit.value));
+
+    const actions = document.createElement("div");
+    actions.className = "conflict-actions";
+    actions.innerHTML =
+      `<button type="button" class="ghost" data-conflict-action="keepMine">Keep ours</button>` +
+      `<button type="button" class="ghost" data-conflict-action="acceptIncoming">Take theirs</button>` +
+      `<button type="button" data-conflict-action="content">Save merge</button>`;
+    const take = actions.querySelector('[data-conflict-action="acceptIncoming"]');
+    if (!canTakeTheirs(c)) {
+      take.disabled = true;
+      take.title = "Only a text note can take the incoming version as is; save a merge instead.";
+    }
+
+    detail.append(grid, edit, actions);
+    li.append(detail);
+  }
+
+  async function resolveConflict(path, resolution, content, ack) {
+    const row = [...conflictList.querySelectorAll(".conflict-item")].find((li) => li.dataset.path === path);
+    (row ? row.querySelectorAll("button") : []).forEach((b) => { b.disabled = true; });
+    conflictMsg.textContent = `${resolution} ${path}…`;
+    const body = { path, resolution };
+    if (resolution === "content") body.content = content;
+    if (ack) body.acknowledgeSecrets = true;
+    try {
+      const r = await api(`${base}/api/v1/conflicts/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        conflictDrafts.delete(path);
+        if (openConflict === path) openConflict = null;
+        conflictMsg.textContent = `${path} resolved (${resolution}) · ${j.remainingConflicts} left`;
+      } else if (r.status === 422) {
+        let j = null;
+        try { j = await r.json(); } catch (_) {}
+        const msg = (j && j.message) || `${resolution} failed (422)`;
+        conflictMsg.textContent = msg;
+        if (j && j.error === "secrets_detected" && !ack &&
+            window.confirm(msg + "\n\nTake the incoming version anyway? The override is recorded in the audit log.")) {
+          return resolveConflict(path, resolution, content, true);
+        }
+      } else if (r.status === 409) {
+        conflictMsg.textContent = `${path} changed since you loaded it, reloaded`;
+      } else if (r.status === 404) {
+        conflictDrafts.delete(path);
+        conflictMsg.textContent = `${path} is already resolved, reloaded`;
+      } else if (r.status === 401 || r.status === 403) {
+        conflictMsg.textContent = "This engine needs a writer or admin to resolve conflicts.";
+      } else {
+        conflictMsg.textContent = await errorText(r, `${resolution} failed`);
+      }
+    } catch (err) {
+      conflictMsg.textContent = `${resolution} failed: ${err}`;
+    }
+    await loadConflicts();
+  }
+
+  conflictList.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button[data-conflict-action]");
+    if (!btn) return;
+    const li = btn.closest(".conflict-item");
+    const path = li.dataset.path;
+    const resolution = btn.dataset.conflictAction;
+    const edit = li.querySelector(".merge-edit");
+    resolveConflict(path, resolution, resolution === "content" && edit ? edit.value : null, false);
+  });
+
   function onEvent(ev) {
     const tool = (ev.data || {}).tool;
     switch (ev.type) {
@@ -438,6 +622,11 @@
         // appears once, while API/watcher commits (commit.created only) still show.
         addItem(ev);
         if (tool === "memory.review" || tool === "remember") scheduleReview();
+        // Sync's own conflict events carry no path (addItem drops them), so reload the pane on any.
+        if (ev.type === "conflict" || (ev.type === "commit.created" && tool === "resolve")) scheduleConflicts();
+        break;
+      case "sync.finished":
+        scheduleConflicts();
         break;
       case "index.updated":
         refreshIndexInfo();
@@ -488,6 +677,7 @@
       }
       refreshIndexInfo();
       loadReview();
+      loadConflicts();
       connectWs();
     } catch (e) {
       setConnected(false);
@@ -506,6 +696,10 @@
     keyEl.value = apiKey;
     reviewed.clear(); // acted-on rows belong to the previous engine
     reviewMsg.textContent = "";
+    conflictMsg.textContent = ""; // the open merge editor and its draft belong to the previous engine
+    openConflict = null;
+    conflictDrafts.clear();
+    conflictList.querySelectorAll(".conflict-detail").forEach((d) => d.remove());
     if (ws) try { ws.close(); } catch (_) {}
     connect();
   });
@@ -520,6 +714,7 @@
   $("retry").addEventListener("click", connect);
   $("searchForm").addEventListener("submit", runSearch);
   $("reviewRefresh").addEventListener("click", () => { reviewMsg.textContent = ""; loadReview(); });
+  $("conflictRefresh").addEventListener("click", () => { conflictMsg.textContent = ""; loadConflicts(); });
   $("searchMode").addEventListener("change", () => {
     if ($("searchQuery").value.trim()) runSearch();
   });
