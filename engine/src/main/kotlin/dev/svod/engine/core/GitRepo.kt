@@ -378,23 +378,17 @@ class GitRepo private constructor(
 
         val out = ArrayList<ChangeEntry>()
         var more = false
-        // Page by re-walking from HEAD and skipping through the cursor: starting at the cursor's parents would drop
-        // the commits of a merged side branch that sort after the cursor but are not its ancestors. Only when the
-        // cursor is no longer reachable from HEAD (history rewritten) does the walk fall back to its ancestry.
-        var skipping = beforeCommit != null && RevWalk(repo).use { it.isMergedInto(it.parseCommit(beforeCommit), it.parseCommit(head)) }
-        RevWalk(repo).use { rw ->
-            if (beforeCommit != null && !skipping) {
-                rw.parseCommit(beforeCommit).parents.forEach { rw.markStart(rw.parseCommit(it)) }
-            } else {
-                rw.markStart(rw.parseCommit(head))
-            }
-            sinceCommit?.let { rw.markUninteresting(rw.parseCommit(it)) }
-            DiffFormatter(org.eclipse.jgit.util.io.DisabledOutputStream.INSTANCE).use { df ->
-                df.setRepository(repo)
-                df.setDetectRenames(true)
+        DiffFormatter(org.eclipse.jgit.util.io.DisabledOutputStream.INSTANCE).use { df ->
+            df.setRepository(repo)
+            df.setDetectRenames(true)
+            /** One walk from [starts], skipping commits through [skipThrough]; false when that cursor was never met. */
+            fun walk(skipThrough: ObjectId?, starts: (RevWalk) -> List<ObjectId>): Boolean = RevWalk(repo).use { rw ->
+                starts(rw).forEach { rw.markStart(rw.parseCommit(it)) }
+                sinceCommit?.let { rw.markUninteresting(rw.parseCommit(it)) }
+                var skipping = skipThrough != null
                 for (c in rw) {
                     if (skipping) {
-                        if (c == beforeCommit) skipping = false
+                        if (c == skipThrough) skipping = false
                         continue
                     }
                     if (sinceEpoch != null && c.commitTime.toLong() < sinceEpoch) break
@@ -413,6 +407,14 @@ class GitRepo private constructor(
                         pathsTruncated = all.size > CHANGES_MAX_PATHS,
                     )
                 }
+                !skipping
+            }
+            // Page by re-walking from HEAD and skipping through the cursor: starting at the cursor's parents would
+            // drop the commits of a merged side branch that sort after the cursor but are not its ancestors. Only when
+            // that walk never meets the cursor (history rewritten, or the cursor is behind `since`) does a second walk
+            // start at its parents. One walk in the common case, instead of an isMergedInto walk plus this one.
+            if (!walk(beforeCommit) { listOf(head) } && beforeCommit != null) {
+                walk(null) { rw -> rw.parseCommit(beforeCommit).parents.toList() }
             }
         }
         return ChangesPage(head.name, out, if (more) out.lastOrNull()?.commit else null)
@@ -428,13 +430,15 @@ class GitRepo private constructor(
         org.eclipse.jgit.diff.DiffEntry.ChangeType.ADD -> PathChange(e.newPath, ChangeKind.ADD)
         org.eclipse.jgit.diff.DiffEntry.ChangeType.MODIFY -> PathChange(e.newPath, ChangeKind.MODIFY)
         org.eclipse.jgit.diff.DiffEntry.ChangeType.DELETE -> PathChange(e.oldPath, ChangeKind.DELETE)
-        org.eclipse.jgit.diff.DiffEntry.ChangeType.COPY -> PathChange(e.newPath, ChangeKind.ADD, e.oldPath)
         else -> {
+            // RENAME or COPY (rename detection pairs one deleted source with several adds as one RENAME plus COPYs,
+            // so a soft delete can come back as the COPY): the move into/out of `.trash/` decides first.
             val toTrash = e.newPath.startsWith(TRASH_PREFIX)
             val fromTrash = e.oldPath.startsWith(TRASH_PREFIX)
             val kind = when {
                 toTrash && !fromTrash -> ChangeKind.DELETE
                 fromTrash && !toTrash -> ChangeKind.RESTORE
+                e.changeType == org.eclipse.jgit.diff.DiffEntry.ChangeType.COPY -> ChangeKind.ADD
                 else -> ChangeKind.RENAME
             }
             PathChange(e.newPath, kind, e.oldPath)

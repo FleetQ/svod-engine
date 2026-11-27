@@ -134,6 +134,7 @@ class ChangesFeedTest {
             assertEquals(setOf(merge, m2, m1, side, base), seen.toSet())
             assertEquals(5, seen.size, "no commit listed twice")
         }
+        dir.toFile().deleteRecursively()
     }
 
     @Test
