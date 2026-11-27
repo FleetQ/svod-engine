@@ -211,6 +211,10 @@ not a running, unlocked host.
   wired in [`lifecycle/SvodNode.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/SvodNode.kt)).
   Successful read-only calls (`read`, `search`, `context_pack` and the like) are not logged.
   A `READ_ONLY` agent's attempt to call a write tool never reaches a tool, so it is not logged.
+  Engine admins can read the trail over the App API at `GET /api/v1/audit?vault=...`: read-only
+  (the route never creates, writes or truncates the file), newest first, filterable by agent,
+  outcome and since, and paged. Non-admins get 403. Entries carry scanner rule names and commit
+  ids, never secret values.
 - **People.** Every keyed App API request, and every refusal, is one JSON line in
   `audit-api.log` in the config directory. The file is created 0600 and never contains request
   bodies, query strings (except the `vault` parameter) or `Authorization` values

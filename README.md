@@ -326,7 +326,8 @@ versioned single source of truth for every client — currently **0.42.0**):
 - **Graph (thematic):** `graph/communities` · `graph/community` · `graph/status` · `graph/rebuild`
 - **People & agents** ([ADR-0019](docs/adr/0019-app-api-principals.md),
   [ADR-0020](docs/adr/0020-team-sharing-users-and-roles.md)): `me` · `users` · `users/{id}` ·
-  `users/{id}/key` · `agents` · `agents/{id}` · `stats` (engine admin only)
+  `users/{id}/key` · `agents` · `agents/{id}` · `stats` (engine admin only) ·
+  `audit` (agent audit trail, engine admin only)
 - **Memory:** `memory/review` (GET queue / POST approve, decline, reopen) · `memory/rulebook` ·
   `memory/capture` · `memory/sessions` · `memory/sessions/mark-distilled` · `memory/proposals` ·
   `memory/proposals/{id}` · `memory/dashboard`

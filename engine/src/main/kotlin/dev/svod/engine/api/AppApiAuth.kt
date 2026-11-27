@@ -25,7 +25,7 @@ import java.net.URLDecoder
  *     [originAllowed] for why a browser on the same machine would otherwise qualify. Anything
  *     else is 401.
  *  2. **Engine admin** — the routes in [ADMIN_ROUTES] (users, agents, backup, vaults, update,
- *     sources, import, index/embedder control) need `admin`; otherwise 403.
+ *     sources, import, index/embedder control, stats, the agent audit trail) need `admin`; otherwise 403.
  *  3. **Vault access** — every vault-scoped route resolves its `?vault=` (default when omitted): no
  *     read grant ⇒ 404 with the same body as an unknown vault id (no enumeration); a non-GET
  *     without an EDITOR grant ⇒ 403.
@@ -53,6 +53,7 @@ object AppApiAuth {
         Rule(null, Regex("^/api/v1/agents(/.*)?$")),
         Rule(null, Regex("^/api/v1/users(/.*)?$")),
         Rule(null, Regex("^/api/v1/stats$")),
+        Rule(setOf("GET"), Regex("^/api/v1/audit$")),
         Rule(setOf("POST"), Regex("^/api/v1/secrets$")),
         Rule(setOf("PUT"), Regex("^/api/v1/settings/backup$")),
         Rule(setOf("POST"), Regex("^/api/v1/(backup/now|sync/now|maintenance/reindex|index/(pause|resume|reembed)|graph/rebuild|import|embedder/(test|models))$")),
