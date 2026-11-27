@@ -186,6 +186,13 @@ class SvodEngine private constructor(
         actor.submit { git.log(VaultPath.of(path).value, max) }
 
     /**
+     * Vault-wide change feed, newest first: commits from HEAD (or older than [before]) back to [since]
+     * (a commit id/ref, or an ISO instant/date), at most [max] (1..200). Bad input is [IllegalArgumentException].
+     */
+    suspend fun changes(since: String?, before: String?, max: Int): ChangesPage =
+        actor.submit { git.changes(since, before, max.coerceIn(1, 200)) }
+
+    /**
      * Who created ([Pair.first], the latest commit that ADDED the path) and last changed
      * ([Pair.second]) [path]; both null when it has no commit. Read-only, derived from git.
      */
