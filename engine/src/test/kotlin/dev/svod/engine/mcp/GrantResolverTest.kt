@@ -86,6 +86,24 @@ class GrantResolverTest {
     }
 
     @Test
+    fun `a tools allowlist narrows advertised tools but never widens the role`() {
+        val listed = AgentIdentity("a1", AgentRole.WRITE, Author("A", "a@x"), tools = setOf("search", "write"))
+        assertFalse(GrantResolver.advertised(listed, "read"))
+        assertFalse(GrantResolver.advertised(listed, "promote"))
+        assertTrue(GrantResolver.advertised(listed, "search"))
+        assertTrue(GrantResolver.advertised(listed, "write"))
+        val ro = AgentIdentity("a1", AgentRole.READ_ONLY, Author("A", "a@x"), tools = setOf("search", "write"))
+        assertTrue(GrantResolver.advertised(ro, "search"))
+        assertFalse(GrantResolver.advertised(ro, "write"))
+        val plainWrite = agent()
+        val plainRo = agent(role = AgentRole.READ_ONLY)
+        GrantResolver.REQUIRED.keys.forEach {
+            assertTrue(GrantResolver.advertised(plainWrite, it), it)
+            assertEquals(GrantResolver.REQUIRED[it] == GrantRole.READER, GrantResolver.advertised(plainRo, it), it)
+        }
+    }
+
+    @Test
     fun `denial message names agent role vault and tool`() {
         val msg = GrantResolver.deny(agent(roles = mapOf("v" to GrantRole.READER)), "v", "write")
         assertEquals("agent 'a1' (role reader in vault 'v') may not call 'write'", msg)

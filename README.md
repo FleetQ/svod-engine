@@ -204,7 +204,8 @@ with one of the bearer tokens from your config's `agents` list. For copy-paste f
 - **Auth:** header `Authorization: Bearer <token>`, where `<token>` is an agent's `token` from the
   config (a literal value or a `env:` / `file:` / `keychain:` Secrets ref). The token *is* the
   identity — its `agentId` becomes the git commit author and its `role` (`WRITE` / `READ_ONLY`) gates
-  every call.
+  every call. An agent may also set an optional `"tools": ["search", "context_pack", ...]` allowlist:
+  `tools/list` then offers only those tools (within its role), and any other tool fails as unknown.
 
 `svod-engine init` (see [Quickstart](#quickstart)) prints every one of the blocks below, filled in with your
 own endpoint and the new agent's token (shown here as `friday-write-token`).
