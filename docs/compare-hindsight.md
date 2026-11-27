@@ -1,13 +1,14 @@
 # Svod vs Hindsight
 
-Hindsight, by Vectorize, is an open-source memory system for AI agents. It takes what an agent
-sees, uses an LLM to extract facts from it, and later "reflects" over those facts to form
-higher-level observations. Svod takes a different path: memory is a git repository of Markdown
-that people and agents both read and edit. If you are choosing between them, this page sets out
-what they have in common, where Svod differs, and where Hindsight is ahead. It aims to be fair:
-facts about Svod come from this repository, and facts about Hindsight come from its public pages
-(see [Sources and date](#sources-and-date)). Anything we could not confirm from a primary source
-is marked ⚠️ together with the date it was reported.
+Hindsight, by Vectorize, is an open-source memory system for AI agents. ⚠️ It is reported (as of
+2026-11-27) to take what an agent sees, use an LLM to extract facts from it, and later "reflect"
+over those facts to form higher-level observations. Svod takes a different path: memory is a git
+repository of Markdown that people and agents both read and edit. If you are choosing between
+them, this page sets out what they have in common, where Svod differs, and where Hindsight is
+ahead. It aims to be fair: facts about Svod come from this repository. The facts about Hindsight
+come from research notes and were not yet confirmed against its public pages (see
+[Sources and date](#sources-and-date)), so every one of them is marked ⚠️ together with the date
+it was reported.
 
 ## What both share
 
@@ -26,7 +27,7 @@ is marked ⚠️ together with the date it was reported.
 |---|---|---|
 | **Store of record** | A folder of ordinary `.md` files with frontmatter, in a git repository, readable and editable in any editor | ⚠️ A database (reported as Postgres with pgvector, as of 2026-11-27) |
 | **Provenance** | Every change is a git commit whose author is the specific agent, the UI or the external editor that made it | ⚠️ Not documented as per-change authorship (as of 2026-11-27) |
-| **Memory model** | Typed memories (policy / preference / fact / episode / procedure) with a lifecycle and an optional per-agent review queue | LLM-extracted facts, consolidated by a reflect step |
+| **Memory model** | Typed memories (policy / preference / fact / episode / procedure) with a lifecycle and an optional per-agent review queue | ⚠️ LLM-extracted facts, consolidated by a reflect step (as of 2026-11-27) |
 | **Durability** | Never loses a file: atomic writes, soft-delete to `.trash/` plus a commit, crash recovery; a stale write is surfaced as a conflict, never silently merged | ⚠️ Not documented as a guarantee (as of 2026-11-27) |
 | **Search** | Hybrid BM25 + vector search fused with RRF, in one JVM with in-process embeddings | ⚠️ Check its docs for the current retrieval strategies |
 | **Write path cost** | No LLM call is required to store a memory and there is no per-token cloud cost | ⚠️ Fact extraction calls an LLM on write (as of 2026-11-27) |
@@ -39,7 +40,7 @@ locally with no extra service and no model calls on the write path.
 
 ## Where Hindsight is ahead
 
-- **Automatic fact extraction.** Hindsight turns raw conversations into facts with an LLM (as of
+- **Automatic fact extraction.** ⚠️ Hindsight turns raw conversations into facts with an LLM (as of
   2026-11-27), so nobody has to structure memories by hand. Svod stores what the agent or person chose to write
   and does not extract facts for you.
 - **Reflection.** ⚠️ Hindsight's reflect step merges memories into observations and mental
@@ -53,10 +54,10 @@ locally with no extra service and no model calls on the write path.
 
 ## Sources and date
 
-Checked 2026-11-27. The Hindsight facts on this page (licence, star count, storage backend,
-cloud pricing model, Thoughtworks Technology Radar ring and date) come from research notes and
-were not confirmed against the primary sources below when this page was written, so they are
-marked ⚠️. The Radar entry was reported as "Assess" with a date of 2026-11-04 (⚠️ not confirmed).
+Checked 2026-11-27. Every Hindsight fact on this page (fact extraction and the reflect step,
+MCP and Claude Code support, licence, star count, storage backend, cloud pricing model,
+Thoughtworks Technology Radar ring and date) comes from research notes and was not confirmed
+against the primary sources below when this page was written, so each one is marked ⚠️. The Radar entry was reported as "Assess" with a date of 2026-11-04 (⚠️ not confirmed).
 Features, prices and rankings change, so confirm them on Hindsight's own pages before you rely
 on them:
 
