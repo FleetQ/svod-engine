@@ -22,9 +22,12 @@ object GrantResolver {
      * Whether [tool] is offered to [agent] in tools/list at all. Only the global READ_ONLY role hides
      * tools: it sees just the READER tools (an unknown tool counts as MAINTAINER, so it stays hidden).
      * Per-vault grants never hide tools, because one token reaches several vaults; [deny] checks those per call.
+     * An agent's optional [AgentIdentity.tools] allowlist then hides every tool it does not name. It only
+     * removes tools: a listed tool the role does not allow stays hidden, and [deny] still applies to listed ones.
      */
     fun advertised(agent: AgentIdentity, tool: String): Boolean =
-        agent.role != AgentRole.READ_ONLY || REQUIRED[tool] == GrantRole.READER
+        (agent.role != AgentRole.READ_ONLY || REQUIRED[tool] == GrantRole.READER) &&
+            (agent.tools == null || tool in agent.tools)
 
     /** null = allowed; otherwise the denial message. Call after the vault grant itself has passed. */
     fun deny(agent: AgentIdentity, vault: String, tool: String): String? {
