@@ -67,6 +67,12 @@ class SvodTools(
     private val extractor: dev.svod.engine.memory.MemoryExtractor = dev.svod.engine.memory.NoneMemoryExtractor,
     /** Longest transcript `extract_memories` accepts; a longer one is refused, not truncated. */
     private val maxTranscriptChars: Int = 20_000,
+    /**
+     * `personalDataScanning`: an agent write/edit/remember that ADDS personal data is stored
+     * `provisional` for a person's review. Only here, not in the engine, so the review's own approval
+     * write, sync, import and the App API are never re-flagged.
+     */
+    private val personalDataScanner: dev.svod.engine.security.PersonalDataScanner = dev.svod.engine.security.PersonalDataScanner.OFF,
 ) {
     /** Classifies an incoming memory against existing memory of the same type/subject. */
     private val classifier = FactClassifier(engine, index, adjudicator)
@@ -603,8 +609,45 @@ class SvodTools(
 
     suspend fun write(agent: AgentIdentity, path: String, content: String, expectedRevision: String?): ToolResult =
         guarded(agent, "write", write = true) {
-            outcomeResult("write", agent, engine.write(path, content, expectedRevision, agent.author), path)
+            val prev = if (personalDataScanner.enabled) engine.read(path) else null
+            val personal = personalDataGate(content, prev?.text)
+            val text = if (personal.isEmpty()) content else markProvisional(content)
+            // The gate judged the note as read above; without a caller revision, pin the write to that read
+            // so a change in between surfaces as a conflict rather than a verdict on stale content.
+            val expected = expectedRevision ?: prev?.revision
+            outcomeResult("write", agent, engine.write(path, text, expected, agent.author), path, personalData = personal)
         }
+
+    /**
+     * The findings that make this write wait for a person: those in [newContent] whose (rule, value)
+     * [previousContent] did not already hold, or — when the previous version is still `provisional`, or
+     * was declined (`revoked`) and the write would take it out of that state — every finding still present,
+     * so an agent cannot clear or undo the review itself by rewriting the note (or its `status`) while the
+     * personal data stays in it.
+     */
+    private fun personalDataGate(newContent: String, previousContent: String?): List<dev.svod.engine.security.PersonalDataScanner.Finding> {
+        val found = personalDataScanner.scan(newContent)
+        if (found.isEmpty() || previousContent == null) return found
+        when (statusOf(previousContent)) {
+            "provisional" -> return found
+            "revoked" -> return if (statusOf(newContent) == "revoked") emptyList() else found
+        }
+        val before = personalDataScanner.scan(previousContent).mapTo(HashSet()) { it.rule to it.value }
+        return found.filter { (it.rule to it.value) !in before }
+    }
+
+    /**
+     * [text] with frontmatter `status: provisional`; other keys and the body kept as written. Frontmatter
+     * that does not parse is kept verbatim below the new header (it becomes body text), never dropped.
+     */
+    private fun markProvisional(text: String): String {
+        dev.svod.engine.memory.patchFrontmatter(text, mapOf("status" to "provisional"), emptySet())?.let { return it }
+        val parsed = dev.svod.engine.index.MarkdownChunker.parse(text)
+        if (parsed.frontmatter.isEmpty()) return "---\nstatus: provisional\n---\n$text"
+        val fm = LinkedHashMap<String, Any?>(parsed.frontmatter)
+        fm["status"] = "provisional"
+        return frontmatterFences(fm) + parsed.body
+    }
 
     /**
      * Partial edit: replace an exact substring in place of resending the whole note (large
@@ -646,7 +689,9 @@ class SvodTools(
                     audit.record(agent.agentId, "edit", "internal_error", path, detail = integrityError)
                     ToolResult.internalError(integrityError)
                 } else {
-                    outcomeResult("edit", agent, engine.write(path, newContent, cur.revision, agent.author), path)
+                    val personal = personalDataGate(newContent, cur.text)
+                    val text = if (personal.isEmpty()) newContent else markProvisional(newContent)
+                    outcomeResult("edit", agent, engine.write(path, text, cur.revision, agent.author), path, personalData = personal)
                 }
             }
         }
@@ -826,7 +871,6 @@ class SvodTools(
         }
         val t = type?.trim()?.lowercase()?.takeIf { it.isNotEmpty() } ?: "fact"
         val callerStatus = status?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
-        val st = callerStatus ?: defaultStatusFor(t, agent)
         val dir = (into ?: "memory").trim('/').ifEmpty { "memory" }
         val hash = dev.svod.engine.index.sha256Hex("$t\n${content.trim()}").take(12)
         val path = "$dir/$t/$hash.md"
@@ -839,6 +883,13 @@ class SvodTools(
             audit.record(agent.agentId, "remember", "blocked", path, detail = secrets.joinToString(", "))
             return ToolResult.blocked(path, secrets)
         }
+        // Personal data the memory adds makes it wait for a person, whatever status was asked for.
+        // `subject` and `source` land in the note's frontmatter, so they are scanned too (after the content,
+        // so a finding's line number is the content's own for anything in the content).
+        val personal = if (!personalDataScanner.enabled) emptyList() else personalDataGate(
+            listOfNotNull(content, subject, source).joinToString("\n"), engine.read(path)?.text,
+        )
+        val st = if (personal.isNotEmpty()) "provisional" else callerStatus ?: defaultStatusFor(t, agent)
 
         // Plan off the actor, apply inside it. If a candidate moved in between, the apply is refused
         // as stale and we re-plan against live state exactly once rather than committing a decision
@@ -884,9 +935,8 @@ class SvodTools(
             }
 
             val related = plan.related
-            val noteStatus = callerStatus ?: defaultStatusFor(t, agent)
             val note = buildMemoryNote(
-                t, noteStatus, subject, confidence, source, content.trim(),
+                t, st, subject, confidence, source, content.trim(),
                 contradicts = related?.path?.takeIf { plan.classification == Classification.CONTRADICTION },
                 supersedes = related?.path?.takeIf { plan.classification == Classification.UPDATE },
                 needsReview = plan.classification == Classification.UNCERTAIN,
@@ -904,11 +954,14 @@ class SvodTools(
 
             when (val outcome = engine.writeGuarded(files, guards, agent.author, "remember: $path (${plan.classification})")) {
                 is GuardedWrite.Applied -> {
-                    audit.record(agent.agentId, "remember", "ok", path, revision = outcome.revisions[path], detail = outcome.commit)
+                    audit.record(
+                        agent.agentId, "remember", "ok", path, revision = outcome.revisions[path],
+                        detail = outcome.commit + personalAuditDetail(personal),
+                    )
                     eventBus.publish(EventTypes.AGENT_ACTIVITY) { put("agentId", agent.agentId); put("tool", "remember"); put("path", path); put("commit", outcome.commit); putVault() }
                     eventBus.publish(EventTypes.COMMIT_CREATED) { put("commit", outcome.commit); put("path", path); put("author", agent.author.name); put("agentId", agent.agentId); putVault() }
                     return ToolResult.ok {
-                        put("status", "written"); put("path", path); put("type", t); put("memoryStatus", noteStatus)
+                        put("status", "written"); put("path", path); put("type", t); put("memoryStatus", st)
                         put("revision", outcome.revisions[path]); put("commit", outcome.commit)
                         put("classification", plan.classification.name)
                         put("confidence", plan.confidence); put("rationale", plan.rationale)
@@ -919,6 +972,7 @@ class SvodTools(
                             put("message", "kept both memories; neither was overwritten")
                         }
                         if (plan.classification == Classification.UNCERTAIN) put("needsReview", true)
+                        if (personal.isNotEmpty()) putJsonArray("personalData") { personal.forEach { add(it.report()) } }
                     }
                 }
                 is GuardedWrite.Blocked -> {
@@ -1014,17 +1068,32 @@ class SvodTools(
         return body()
     }
 
-    private fun outcomeResult(tool: String, agent: AgentIdentity, outcome: WriteOutcome, path: String, target: String? = null): ToolResult =
+    /** `; personal data: email, phone` for an audit detail — rule names only, never a value. */
+    private fun personalAuditDetail(personal: List<dev.svod.engine.security.PersonalDataScanner.Finding>): String =
+        if (personal.isEmpty()) "" else "; personal data: " + personal.map { it.rule }.distinct().joinToString(", ")
+
+    private fun outcomeResult(
+        tool: String, agent: AgentIdentity, outcome: WriteOutcome, path: String, target: String? = null,
+        personalData: List<dev.svod.engine.security.PersonalDataScanner.Finding> = emptyList(),
+    ): ToolResult =
         when (outcome) {
             is WriteOutcome.Success -> {
-                audit.record(agent.agentId, tool, "ok", path, target, outcome.revision, outcome.commit)
+                audit.record(agent.agentId, tool, "ok", path, target, outcome.revision, outcome.commit + personalAuditDetail(personalData))
                 eventBus.publish(EventTypes.AGENT_ACTIVITY) {
                     put("agentId", agent.agentId); put("tool", tool); put("path", outcome.path); put("commit", outcome.commit); putVault()
                 }
                 eventBus.publish(EventTypes.COMMIT_CREATED) {
                     put("commit", outcome.commit); put("path", outcome.path); put("author", agent.author.name); put("agentId", agent.agentId); putVault()
                 }
-                ToolResult.ok { put("path", outcome.path); put("revision", outcome.revision); put("commit", outcome.commit) }
+                ToolResult.ok {
+                    put("path", outcome.path); put("revision", outcome.revision); put("commit", outcome.commit)
+                    if (personalData.isNotEmpty()) {
+                        // `status` stays "ok" (the call succeeded); the note's own status is reported apart.
+                        put("memoryStatus", "provisional")
+                        put("message", "the note adds personal data and waits for a person's review in the Memory review queue")
+                        putJsonArray("personalData") { personalData.forEach { add(it.report()) } }
+                    }
+                }
             }
             is WriteOutcome.Conflict -> {
                 audit.record(agent.agentId, tool, "conflict", path, target, outcome.current)
