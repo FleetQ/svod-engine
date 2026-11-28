@@ -86,6 +86,20 @@
         <li class="empty">Nothing is waiting for review.</li>
       </ol>
     </section>
+
+    <section class="conflicts-pane" id="conflicts" data-svod-conflicts>
+      <div class="pane-head">
+        <h2>Sync conflicts</h2>
+        <span class="review-tools">
+          <span id="conflictCount" class="muted"></span>
+          <button type="button" id="conflictRefresh" class="ghost">Refresh</button>
+        </span>
+      </div>
+      <p id="conflictMsg" class="muted review-msg" role="status"></p>
+      <ol id="conflictList" class="conflicts">
+        <li class="empty">No open sync conflicts.</li>
+      </ol>
+    </section>
   </main>
 
   <div id="offline" class="offline hidden">

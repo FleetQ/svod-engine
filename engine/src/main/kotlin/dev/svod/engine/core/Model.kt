@@ -91,6 +91,30 @@ data class CommitInfo(
     val agent: String? = null,
 )
 
+/** How a commit touched a path in the change feed. A soft delete into `.trash/` is DELETE, a move out of it RESTORE. */
+enum class ChangeKind { ADD, MODIFY, DELETE, RENAME, RESTORE }
+
+/** One changed path of a commit; [oldPath] is set for RENAME, DELETE (to `.trash/`) and RESTORE. */
+data class PathChange(val path: String, val kind: ChangeKind, val oldPath: String? = null)
+
+/** One commit of the vault-wide change feed, with its changed paths (capped; see [pathsTruncated]). */
+data class ChangeEntry(
+    val commit: String,
+    val authorName: String,
+    val authorEmail: String,
+    val epochSeconds: Long,
+    val message: String,
+    /** `Svod-Agent:` trailer of the commit message (ADR-0020), null when absent. */
+    val agent: String?,
+    val paths: List<PathChange>,
+    /** Number of changed paths before the per-commit cap. */
+    val pathCount: Int,
+    val pathsTruncated: Boolean,
+)
+
+/** A page of the change feed, newest first. [nextCursor] is the `before` value for the next (older) page. */
+data class ChangesPage(val head: String?, val changes: List<ChangeEntry>, val nextCursor: String?)
+
 /** Who a note's creation / last change is attributed to; derived from git only. */
 data class Attribution(val name: String, val email: String, val agent: String? = null)
 

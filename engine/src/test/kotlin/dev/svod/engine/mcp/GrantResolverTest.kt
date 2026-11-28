@@ -16,7 +16,7 @@ class GrantResolverTest {
     ) = AgentIdentity("a1", role, Author("A", "a@x"), vaults, userId = user, grantRoles = roles)
 
     private val reads = listOf("read", "search", "context_pack", "list", "tree", "grep", "history", "diff", "get_revision", "link",
-        "graph_query", "graph_communities", "graph_community", "graph_status")
+        "recent_changes", "graph_query", "graph_communities", "graph_community", "graph_status")
     private val writes = listOf("write", "edit", "move", "delete", "remember", "extract_memories")
 
     @Test
@@ -83,6 +83,24 @@ class GrantResolverTest {
         reads.forEach { assertTrue(GrantResolver.advertised(ro, it), it) }
         (writes + "promote").forEach { assertFalse(GrantResolver.advertised(ro, it), it) }
         assertFalse(GrantResolver.advertised(agent(role = AgentRole.READ_ONLY), "unknown_tool"))
+    }
+
+    @Test
+    fun `a tools allowlist narrows advertised tools but never widens the role`() {
+        val listed = AgentIdentity("a1", AgentRole.WRITE, Author("A", "a@x"), tools = setOf("search", "write"))
+        assertFalse(GrantResolver.advertised(listed, "read"))
+        assertFalse(GrantResolver.advertised(listed, "promote"))
+        assertTrue(GrantResolver.advertised(listed, "search"))
+        assertTrue(GrantResolver.advertised(listed, "write"))
+        val ro = AgentIdentity("a1", AgentRole.READ_ONLY, Author("A", "a@x"), tools = setOf("search", "write"))
+        assertTrue(GrantResolver.advertised(ro, "search"))
+        assertFalse(GrantResolver.advertised(ro, "write"))
+        val plainWrite = agent()
+        val plainRo = agent(role = AgentRole.READ_ONLY)
+        GrantResolver.REQUIRED.keys.forEach {
+            assertTrue(GrantResolver.advertised(plainWrite, it), it)
+            assertEquals(GrantResolver.REQUIRED[it] == GrantRole.READER, GrantResolver.advertised(plainRo, it), it)
+        }
     }
 
     @Test

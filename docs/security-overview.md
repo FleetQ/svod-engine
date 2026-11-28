@@ -121,7 +121,9 @@ not a running, unlocked host.
   ([`mcp/Agent.kt`](../engine/src/main/kotlin/dev/svod/engine/mcp/Agent.kt)). Each agent is
   granted specific vaults with a role per vault (ADR-0020). A `READ_ONLY` agent is never offered
   write tools: its `tools/list` lists only the reading tools, and a write tool called by name is
-  answered like a tool that does not exist.
+  answered like a tool that does not exist. For least privilege, `agents[].tools` narrows an agent
+  further to a named list of tools. It is applied on top of the role and never grants a tool the
+  role denies, and an unknown tool name stops the engine from starting.
 - **People (App API).** Personal keys are `svk_`-prefixed, 256 random bits from `SecureRandom`
   ([`lifecycle/UserController.kt`](../engine/src/main/kotlin/dev/svod/engine/lifecycle/UserController.kt)).
   The config holds only a reference to the key: `env:`, `file:` or `keychain:`.

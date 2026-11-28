@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.42.0
+  version: 0.43.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -197,6 +197,32 @@ paths:
                   commits:
                     type: array
                     items: { $ref: "#/components/schemas/CommitInfo" }
+
+  /api/v1/changes:
+    get:
+      tags: [files]
+      summary: Vault-wide change feed (newest first, paged)
+      description: >
+        Since 0.43.0. Commits from HEAD back to `since`, newest first, each with its changed paths
+        (`add`, `modify`, `delete`, `rename`, `restore`; a soft delete into `.trash/` is `delete`, a move out
+        of it `restore`). `since` is a commit id (that commit and older are left out; e.g. the `head` of the
+        previous call) or an ISO-8601 instant or date (start of that UTC day). Page older with
+        `before` = the previous `nextCursor`. Paths and metadata only; use `/file/diff` or `/file/revision`
+        for content. At most 200 paths are listed per commit (`pathCount`, `pathsTruncated`). Needs read
+        access to the vault.
+      operationId: changes
+      parameters:
+        - { name: since, in: query, required: false, schema: { type: string } }
+        - { name: before, in: query, required: false, schema: { type: string } }
+        - { name: max, in: query, required: false, schema: { type: integer, default: 50, minimum: 1, maximum: 200 } }
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: One page of the feed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangesPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
 
   /api/v1/file/diff:
     get:
@@ -1846,6 +1872,43 @@ components:
         agent:
           type: string
           description: Agent id from the commit's `Svod-Agent:` trailer; absent otherwise. Since 0.39.0 (ADR-0020).
+
+    ChangesPage:
+      type: object
+      description: Since 0.43.0. One page of `GET /changes`.
+      required: [changes]
+      properties:
+        head: { type: string, description: "Current HEAD commit; absent for an empty repository. Pass it as `since` next time." }
+        changes:
+          type: array
+          items: { $ref: "#/components/schemas/ChangeEntry" }
+        nextCursor: { type: string, description: "`before` for the next (older) page; absent on the last page." }
+
+    ChangeEntry:
+      type: object
+      required: [commit, author, email, epochSeconds, message, paths, pathCount, pathsTruncated]
+      properties:
+        commit: { type: string }
+        author: { type: string }
+        email: { type: string }
+        epochSeconds: { type: integer, format: int64 }
+        message: { type: string }
+        agent:
+          type: string
+          description: Agent id from the commit's `Svod-Agent:` trailer; absent otherwise.
+        paths:
+          type: array
+          items: { $ref: "#/components/schemas/PathChange" }
+        pathCount: { type: integer, description: "Changed paths in the commit, before the 200-path cap." }
+        pathsTruncated: { type: boolean }
+
+    PathChange:
+      type: object
+      required: [path, kind]
+      properties:
+        path: { type: string, description: "The path after the change (the `.trash/` path for a delete)." }
+        kind: { type: string, enum: [add, modify, delete, rename, restore] }
+        oldPath: { type: string, description: "The path before a rename, soft delete or restore." }
 
     DiffResult:
       type: object
