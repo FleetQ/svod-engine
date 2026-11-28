@@ -126,6 +126,16 @@ class SecurityOverviewDocsTest {
     }
 
     @Test
+    fun secretScanRulesAreListed() {
+        val scan = section("Pre-commit secret scan")
+        SecretScanner.RULE_NAMES.forEach { assertBackticked(scan, it, "## Pre-commit secret scan") }
+        listOf(
+            "openai-api-key", "anthropic-api-key", "stripe-live-key", "github-fine-grained-token",
+            "gitlab-token", "npm-token", "huggingface-token",
+        ).forEach { assertTrue(it in SecretScanner.RULE_NAMES, "SecretScanner no longer has the $it rule: ${SecretScanner.RULE_NAMES}") }
+    }
+
+    @Test
     fun personalDataReviewIsDescribedAsOptIn() {
         assertEquals(false, defaults.personalDataScanning, "personalDataScanning default changed; update $PAGE '## Personal data review'")
         val review = section("Personal data review")
