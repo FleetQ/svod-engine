@@ -98,6 +98,14 @@ Tokens and keystore passwords are **secret references** resolved by `Secrets`:
 `env:NAME`, `file:/path`, `keychain:[service/]account` (macOS Keychain via the `security`
 CLI; service defaults to `svod`), or a literal. Prefer `env:`/`keychain:` over literals.
 
+## Claude Code hooks (`hooks/`)
+
+`hooks/svod-session-start.sh` (`SessionStart`) prints the active rule book and the vault changes
+since the last session. `hooks/svod-capture.sh` (`Stop`, `PreCompact`, `SessionEnd`) posts the
+session transcript to the capture store. Both use the App API only and need `bash`, `curl` and `jq`.
+Setup, the `settings.json` snippet and the environment variables are in
+[docs/claude-code-hooks.md](../docs/claude-code-hooks.md).
+
 ## Self-update
 
 `self-update.sh` is a skeleton: it must call the engine's **API-compat preflight**
