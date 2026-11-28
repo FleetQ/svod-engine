@@ -22,6 +22,12 @@ independently of the engine; each entry notes the contract version it ships.
   the working tree); renames are not followed. A note missing at HEAD is `not_found` / 404. The tool is in the
   reader set; vault grants apply as for `read`, and the App API hides an ungranted vault as 404. MCP now has
   23 tools.
+- Ready-made Claude Code hook scripts in `dist/hooks/`, with a guide in `docs/claude-code-hooks.md`.
+  `svod-session-start.sh` (`SessionStart`) prints the rule book (`GET /api/v1/memory/rulebook`) and the vault
+  changes since the last session (`GET /api/v1/changes?since=` the saved head). `svod-capture.sh` (`Stop`,
+  `PreCompact`, `SessionEnd`) posts the compacted transcript to `POST /api/v1/memory/capture`; `Stop` posts only
+  on the first capture or once the transcript has doubled. A test checks the routes and fields the scripts declare
+  against the contract, the server and a live engine. No contract change.
 
 ## v1.35.0 — 2026-11-26 (App API contract 0.42.0, unchanged)
 

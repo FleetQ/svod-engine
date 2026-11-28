@@ -237,6 +237,11 @@ Claude Code — run:
 claude mcp add --transport http svod-memory http://127.0.0.1:7518/mcp --header "Authorization: Bearer friday-write-token"
 ```
 
+For Claude Code there are also ready-made hook scripts in `dist/hooks/`. At session start they show the
+active rule book and the vault changes since your last session. On `Stop`, `PreCompact` and `SessionEnd`
+they capture the transcript into the quarantined session store. See
+[Claude Code hooks for Svod](docs/claude-code-hooks.md).
+
 Codex CLI — add to `~/.codex/config.toml`:
 
 ```toml
