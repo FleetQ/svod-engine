@@ -130,8 +130,10 @@ and use the steps under [Verify](#verify) on your own machine.
 - **Best-effort.** Every exit in the scripts is `exit 0`, so a hook should never block Claude Code.
   If the engine is down, no size is recorded and the next event tries again. A crash or killed
   terminal (no `SessionEnd`) should lose at most the part since the last doubling.
-- **A half-written last JSONL line** makes `jq` fail, so that event posts nothing. The next event
-  tries again.
+- **A half-written last JSONL line**, or a lone surrogate escape such as `\uD800`, makes `jq` fail,
+  so that event posts nothing. The next event tries again.
+- **Two first captures** of one session that land in different seconds can create two session
+  notes, because the note path carries `endedAt`.
 - **Captured transcripts never appear in recall.** That is on purpose: they can hold secrets, and
   the write-path secret scanner is skipped for them. Distill them into typed notes to make them
   findable.
