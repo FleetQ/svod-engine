@@ -58,15 +58,22 @@ object RulesExport {
             if (group.isEmpty()) continue
             sb.append("\n## ").append(HEADINGS.getValue(type)).append('\n')
             for (r in group) {
-                sb.append("\n### ").append(r.title.replace('\n', ' ')).append('\n')
-                sb.append("_Source: `").append(r.path).append("` @ ").append(r.commit?.take(12) ?: "uncommitted").append("_\n")
-                val body = r.body.replace("\r\n", "\n")
+                sb.append("\n### ").append(escapeMarkers(r.title.replace('\n', ' '))).append('\n')
+                sb.append("_Source: `").append(escapeMarkers(r.path)).append("` @ ").append(r.commit?.take(12) ?: "uncommitted").append("_\n")
+                val body = escapeMarkers(r.body.replace("\r\n", "\n"))
                 if (body.isNotEmpty()) sb.append('\n').append(body).append('\n')
             }
         }
         sb.append(END)
         return sb.toString()
     }
+
+    /**
+     * A note that quotes [BEGIN] or [END] (e.g. one explaining export-rules) must not put a live marker into the
+     * section, or the next export would see malformed markers. HTML-escaped, the text still reads the same.
+     */
+    private fun escapeMarkers(text: String): String =
+        text.replace(BEGIN, "&lt;!-- svod:rules:begin --&gt;").replace(END, "&lt;!-- svod:rules:end --&gt;")
 
     /** [existing] with its managed section replaced by [section] (or [section] appended when there is none). */
     fun splice(existing: String?, section: String, file: String = "the target file"): String {

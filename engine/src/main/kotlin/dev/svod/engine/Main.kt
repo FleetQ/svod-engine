@@ -316,6 +316,17 @@ private fun runDigest(args: List<String>) {
     }
 }
 
+/**
+ * Opens the config's default vault ([SvodConfig.vault], which honours `vaults` over `vaultPath`) and exports its
+ * rules into [target]. The inside-the-vault guard uses the root the engine actually opened.
+ */
+internal fun exportRules(config: SvodConfig, target: Path): RulesExport.Result {
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    return SvodEngine.open(config.vault(), scope, SecretScanner(config.secretScanning)).use { engine ->
+        runBlocking { RulesExport.export(engine, engine.root, target) }
+    }
+}
+
 /** `svod-engine export-rules <config.json> <AGENTS.md|CLAUDE.md>`: managed rules section; engine stopped. */
 private fun runExportRules(args: List<String>) {
     if (args.size != 2 || args.any { it.startsWith("-") }) {
@@ -324,11 +335,8 @@ private fun runExportRules(args: List<String>) {
     }
     try {
         val config = SvodConfig.loadOrThrowValidated(Paths.get(args[0]))
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        SvodEngine.open(config.vault(), scope, SecretScanner(config.secretScanning)).use { engine ->
-            val r = runBlocking { RulesExport.export(engine, Paths.get(config.vaultPath), Paths.get(args[1])) }
-            println("export-rules: ${r.rules} rules → ${r.target} (${if (r.changed) "written" else "unchanged"})")
-        }
+        val r = exportRules(config, Paths.get(args[1]))
+        println("export-rules: ${r.rules} rules → ${r.target} (${if (r.changed) "written" else "unchanged"})")
     } catch (e: VaultLockedException) {
         System.err.println("svod-engine export-rules: ${e.message} — stop the engine first (export-rules runs with the engine stopped)")
         exitProcess(2)

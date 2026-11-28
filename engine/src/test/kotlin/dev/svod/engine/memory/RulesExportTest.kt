@@ -204,6 +204,23 @@ class RulesExportTest {
     }
 
     @Test
+    fun `a note quoting the markers does not break later exports`() = runBlocking {
+        write(
+            "rules/how.md",
+            note("procedure", "About ${RulesExport.END}", "Keep text outside ${RulesExport.BEGIN} and ${RulesExport.END}."),
+        )
+        val target = outDir.resolve("AGENTS.md")
+        Files.writeString(target, "intro\n")
+        assertTrue(RulesExport.export(engine, fx.root, target, now).changed)
+        val text = Files.readString(target)
+        assertEquals(1, text.split(RulesExport.BEGIN).size - 1, text)
+        assertEquals(1, text.split(RulesExport.END).size - 1, text)
+        assertTrue("&lt;!-- svod:rules:end --&gt;" in text, text)
+        assertFalse(RulesExport.export(engine, fx.root, target, now).changed)
+        assertEquals(text, Files.readString(target))
+    }
+
+    @Test
     fun `no rules still writes the section`() = runBlocking {
         write("notes/x.md", note("fact", "Just a fact", "x"))
         val out = renderNow()
