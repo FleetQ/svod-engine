@@ -67,6 +67,24 @@ class McpBlameToolTest {
     }
 
     @Test
+    fun `renames are not followed, a directory is not_found and CR is dropped`() {
+        runBlocking {
+            McpFixture().use { fx ->
+                val w = fx.tools.write(fx.write, "dir/old.md", "a\r\nb\r\n", expectedRevision = null)
+                fx.tools.move(fx.write, "dir/old.md", "dir/new.md", w.data["revision"]!!.jsonPrimitive.content)
+                val moved = headCommit(fx)
+                val lines = fx.tools.blame(fx.read, "/dir/new.md").let {
+                    assertEquals("dir/new.md", it.data["path"]!!.jsonPrimitive.content)
+                    it.data["lines"]!!.jsonArray.map { l -> l.jsonObject }
+                }
+                assertEquals(listOf("a", "b"), lines.map { it.s("text") })
+                assertEquals(listOf(moved, moved), lines.map { it.s("commit") })
+                assertEquals("not_found", fx.tools.blame(fx.read, "dir").status)
+            }
+        }
+    }
+
+    @Test
     fun `blame of a missing note is not_found`() {
         runBlocking {
             McpFixture().use { fx ->

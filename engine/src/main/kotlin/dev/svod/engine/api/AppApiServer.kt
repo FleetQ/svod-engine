@@ -488,7 +488,7 @@ class AppApiServer(
                 val vc = vault() ?: return@get call.notFound("vault")
                 val path = call.path() ?: return@get call.badRequest("missing path")
                 val lines = vc.engine.blame(path) ?: return@get call.notFound(path)
-                call.respond(FileBlameDto(path, lines.map { BlameLineDto(it.line, it.text, it.commit, it.authorName, it.authorEmail, it.epochSeconds, it.agent) }))
+                call.respond(FileBlameDto(dev.svod.engine.core.VaultPath.of(path).value, lines.map { BlameLineDto(it.line, it.text, it.commit, it.authorName, it.authorEmail, it.epochSeconds, it.agent) }))
             }
             get("/api/v1/changes") {
                 val vc = vault() ?: return@get call.notFound("vault")

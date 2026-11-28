@@ -461,26 +461,31 @@ class GitRepo private constructor(
      * (every engine write is a commit). Renames are not followed.
      */
     fun blame(path: String): List<BlameLine>? {
-        if (readAtRevision(path, Constants.HEAD) == null) return null
         val head = repo.resolve(Constants.HEAD) ?: return null
-        val result = git.blame().setFilePath(path).setStartCommit(head).call() ?: return null
+        // Only a regular file at HEAD: jgit's recursive path filter would otherwise blame the first file
+        // under a directory path and report it as [path].
+        val isFile = RevWalk(repo).use { rw ->
+            TreeWalk.forPath(repo, path, rw.parseCommit(head).tree)
+                ?.use { (it.getRawMode(0) and FileMode.TYPE_MASK) == FileMode.TYPE_FILE } ?: false
+        }
+        if (!isFile) return null
+        // jgit follows renames by default; the documented contract is that blame does not.
+        val result = git.blame().setFilePath(path).setStartCommit(head).setFollowFileRenames(false).call() ?: return null
         val contents = result.resultContents
-        RevWalk(repo).use { rw ->
-            val agents = HashMap<ObjectId, String?>()
-            return (0 until contents.size()).map { i ->
-                val src = result.getSourceCommit(i)
-                val author = result.getSourceAuthor(i) ?: src.authorIdent
-                val agent = agents.getOrPut(src.id) { agentTrailer(rw.parseCommit(src.id).fullMessage) }
-                BlameLine(
-                    line = i + 1,
-                    text = contents.getString(i),
-                    commit = src.name,
-                    authorName = author.name,
-                    authorEmail = author.emailAddress,
-                    epochSeconds = author.whenAsInstant.epochSecond,
-                    agent = agent,
-                )
-            }
+        val sources = (0 until contents.size()).map { result.getSourceCommit(it) }
+        // associateWith keeps null values, so commits without a trailer are parsed once too.
+        val agents = sources.distinct().associateWith { agentTrailer(it.fullMessage) }
+        return sources.mapIndexed { i, src ->
+            val author = result.getSourceAuthor(i)
+            BlameLine(
+                line = i + 1,
+                text = contents.getString(i).removeSuffix("\r"),
+                commit = src.name,
+                authorName = author.name,
+                authorEmail = author.emailAddress,
+                epochSeconds = author.whenAsInstant.epochSecond,
+                agent = agents[src],
+            )
         }
     }
 

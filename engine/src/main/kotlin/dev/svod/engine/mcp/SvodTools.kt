@@ -342,7 +342,7 @@ class SvodTools(
     suspend fun blame(agent: AgentIdentity, path: String): ToolResult = guarded(agent, "blame", write = false) {
         val lines = engine.blame(path) ?: return@guarded ToolResult.notFound(path)
         ToolResult.ok {
-            put("path", path)
+            put("path", dev.svod.engine.core.VaultPath.of(path).value)
             putJsonArray("lines") {
                 lines.forEach { l ->
                     addJsonObject {
