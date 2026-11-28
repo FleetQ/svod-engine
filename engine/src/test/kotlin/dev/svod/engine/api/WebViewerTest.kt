@@ -216,9 +216,16 @@ class WebViewerTest {
             )) {
                 assertTrue(js.contains(s), "app.js must contain $s")
             }
-            // connect(), loadReview() and loadConflicts() all route a 401 to the locked state.
-            assertTrue(Regex("""status === 401""").findAll(js).count() >= 3, "app.js must handle 401 in connect, review and conflicts")
-            assertTrue(Regex("""showLocked\(\)""").findAll(js).count() >= 3, "showLocked() must be called on each 401 path")
+            // connect(), loadReview() and loadConflicts() all route a 401 to the locked state. Match the
+            // exact call sites: act() and resolveConflict() already test `status === 401`, and the
+            // `function showLocked()` declaration would also count as a bare `showLocked()` match.
+            for (s in listOf("if (seq === reviewSeq) showLocked();", "if (seq === conflictSeq) showLocked();")) {
+                assertTrue(js.contains(s), "app.js must route a list 401 to the locked state: $s")
+            }
+            assertTrue(
+                Regex("""probe\.status === 401\) \{\s*showLocked\(\);""").containsMatchIn(js),
+                "connect() must route a 401 probe to the locked state",
+            )
             val css = get(port, "/style.css").body()
             assertTrue(css.contains(".linkish"), "style.css must style the in-row key button")
         }

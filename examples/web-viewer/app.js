@@ -733,11 +733,9 @@
     return b;
   }
 
-  function showLocked() {
-    const text = apiKey
-      ? "The API key was rejected. Enter another above to load this."
-      : "API key needed. Enter an API key above to load this.";
-    // A list reply still in flight must not draw rows over this.
+  // Drop both lists' rows and counts. A list reply still in flight (for the previous engine or key)
+  // must not draw rows back over what replaces them.
+  function resetLists() {
     reviewSeq++;
     conflictSeq++;
     clearTimeout(reviewTimer);
@@ -746,6 +744,16 @@
     conflictItems.clear();
     $("reviewCount").textContent = "";
     $("conflictCount").textContent = "";
+  }
+
+  function showLocked() {
+    const text = apiKey
+      ? "The API key was rejected. Enter another above to load this."
+      : "API key needed. Enter an API key above to load this.";
+    // Every 401 path lands here, so the pill never says "connected" over a locked pane.
+    statusEl.textContent = apiKey ? "key rejected" : "API key needed";
+    statusEl.className = "status off";
+    resetLists();
     for (const list of [reviewList, conflictList]) {
       list.removeAttribute("aria-busy");
       setPlaceholder(list, text + " ").append(keyButton());
@@ -757,6 +765,7 @@
   }
 
   function showLoading() {
+    resetLists();
     for (const list of [reviewList, conflictList]) {
       setPlaceholder(list, "Loading...");
       list.setAttribute("aria-busy", "true");
@@ -773,11 +782,11 @@
       // would only be refused and retried every 1.5 s.
       const probe = await api(`${base}/api/v1/index/status`, { cache: "no-store" });
       if (probe.status === 401) {
-        statusEl.textContent = apiKey ? "key rejected" : "API key needed";
-        statusEl.className = "status off";
         showLocked();
         return;
       }
+      // A reconnect that is now accepted must not leave the feed saying a key is needed.
+      if (feedEmpty && feedEmpty.isConnected) feedEmpty.textContent = feedWatching;
       refreshIndexInfo();
       loadReview();
       loadConflicts();
@@ -804,16 +813,10 @@
     conflictDrafts.clear();
     // Its rows too: a resolve clicked on one would be sent to the new engine. A list request still
     // in flight to the old engine must not draw them back.
-    conflictSeq++;
-    clearTimeout(conflictTimer);
-    conflictItems.clear();
-    $("conflictCount").textContent = "";
-    reviewSeq++;
-    clearTimeout(reviewTimer);
-    reviewItems.clear();
-    $("reviewCount").textContent = "";
     showLoading();
-    if (ws) try { ws.close(); } catch (_) {}
+    // Without dropping onclose, the old socket's close schedules a second connect(): two live sockets.
+    clearTimeout(reconnectTimer);
+    if (ws) try { ws.onclose = null; ws.close(); } catch (_) {}
     connect();
   });
   keyEl.addEventListener("change", () => {
