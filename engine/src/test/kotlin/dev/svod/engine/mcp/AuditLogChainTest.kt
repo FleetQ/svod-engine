@@ -179,6 +179,25 @@ class AuditLogChainTest {
     }
 
     @Test
+    fun `an entry after a torn last line starts a new line and chains past it`() {
+        val log = AuditLog(file)
+        log.record("a", "write", "ok", "n.md")
+        Files.writeString(file, Files.readString(file) + """{"ts":2,"agentId":"a","to""")
+        log.record("a", "write", "ok", "m.md")
+        val raw = Files.readAllLines(file)
+        assertEquals(3, raw.size, raw.joinToString("\n"))
+        assertEquals("m.md", entry(raw[2]).path)
+        val broken = AuditLog.verify(file)
+        assertEquals(AuditChainReport.Status.BROKEN, broken.status)
+        assertEquals(2L, broken.brokenLine)
+        // An operator deleting the torn line restores the chain.
+        writeLines(listOf(raw[0], raw[2]))
+        val r = AuditLog.verify(file)
+        assertEquals(AuditChainReport.Status.OK, r.status, r.toString())
+        assertEquals(2, r.chained)
+    }
+
+    @Test
     fun `a garbage line is reported`() {
         val log = AuditLog(file)
         log.record("a", "write", "ok", "n.md")

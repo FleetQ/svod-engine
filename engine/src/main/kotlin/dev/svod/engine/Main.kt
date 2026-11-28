@@ -342,11 +342,20 @@ private fun runAuditVerify(args: List<String>) {
     exitProcess(code)
 }
 
-/** One line per configured vault and the exit code: 1 when any vault's chain is broken, else 0. */
+/**
+ * One line per configured vault and the exit code: 1 when any vault's chain is broken, else 2 when a
+ * vault's log could not be read (one unreadable log does not hide the other vaults' results), else 0.
+ */
 internal fun auditVerifyReport(config: SvodConfig): Pair<List<String>, Int> {
     var broken = false
+    var unreadable = false
     val lines = config.resolvedVaults().map { v ->
-        val r = AuditLog.verify(AuditLog.fileFor(Paths.get(v.path)))
+        val r = try {
+            AuditLog.verify(AuditLog.fileFor(Paths.get(v.path)))
+        } catch (e: java.io.IOException) {
+            unreadable = true
+            return@map "vault ${v.id}: cannot read the audit log: ${e.message}"
+        }
         when (r.status) {
             AuditChainReport.Status.ABSENT -> "vault ${v.id}: no audit log"
             AuditChainReport.Status.OK -> "vault ${v.id}: ok (${r.chained} chained, ${r.preChain} pre-chain)"
@@ -356,7 +365,7 @@ internal fun auditVerifyReport(config: SvodConfig): Pair<List<String>, Int> {
             }
         }
     }
-    return lines to (if (broken) 1 else 0)
+    return lines to (if (broken) 1 else if (unreadable) 2 else 0)
 }
 
 private fun runImport(args: List<String>) {

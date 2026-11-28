@@ -1,5 +1,6 @@
 package dev.svod.engine.mcp
 
+import dev.svod.engine.index.sha256Hex
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.nio.ByteBuffer
@@ -7,7 +8,6 @@ import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
-import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 /** One recorded action. Mutations are always audited; reads may be audited too. */
@@ -56,13 +56,14 @@ class AuditLog(private val file: Path, private val clock: () -> Long = System::c
         detail: String? = null,
     ) {
         synchronized(lock) {
-            // A missing file, a pre-chain line or an undecodable (torn) last line starts the chain at GENESIS.
-            val prev = lastNonBlankLine(file)
-                ?.let { runCatching { lenient.decodeFromString(AuditEntry.serializer(), it) }.getOrNull() }
-                ?.hash ?: GENESIS
+            // Chain from the last decodable entry, skipping undecodable (torn) lines, so removing a torn line
+            // restores a valid chain. A missing file or a pre-chain last entry starts the chain at GENESIS.
+            val tail = readTail(file)
+            val prev = tail.last?.hash ?: GENESIS
             val unhashed = AuditEntry(clock(), agentId, tool, outcome, path, target, revision, detail, prevHash = prev)
             val entry = unhashed.copy(hash = hashOf(unhashed))
-            val line = json.encodeToString(AuditEntry.serializer(), entry) + "\n"
+            // A torn last line (crash mid-write) has no newline: end it first so the new entry is not glued onto it.
+            val line = (if (tail.endsWithNewline) "" else "\n") + json.encodeToString(AuditEntry.serializer(), entry) + "\n"
             // Agent ids and note paths: owner-only, like the App API audit (creates 0600, restricts an older 0644 file).
             dev.svod.engine.security.SecretFiles.append(file, line)
         }
@@ -85,40 +86,47 @@ class AuditLog(private val file: Path, private val clock: () -> Long = System::c
         val GENESIS: String = "0".repeat(64)
 
         /** Lowercase hex SHA-256 of the UTF-8 JSON of [e] without its hash (fields in declaration order). */
-        fun hashOf(e: AuditEntry): String {
-            val bytes = json.encodeToString(AuditEntry.serializer(), e.copy(hash = null)).toByteArray(Charsets.UTF_8)
-            return MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-        }
+        fun hashOf(e: AuditEntry): String = sha256Hex(json.encodeToString(AuditEntry.serializer(), e.copy(hash = null)))
 
         /** The vault's agent audit trail file. */
         fun fileFor(vaultRoot: Path): Path = vaultRoot.resolve(".svod").resolve("audit").resolve("audit.log")
 
-        private fun isBlankByte(b: Byte): Boolean = b == '\n'.code.toByte() || b == '\r'.code.toByte() ||
-            b == ' '.code.toByte() || b == '\t'.code.toByte()
+        /** The last decodable entry of a file (null when none) and whether the file is empty or ends with '\n'. */
+        private class Tail(val last: AuditEntry?, val endsWithNewline: Boolean)
 
-        /** The last non-blank line of [file], read backwards from the end in chunks; null when none or not UTF-8. */
-        private fun lastNonBlankLine(file: Path): String? {
-            if (!Files.isRegularFile(file)) return null
+        /**
+         * Reads [file] backwards from the end in chunks, line by line, and returns the last non-blank line that
+         * decodes as an [AuditEntry]; undecodable (torn, garbage, not UTF-8) lines are skipped.
+         */
+        private fun readTail(file: Path): Tail {
+            if (!Files.isRegularFile(file)) return Tail(null, true)
             FileChannel.open(file, StandardOpenOption.READ).use { ch ->
                 var pos = ch.size()
-                var tail = ByteArray(0)
+                var buf = ByteArray(0)   // file bytes [pos, pos + end) not yet split into lines
+                var end = 0
+                var endsWithNewline = true
                 while (true) {
-                    var end = tail.size
-                    while (end > 0 && isBlankByte(tail[end - 1])) end--
-                    if (end > 0) {
-                        var nl = end - 1
-                        while (nl >= 0 && tail[nl] != '\n'.code.toByte()) nl--
-                        if (nl >= 0 || pos == 0L) return decodeStrict(tail.copyOfRange(nl + 1, end))
-                    } else if (pos == 0L) {
-                        return null
+                    var nl = end - 1
+                    while (nl >= 0 && buf[nl] != '\n'.code.toByte()) nl--
+                    if (nl < 0 && pos > 0L) {
+                        val n = minOf(TAIL_CHUNK.toLong(), pos).toInt()
+                        pos -= n
+                        val chunk = ByteBuffer.allocate(n)
+                        while (chunk.hasRemaining()) {
+                            if (ch.read(chunk, pos + chunk.position()) < 0) break
+                        }
+                        if (buf.isEmpty() && chunk.position() > 0) endsWithNewline = chunk.array()[chunk.position() - 1] == '\n'.code.toByte()
+                        buf = chunk.array().copyOf(chunk.position()) + buf.copyOf(end)
+                        end = buf.size
+                        continue
                     }
-                    val n = minOf(TAIL_CHUNK.toLong(), pos).toInt()
-                    pos -= n
-                    val buf = ByteBuffer.allocate(n)
-                    while (buf.hasRemaining()) {
-                        if (ch.read(buf, pos + buf.position()) < 0) break
+                    val line = decodeStrict(buf.copyOfRange(nl + 1, end))
+                    if (line != null && line.isNotBlank()) {
+                        val e = runCatching { lenient.decodeFromString(AuditEntry.serializer(), line) }.getOrNull()
+                        if (e != null) return Tail(e, endsWithNewline)
                     }
-                    tail = buf.array().copyOf(buf.position()) + tail
+                    if (nl < 0) return Tail(null, endsWithNewline)
+                    end = nl
                 }
             }
         }
@@ -130,13 +138,10 @@ class AuditLog(private val file: Path, private val clock: () -> Long = System::c
                 .decode(ByteBuffer.wrap(raw)).toString()
         }.getOrNull()
 
-        /** Raw lines of [file] split on '\n', each decoded on its own (null when not valid UTF-8). */
-        private fun readLines(file: Path): List<String?> {
-            // Split raw bytes on '\n' and decode each line on its own with a strict UTF-8 decoder, so a
-            // torn multi-byte character spoils only its own line, never the whole read.
-            return splitLines(Files.readAllBytes(file))
-        }
-
+        /**
+         * Raw lines split on '\n', each decoded on its own with a strict UTF-8 decoder (null when not valid
+         * UTF-8), so a torn multi-byte character spoils only its own line, never the whole read.
+         */
         private fun splitLines(bytes: ByteArray): List<String?> {
             val lines = ArrayList<String?>()
             var start = 0
@@ -209,7 +214,7 @@ class AuditLog(private val file: Path, private val clock: () -> Long = System::c
             var skipped = 0
             val matches = ArrayList<AuditRecord>()
             // A torn multi-byte character spoils only its own line (skipped), never the whole read.
-            readLines(file).forEachIndexed { i, line ->
+            splitLines(Files.readAllBytes(file)).forEachIndexed { i, line ->
                 if (line == null) { skipped++; return@forEachIndexed }
                 if (line.isBlank()) return@forEachIndexed
                 val e = runCatching { lenient.decodeFromString(AuditEntry.serializer(), line) }.getOrNull()

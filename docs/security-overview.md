@@ -319,7 +319,8 @@ The engine makes no outbound connections except these:
 - **`audit-verify` can raise a false alarm while the engine writes.** A last line without its
   newline is reported as an incomplete last line (still being written, or torn by a crash).
   Run the check again; if it persists, the line was torn by a crash and every later run exits 1
-  until an operator looks at it.
+  until an operator looks at it. The engine's next entry starts on a new line and chains from the
+  last whole entry, so deleting the torn line restores a valid chain.
 - **Purge does not rewrite git history** (see [Deletion and retention](#deletion-and-retention)).
 - **No key or token expiry.** Keys stay valid until revoked or rotated.
 - **The secret scan has exceptions.** Session transcripts stored through
