@@ -237,6 +237,15 @@ class ReadmeConsistencyTest {
     }
 
     @Test
+    fun `How it compares links to the Hindsight page and the file exists`() {
+        assertTrue(
+            "](docs/compare-hindsight.md)" in section("How it compares"),
+            "README '## How it compares' has no link to docs/compare-hindsight.md",
+        )
+        assertTrue(Files.exists(repoRoot.resolve("docs/compare-hindsight.md")), "docs/compare-hindsight.md does not exist")
+    }
+
+    @Test
     fun `the Letta column history cell reflects Context Repositories`() {
         val table = comparisonTable()
         assertTrue(table.isNotEmpty(), "README '## How it compares' has no table")

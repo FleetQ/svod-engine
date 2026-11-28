@@ -69,6 +69,18 @@ class SecretScanner(private val enabled: Boolean) {
             Rule("google-api-key", Regex("\\bAIza[0-9A-Za-z_\\-]{35}\\b")),
             Rule("jwt", Regex("\\beyJ[A-Za-z0-9_\\-]{8,}\\.eyJ[A-Za-z0-9_\\-]{8,}\\.[A-Za-z0-9_\\-]{8,}\\b")),
             Rule("private-key-assignment", Regex("(?i)(?:api[_-]?key|secret[_-]?key|access[_-]?token)\"?\\s*[:=]\\s*\"[A-Za-z0-9_\\-]{24,}\"")),
+            // OpenAI project/service-account/admin keys, or the legacy form with the T3BlbkFJ marker; never sk-ant-.
+            Rule("openai-api-key", Regex("\\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_\\-]{20,}|\\bsk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}\\b")),
+            Rule("anthropic-api-key", Regex("\\bsk-ant-(?:api|admin)\\d{2}-[A-Za-z0-9_\\-]{32,}")),
+            // Live secret and restricted keys only: sk_test_ and publishable pk_live_ keys are not blocked.
+            Rule("stripe-live-key", Regex("\\b(?:sk|rk)_live_[A-Za-z0-9]{24,}\\b")),
+            Rule("github-fine-grained-token", Regex("\\bgithub_pat_[A-Za-z0-9_]{50,}")),
+            Rule("gitlab-token", Regex("\\bglpat-[A-Za-z0-9_\\-]{20,}")),
+            Rule("npm-token", Regex("\\bnpm_[A-Za-z0-9]{36}\\b")),
+            Rule("huggingface-token", Regex("\\bhf_[A-Za-z0-9]{34,}\\b")),
         )
+
+        /** Every rule id [scan] can report, in the order it checks them (read by the docs test). */
+        val RULE_NAMES: List<String> = listOf("private-key") + RULES.map { it.name }
     }
 }

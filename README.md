@@ -613,6 +613,8 @@ Moving off a hosted memory store? See [Svod vs Mem0](docs/compare-mem0.md).
 
 Weighing git-backed agent memory? See [Svod vs Letta Context Repositories](docs/compare-letta.md).
 
+Want LLM-extracted facts vs memory you can read? See [Svod vs Hindsight](docs/compare-hindsight.md).
+
 ---
 
 ## Products & repos

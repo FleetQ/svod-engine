@@ -22,6 +22,19 @@ independently of the engine; each entry notes the contract version it ships.
   the working tree); renames are not followed. A note missing at HEAD is `not_found` / 404. The tool is in the
   reader set; vault grants apply as for `read`, and the App API hides an ungranted vault as 404. MCP now has
   23 tools.
+- Seven new pre-commit secret-scan rules (with `secretScanning` on, a note write containing one is blocked
+  before commit): `openai-api-key`, `anthropic-api-key`, `stripe-live-key`, `github-fine-grained-token`,
+  `gitlab-token`, `npm-token` and `huggingface-token`. Stripe test keys and publishable keys are not blocked.
+  `docs/security-overview.md` now lists every rule id, kept in sync with the code by `SecurityOverviewDocsTest`.
+  No contract change.
+
+### Docs — Svod vs Hindsight
+
+- New `docs/compare-hindsight.md` compares Svod with Hindsight by Vectorize: what both share, where Svod differs,
+  where Hindsight is ahead, and dated sources. Hindsight facts that were not confirmed from a primary source are
+  marked ⚠️. README '## How it compares' links to it, and `CompareHindsightDocsConsistencyTest` checks its sections,
+  its MCP tool count against the live tools/list, its dated sources, and that every Hindsight cell in its comparison
+  table is marked ⚠️ with a date. No contract change.
 
 ## v1.35.0 — 2026-11-26 (App API contract 0.42.0, unchanged)
 
