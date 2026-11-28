@@ -257,6 +257,26 @@ paths:
               schema: { $ref: "#/components/schemas/FileContent" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/file/blame:
+    get:
+      tags: [files]
+      summary: Line-by-line attribution for a note at HEAD
+      description: >
+        Each line of the note as committed at HEAD, with the commit, author, date and `Svod-Agent` of the
+        commit that last changed it. Committed history only (not the working tree); renames are not followed.
+        Since 0.43.0.
+      operationId: fileBlame
+      parameters:
+        - $ref: "#/components/parameters/PathQuery"
+      responses:
+        "200":
+          description: Blame of every line, in order
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileBlame" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/file/links:
     get:
       tags: [graph]
@@ -1872,6 +1892,29 @@ components:
         agent:
           type: string
           description: Agent id from the commit's `Svod-Agent:` trailer; absent otherwise. Since 0.39.0 (ADR-0020).
+
+    FileBlame:
+      type: object
+      required: [path, lines]
+      properties:
+        path: { type: string }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/BlameLine" }
+
+    BlameLine:
+      type: object
+      required: [line, text, commit, author, email, epochSeconds]
+      properties:
+        line: { type: integer, description: "1-based line number." }
+        text: { type: string, description: "Line content without its line ending." }
+        commit: { type: string, description: "Commit that last changed this line." }
+        author: { type: string }
+        email: { type: string }
+        epochSeconds: { type: integer, format: int64 }
+        agent:
+          type: string
+          description: Agent id from that commit's `Svod-Agent:` trailer; absent otherwise.
 
     ChangesPage:
       type: object

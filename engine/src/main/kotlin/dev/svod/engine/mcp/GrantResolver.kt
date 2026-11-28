@@ -8,7 +8,7 @@ package dev.svod.engine.mcp
 object GrantResolver {
     val REQUIRED: Map<String, GrantRole> = buildMap {
         listOf(
-            "read", "search", "context_pack", "list", "tree", "grep", "history", "diff", "get_revision", "link",
+            "read", "search", "context_pack", "list", "tree", "grep", "history", "diff", "get_revision", "blame", "link",
             "recent_changes", "graph_query", "graph_communities", "graph_community", "graph_status",
         ).forEach { put(it, GrantRole.READER) }
         listOf("write", "edit", "move", "delete", "remember", "extract_memories").forEach { put(it, GrantRole.WRITER) }

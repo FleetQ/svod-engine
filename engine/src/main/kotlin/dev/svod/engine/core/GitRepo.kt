@@ -455,6 +455,40 @@ class GitRepo private constructor(
         return null
     }
 
+    /**
+     * Line-level blame of [path] at HEAD: each line with the commit, author and `Svod-Agent` trailer that last
+     * changed it. Null when [path] does not exist at HEAD. Reads committed history only, never the working tree
+     * (every engine write is a commit). Renames are not followed.
+     */
+    fun blame(path: String): List<BlameLine>? {
+        val head = repo.resolve(Constants.HEAD) ?: return null
+        // Only a regular file at HEAD: jgit's recursive path filter would otherwise blame the first file
+        // under a directory path and report it as [path].
+        val isFile = RevWalk(repo).use { rw ->
+            TreeWalk.forPath(repo, path, rw.parseCommit(head).tree)
+                ?.use { (it.getRawMode(0) and FileMode.TYPE_MASK) == FileMode.TYPE_FILE } ?: false
+        }
+        if (!isFile) return null
+        // jgit follows renames by default; the documented contract is that blame does not.
+        val result = git.blame().setFilePath(path).setStartCommit(head).setFollowFileRenames(false).call() ?: return null
+        val contents = result.resultContents
+        val sources = (0 until contents.size()).map { result.getSourceCommit(it) }
+        // associateWith keeps null values, so commits without a trailer are parsed once too.
+        val agents = sources.distinct().associateWith { agentTrailer(it.fullMessage) }
+        return sources.mapIndexed { i, src ->
+            val author = result.getSourceAuthor(i)
+            BlameLine(
+                line = i + 1,
+                text = contents.getString(i).removeSuffix("\r"),
+                commit = src.name,
+                authorName = author.name,
+                authorEmail = author.emailAddress,
+                epochSeconds = author.whenAsInstant.epochSecond,
+                agent = agents[src],
+            )
+        }
+    }
+
     /** Unified diff of [path] between two revisions (commit ids/refs). Empty if unchanged. */
     fun diff(path: String, fromRevision: String, toRevision: String): String {
         val from = repo.resolve(fromRevision) ?: throw IllegalArgumentException("unknown revision: $fromRevision")
