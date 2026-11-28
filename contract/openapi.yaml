@@ -722,6 +722,54 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
 
+  /api/v1/audit:
+    get:
+      tags: [meta]
+      summary: >
+        The vault's agent audit trail (admin only), newest first. ADDITIVE in 0.42.0 (no contract
+        version bump; older clients never call it). Read-only: the route never creates, writes or
+        truncates the trail. Lines record agent writes, blocked writes, conflicts, role denials, rate
+        limits and secret overrides. A malformed or half-written line is skipped and counted in
+        `skipped`, never an error. A non-admin gets 403; an unknown or ungranted vault 404.
+      operationId: getAudit
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+        - name: agent
+          in: query
+          required: false
+          description: Only entries by this agent id.
+          schema: { type: string }
+        - name: outcome
+          in: query
+          required: false
+          description: Comma-separated outcomes to keep (e.g. `blocked,conflict`). Omitted ⇒ every outcome.
+          schema: { type: string }
+        - name: since
+          in: query
+          required: false
+          description: Only entries at or after this time — an ISO-8601 instant or epoch milliseconds. Anything else is 400.
+          schema: { type: string }
+        - name: before
+          in: query
+          required: false
+          description: Paging cursor — only entries with `seq` below this (pass the previous page's `nextBefore`).
+          schema: { type: integer, format: int64 }
+        - name: limit
+          in: query
+          required: false
+          description: Page size, 1–500 (default 100). Out of range is 400.
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200":
+          description: One page of the trail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/users:
     get:
       tags: [meta]
@@ -2630,6 +2678,37 @@ components:
               lastCommitAt: { type: string, format: date-time, nullable: true, description: "Time of the vault's HEAD commit; absent for an empty repository." }
         agents: { type: integer, description: "Number of configured MCP agents." }
         lastAgentRequestAt: { type: string, format: date-time, nullable: true, description: "Newest authenticated MCP request by any agent since process start; absent when none." }
+
+    AuditPage:
+      type: object
+      description: ADDITIVE in 0.42.0. One page of GET /api/v1/audit, newest first.
+      required: [entries, total, skipped]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEntry" }
+        total: { type: integer, description: "Entries matching the filters, before paging." }
+        skipped: { type: integer, description: "Lines that could not be read (malformed or half-written) and were left out." }
+        nextBefore: { type: integer, format: int64, nullable: true, description: "Pass as `before` for the next (older) page; absent when no more matches remain." }
+
+    AuditEntry:
+      type: object
+      description: ADDITIVE in 0.42.0. One line of a vault's agent audit trail.
+      required: [seq, ts, tsMs, agentId, tool, outcome]
+      properties:
+        seq: { type: integer, format: int64, description: "1-based line number in the trail; a stable paging cursor." }
+        ts: { type: string, format: date-time }
+        tsMs: { type: integer, format: int64, description: "Same instant as `ts`, in epoch milliseconds." }
+        agentId: { type: string }
+        tool: { type: string, description: "MCP tool (or App API action, e.g. conflicts.resolve) that was attempted." }
+        outcome: { type: string, description: "e.g. ok, blocked, conflict, denied, rate_limited, not_found, secret-override." }
+        path: { type: string, nullable: true }
+        target: { type: string, nullable: true }
+        revision: { type: string, nullable: true }
+        detail:
+          type: string
+          nullable: true
+          description: Scanner rule names and commit ids only — never the matched (secret) values.
 
     Metrics:
       type: object

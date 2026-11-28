@@ -267,6 +267,34 @@ data class ConflictEntryDto(
 data class ConflictsDto(val conflicts: List<ConflictEntryDto>)
 
 /**
+ * One line of a vault's agent audit trail (`GET /api/v1/audit`). [seq] is the 1-based line number, a
+ * stable paging cursor. [detail] carries rule names and commit ids, never matched secret values.
+ */
+@Serializable
+data class AuditEntryDto(
+    val seq: Long,
+    /** ISO-8601 instant. */
+    val ts: String,
+    val tsMs: Long,
+    val agentId: String,
+    val tool: String,
+    val outcome: String,
+    val path: String? = null,
+    val target: String? = null,
+    val revision: String? = null,
+    val detail: String? = null,
+)
+
+/** A page of the audit trail, newest first. Pass [nextBefore] as `before` for the next (older) page. */
+@Serializable
+data class AuditPageDto(
+    val entries: List<AuditEntryDto>,
+    val total: Int,
+    val skipped: Int,
+    val nextBefore: Long? = null,
+)
+
+/**
  * How to settle a sync conflict. `resolution` (0.36.0): `content` (default) writes [content] through
  * the normal, secret-scanned write; `keepMine` keeps the local file as it is (or its absence);
  * `acceptIncoming` takes the incoming version — when that version was quarantined for secrets, only
