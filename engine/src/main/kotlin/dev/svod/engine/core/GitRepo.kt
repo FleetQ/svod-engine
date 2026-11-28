@@ -356,6 +356,95 @@ class GitRepo private constructor(
         }
     }
 
+    /**
+     * Vault-wide change feed, newest first (jgit only, no subprocess). Walks from HEAD — skipping through
+     * [before] when given — back to [since]: a commit id/ref (that commit and its ancestors are left out) or an
+     * ISO-8601 instant / date (start of that UTC day; the walk stops at the first older commit). At most [max]
+     * commits; [ChangesPage.nextCursor] is the last returned commit when older ones remain. Each commit's paths
+     * are diffed against its first parent with rename detection: a rename into `.trash/` is a DELETE, one out of
+     * it a RESTORE. Unparsable [since] or unknown [before] throws [IllegalArgumentException].
+     */
+    fun changes(since: String?, before: String?, max: Int): ChangesPage {
+        val sinceRaw = since?.trim()?.takeIf { it.isNotEmpty() }
+        val beforeRaw = before?.trim()?.takeIf { it.isNotEmpty() }
+        val sinceCommit = sinceRaw?.let { resolveCommitOrNull(it) }
+        val sinceEpoch = if (sinceRaw != null && sinceCommit == null) {
+            runCatching { java.time.Instant.parse(sinceRaw).epochSecond }
+                .recoverCatching { java.time.LocalDate.parse(sinceRaw).atStartOfDay(java.time.ZoneOffset.UTC).toEpochSecond() }
+                .getOrElse { throw IllegalArgumentException("since must be a commit id or an ISO-8601 instant or date, got '$sinceRaw'") }
+        } else null
+        val beforeCommit = beforeRaw?.let { resolveCommitOrNull(it) ?: throw IllegalArgumentException("unknown revision: $beforeRaw") }
+        val head = repo.resolve(Constants.HEAD) ?: return ChangesPage(null, emptyList(), null)
+
+        val out = ArrayList<ChangeEntry>()
+        var more = false
+        DiffFormatter(org.eclipse.jgit.util.io.DisabledOutputStream.INSTANCE).use { df ->
+            df.setRepository(repo)
+            df.setDetectRenames(true)
+            /** One walk from [starts], skipping commits through [skipThrough]; false when that cursor was never met. */
+            fun walk(skipThrough: ObjectId?, starts: (RevWalk) -> List<ObjectId>): Boolean = RevWalk(repo).use { rw ->
+                starts(rw).forEach { rw.markStart(rw.parseCommit(it)) }
+                sinceCommit?.let { rw.markUninteresting(rw.parseCommit(it)) }
+                var skipping = skipThrough != null
+                for (c in rw) {
+                    if (skipping) {
+                        if (c == skipThrough) skipping = false
+                        continue
+                    }
+                    if (sinceEpoch != null && c.commitTime.toLong() < sinceEpoch) break
+                    if (out.size == max) { more = true; break }
+                    val parentTree = if (c.parentCount > 0) rw.parseCommit(c.getParent(0)).tree else null
+                    val all = df.scan(parentTree, c.tree).map(::pathChange)
+                    out += ChangeEntry(
+                        commit = c.name,
+                        authorName = c.authorIdent.name,
+                        authorEmail = c.authorIdent.emailAddress,
+                        epochSeconds = c.authorIdent.whenAsInstant.epochSecond,
+                        message = c.fullMessage.trim(),
+                        agent = agentTrailer(c.fullMessage),
+                        paths = all.take(CHANGES_MAX_PATHS),
+                        pathCount = all.size,
+                        pathsTruncated = all.size > CHANGES_MAX_PATHS,
+                    )
+                }
+                !skipping
+            }
+            // Page by re-walking from HEAD and skipping through the cursor: starting at the cursor's parents would
+            // drop the commits of a merged side branch that sort after the cursor but are not its ancestors. Only when
+            // that walk never meets the cursor (history rewritten, or the cursor is behind `since`) does a second walk
+            // start at its parents. One walk in the common case, instead of an isMergedInto walk plus this one.
+            if (!walk(beforeCommit) { listOf(head) } && beforeCommit != null) {
+                walk(null) { rw -> rw.parseCommit(beforeCommit).parents.toList() }
+            }
+        }
+        return ChangesPage(head.name, out, if (more) out.lastOrNull()?.commit else null)
+    }
+
+    private fun resolveCommitOrNull(rev: String): ObjectId? = try {
+        repo.resolve(rev)?.let { id -> RevWalk(repo).use { it.parseCommit(id).id } }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun pathChange(e: org.eclipse.jgit.diff.DiffEntry): PathChange = when (e.changeType) {
+        org.eclipse.jgit.diff.DiffEntry.ChangeType.ADD -> PathChange(e.newPath, ChangeKind.ADD)
+        org.eclipse.jgit.diff.DiffEntry.ChangeType.MODIFY -> PathChange(e.newPath, ChangeKind.MODIFY)
+        org.eclipse.jgit.diff.DiffEntry.ChangeType.DELETE -> PathChange(e.oldPath, ChangeKind.DELETE)
+        else -> {
+            // RENAME or COPY (rename detection pairs one deleted source with several adds as one RENAME plus COPYs,
+            // so a soft delete can come back as the COPY): the move into/out of `.trash/` decides first.
+            val toTrash = e.newPath.startsWith(TRASH_PREFIX)
+            val fromTrash = e.oldPath.startsWith(TRASH_PREFIX)
+            val kind = when {
+                toTrash && !fromTrash -> ChangeKind.DELETE
+                fromTrash && !toTrash -> ChangeKind.RESTORE
+                e.changeType == org.eclipse.jgit.diff.DiffEntry.ChangeType.COPY -> ChangeKind.ADD
+                else -> ChangeKind.RENAME
+            }
+            PathChange(e.newPath, kind, e.oldPath)
+        }
+    }
+
     /** Content of [path] as it existed at [revision] (a commit id, ref, or "HEAD"). */
     fun readAtRevision(path: String, revision: String): ByteArray? {
         val id = repo.resolve(revision) ?: return null
@@ -364,6 +453,40 @@ class GitRepo private constructor(
             TreeWalk.forPath(repo, path, tree)?.use { tw -> return repo.open(tw.getObjectId(0)).bytes }
         }
         return null
+    }
+
+    /**
+     * Line-level blame of [path] at HEAD: each line with the commit, author and `Svod-Agent` trailer that last
+     * changed it. Null when [path] does not exist at HEAD. Reads committed history only, never the working tree
+     * (every engine write is a commit). Renames are not followed.
+     */
+    fun blame(path: String): List<BlameLine>? {
+        val head = repo.resolve(Constants.HEAD) ?: return null
+        // Only a regular file at HEAD: jgit's recursive path filter would otherwise blame the first file
+        // under a directory path and report it as [path].
+        val isFile = RevWalk(repo).use { rw ->
+            TreeWalk.forPath(repo, path, rw.parseCommit(head).tree)
+                ?.use { (it.getRawMode(0) and FileMode.TYPE_MASK) == FileMode.TYPE_FILE } ?: false
+        }
+        if (!isFile) return null
+        // jgit follows renames by default; the documented contract is that blame does not.
+        val result = git.blame().setFilePath(path).setStartCommit(head).setFollowFileRenames(false).call() ?: return null
+        val contents = result.resultContents
+        val sources = (0 until contents.size()).map { result.getSourceCommit(it) }
+        // associateWith keeps null values, so commits without a trailer are parsed once too.
+        val agents = sources.distinct().associateWith { agentTrailer(it.fullMessage) }
+        return sources.mapIndexed { i, src ->
+            val author = result.getSourceAuthor(i)
+            BlameLine(
+                line = i + 1,
+                text = contents.getString(i).removeSuffix("\r"),
+                commit = src.name,
+                authorName = author.name,
+                authorEmail = author.emailAddress,
+                epochSeconds = author.whenAsInstant.epochSecond,
+                agent = agents[src],
+            )
+        }
     }
 
     /** Unified diff of [path] between two revisions (commit ids/refs). Empty if unchanged. */
@@ -394,6 +517,10 @@ class GitRepo private constructor(
     companion object {
         /** macOS ships git at this stable path (Xcode CLT shim); avoids launchd PATH gaps. */
         private const val GIT_BIN = "/usr/bin/git"
+
+        /** Changed paths listed per commit in [changes]; the rest is counted, not listed. */
+        private const val CHANGES_MAX_PATHS = 200
+        private const val TRASH_PREFIX = ".trash/"
 
         fun openOrInit(root: Path, committer: Author? = null): GitRepo {
             val gitDir = root.resolve(".git").toFile()

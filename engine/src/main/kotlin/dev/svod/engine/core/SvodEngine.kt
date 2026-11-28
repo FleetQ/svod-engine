@@ -186,6 +186,13 @@ class SvodEngine private constructor(
         actor.submit { git.log(VaultPath.of(path).value, max) }
 
     /**
+     * Vault-wide change feed, newest first: commits from HEAD (or older than [before]) back to [since]
+     * (a commit id/ref, or an ISO instant/date), at most [max] (1..200). Bad input is [IllegalArgumentException].
+     */
+    suspend fun changes(since: String?, before: String?, max: Int): ChangesPage =
+        actor.submit { git.changes(since, before, max.coerceIn(1, 200)) }
+
+    /**
      * Who created ([Pair.first], the latest commit that ADDED the path) and last changed
      * ([Pair.second]) [path]; both null when it has no commit. Read-only, derived from git.
      */
@@ -234,6 +241,13 @@ class SvodEngine private constructor(
     } catch (e: IOException) {
         null // missing object, ambiguous abbreviation, or not a commit (a blob / tree id)
     }
+
+    /**
+     * Line-level blame of [path] at HEAD: each line with the commit, author and `Svod-Agent` that last changed it.
+     * Null when [path] does not exist at HEAD. Committed history only; renames are not followed.
+     */
+    suspend fun blame(path: String): List<BlameLine>? =
+        actor.submit { git.blame(VaultPath.of(path).value) }
 
     /** Unified diff of [path] between two revisions (commit ids / refs). */
     suspend fun diff(path: String, fromRevision: String, toRevision: String): String =

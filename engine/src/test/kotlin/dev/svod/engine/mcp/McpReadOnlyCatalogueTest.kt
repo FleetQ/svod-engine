@@ -42,13 +42,15 @@ class McpReadOnlyCatalogueTest {
                 HttpClient(ClientCIO).use { http ->
                     val readers = GrantResolver.REQUIRED.filterValues { it == GrantRole.READER }.keys
                     val readOnly = http.toolNames(server.port, READ_AGENT.token)
-                    assertEquals(14, readOnly.size, "read-only sees 14 tools: $readOnly")
+                    assertEquals(16, readOnly.size, "read-only sees 16 tools: $readOnly")
+                    assertTrue("recent_changes" in readOnly, "recent_changes is a reader tool")
+                    assertTrue("blame" in readOnly, "blame is a reader tool")
                     assertEquals(readers, readOnly.toSet())
                     listOf("write", "edit", "move", "delete", "remember", "extract_memories", "promote", "restore_revision").forEach {
                         assertTrue(it !in readOnly, "$it must be hidden from a READ_ONLY agent")
                     }
                     val all = http.toolNames(server.port, WRITE_AGENT.token)
-                    assertEquals(22, all.size, "write agent keeps all 22 tools: $all")
+                    assertEquals(24, all.size, "write agent keeps all 24 tools: $all")
                     assertTrue("restore_revision" in all, "restore_revision is offered to a write agent")
                     assertEquals(GrantResolver.REQUIRED.keys, all.toSet())
                 }

@@ -8,8 +8,8 @@ package dev.svod.engine.mcp
 object GrantResolver {
     val REQUIRED: Map<String, GrantRole> = buildMap {
         listOf(
-            "read", "search", "context_pack", "list", "tree", "grep", "history", "diff", "get_revision", "link",
-            "graph_query", "graph_communities", "graph_community", "graph_status",
+            "read", "search", "context_pack", "list", "tree", "grep", "history", "diff", "get_revision", "blame", "link",
+            "recent_changes", "graph_query", "graph_communities", "graph_community", "graph_status",
         ).forEach { put(it, GrantRole.READER) }
         listOf("write", "edit", "move", "delete", "remember", "extract_memories", "restore_revision").forEach { put(it, GrantRole.WRITER) }
         put("promote", GrantRole.MAINTAINER)
@@ -22,9 +22,12 @@ object GrantResolver {
      * Whether [tool] is offered to [agent] in tools/list at all. Only the global READ_ONLY role hides
      * tools: it sees just the READER tools (an unknown tool counts as MAINTAINER, so it stays hidden).
      * Per-vault grants never hide tools, because one token reaches several vaults; [deny] checks those per call.
+     * An agent's optional [AgentIdentity.tools] allowlist then hides every tool it does not name. It only
+     * removes tools: a listed tool the role does not allow stays hidden, and [deny] still applies to listed ones.
      */
     fun advertised(agent: AgentIdentity, tool: String): Boolean =
-        agent.role != AgentRole.READ_ONLY || REQUIRED[tool] == GrantRole.READER
+        (agent.role != AgentRole.READ_ONLY || REQUIRED[tool] == GrantRole.READER) &&
+            (agent.tools == null || tool in agent.tools)
 
     /** null = allowed; otherwise the denial message. Call after the vault grant itself has passed. */
     fun deny(agent: AgentIdentity, vault: String, tool: String): String? {

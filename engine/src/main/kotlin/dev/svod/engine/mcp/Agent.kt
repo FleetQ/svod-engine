@@ -59,6 +59,8 @@ data class AgentIdentity(
     val userId: String? = null,
     /** Explicit per-vault roles from `{vault, role}` grants. A granted vault absent here is a bare grant. */
     val grantRoles: Map<String, GrantRole> = emptyMap(),
+    /** Optional MCP tool allowlist (`agents[].tools`); null ⇒ every tool the role allows. Never widens the role. */
+    val tools: Set<String>? = null,
 ) {
     /** The vault this agent's MCP session is bound to (its first grant, else [default]). */
     fun primaryVault(default: String): String = vaults.firstOrNull() ?: default
@@ -86,6 +88,8 @@ class AgentRegistry(agents: List<AgentSpec>) {
         val userId: String? = null,
         /** Explicit `{vault, role}` grant roles; bare grants are absent. */
         val grantRoles: Map<String, GrantRole> = emptyMap(),
+        /** Optional MCP tool allowlist; null ⇒ every tool the role allows. */
+        val tools: List<String>? = null,
     )
 
     @Volatile private var byToken: Map<String, AgentIdentity> = buildByToken(agents)
@@ -134,6 +138,6 @@ class AgentRegistry(agents: List<AgentSpec>) {
         fun buildByAgentId(agents: List<AgentSpec>): Map<String, AgentIdentity> =
             agents.associate { it.agentId to it.identity() }
 
-        fun AgentSpec.identity() = AgentIdentity(agentId, role, Author(name, email, agent = if (userId != null) agentId else null), vaults, requireReview, userId, grantRoles)
+        fun AgentSpec.identity() = AgentIdentity(agentId, role, Author(name, email, agent = if (userId != null) agentId else null), vaults, requireReview, userId, grantRoles, tools?.toSet())
     }
 }

@@ -92,7 +92,7 @@ class McpSessionEvictionTest {
                     val t = StreamableHttpClientTransport(client = again, url = "http://127.0.0.1:${server.port}/mcp")
                     val c = Client(Implementation(name = "evict-test-again", version = "1.0.0"))
                     c.connect(t)
-                    assertEquals(22, c.listTools().tools.size)
+                    assertEquals(24, c.listTools().tools.size)
                     assertEquals(1, mcp.liveSessions())
                 } finally { again.close() }
             } finally {

@@ -64,6 +64,24 @@ data class CommitInfoDto(val commit: String, val author: String, val email: Stri
 data class HistoryDto(val commits: List<CommitInfoDto>)
 
 @Serializable
+data class BlameLineDto(val line: Int, val text: String, val commit: String, val author: String, val email: String, val epochSeconds: Long, val agent: String? = null)
+
+@Serializable
+data class FileBlameDto(val path: String, val lines: List<BlameLineDto>)
+
+@Serializable
+data class PathChangeDto(val path: String, val kind: String, val oldPath: String? = null)
+
+@Serializable
+data class ChangeEntryDto(
+    val commit: String, val author: String, val email: String, val epochSeconds: Long, val message: String,
+    val agent: String? = null, val paths: List<PathChangeDto>, val pathCount: Int, val pathsTruncated: Boolean,
+)
+
+@Serializable
+data class ChangesDto(val head: String? = null, val changes: List<ChangeEntryDto>, val nextCursor: String? = null)
+
+@Serializable
 data class DiffResultDto(val path: String, val from: String, val to: String, val diff: String)
 
 @Serializable
@@ -256,6 +274,34 @@ data class ConflictEntryDto(
 
 @Serializable
 data class ConflictsDto(val conflicts: List<ConflictEntryDto>)
+
+/**
+ * One line of a vault's agent audit trail (`GET /api/v1/audit`). [seq] is the 1-based line number, a
+ * stable paging cursor. [detail] carries rule names and commit ids, never matched secret values.
+ */
+@Serializable
+data class AuditEntryDto(
+    val seq: Long,
+    /** ISO-8601 instant. */
+    val ts: String,
+    val tsMs: Long,
+    val agentId: String,
+    val tool: String,
+    val outcome: String,
+    val path: String? = null,
+    val target: String? = null,
+    val revision: String? = null,
+    val detail: String? = null,
+)
+
+/** A page of the audit trail, newest first. Pass [nextBefore] as `before` for the next (older) page. */
+@Serializable
+data class AuditPageDto(
+    val entries: List<AuditEntryDto>,
+    val total: Int,
+    val skipped: Int,
+    val nextBefore: Long? = null,
+)
 
 /**
  * How to settle a sync conflict. `resolution` (0.36.0): `content` (default) writes [content] through

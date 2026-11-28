@@ -93,6 +93,35 @@ class SvodConfigTest {
     }
 
     @Test
+    fun `agent tools allowlist parses and flows into agent specs`() {
+        val file = Files.createTempFile("svod-config-tools", ".json")
+        Files.writeString(
+            file,
+            """{"vaultPath": "/tmp/vault", "agents": [{"token": "tok", "agentId": "a1", "role": "WRITE", "tools": ["search", "remember"]}]}""",
+        )
+        val cfg = SvodConfig.load(file)
+        assertEquals(listOf("search", "remember"), cfg.agents.single().tools)
+        assertEquals(emptyList(), cfg.validate())
+        val spec = cfg.toAgentSpecs().single()
+        assertEquals(listOf("search", "remember"), spec.tools)
+        val identity = dev.svod.engine.mcp.AgentRegistry(listOf(spec)).byAgentId("a1")!!
+        assertEquals(setOf("search", "remember"), identity.tools)
+    }
+
+    @Test
+    fun `unknown or empty tools allowlists are rejected, absent means all`() {
+        val unknown = base().copy(agents = listOf(SvodConfig.AgentSettings("tok", "x", "WRITE", tools = listOf("search", "serch"))))
+        val errors = unknown.validate()
+        assertTrue(errors.any { it.startsWith("agent 'x' lists unknown tool 'serch'") }, errors.toString())
+        assertEquals(1, errors.count { "unknown tool" in it }, "only the misspelt name is reported: $errors")
+        val empty = base().copy(agents = listOf(SvodConfig.AgentSettings("tok", "x", "WRITE", tools = emptyList())))
+        assertTrue(empty.validate().any { "agent 'x' tools must list at least one tool" in it }, empty.validate().toString())
+        assertEquals(null, base().agents.single().tools)
+        assertEquals(null, base().toAgentSpecs().single().tools)
+        assertTrue("\"tools\"" !in SvodConfig.toJson(base()), "an absent allowlist is not written out")
+    }
+
+    @Test
     fun `a config without the new memory keys still loads`() {
         val file = Files.createTempFile("svod-config-old-memory", ".json")
         Files.writeString(
