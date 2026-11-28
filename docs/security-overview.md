@@ -157,8 +157,23 @@ not a running, unlocked host.
   A config written by `svod-engine init`, and the sample configs in `dist/`, already turn it on.
 - When it is enabled, [`security/SecretScanner.kt`](../engine/src/main/kotlin/dev/svod/engine/security/SecretScanner.kt)
   blocks a **note write** *before* the commit if the note contains a real private key (key
-  material, not just a quoted `BEGIN` line) or a high-confidence token pattern (AWS access key
-  id, GitHub, Slack and Google API tokens, JWTs, `api_key = "…"` assignments).
+  material, not just a quoted `BEGIN` line) or a high-confidence token pattern. The rule ids a
+  blocked write reports:
+  - `private-key`: private key material (PEM, OpenSSH, or inlined with escaped newlines).
+  - `aws-access-key-id`: AWS access key ids.
+  - `github-token`: GitHub classic and app tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`).
+  - `github-fine-grained-token`: GitHub fine-grained personal access tokens (`github_pat_`).
+  - `gitlab-token`: GitLab personal access tokens (`glpat-`).
+  - `slack-token`: Slack tokens (`xoxb-` and the other `xox` forms).
+  - `google-api-key`: Google API keys.
+  - `openai-api-key`: OpenAI project, service-account and admin keys, and the legacy key form.
+  - `anthropic-api-key`: Anthropic API and admin keys (`sk-ant-`).
+  - `stripe-live-key`: Stripe live secret and restricted keys only; test keys and publishable
+    keys are not blocked.
+  - `npm-token`: npm access tokens (`npm_`).
+  - `huggingface-token`: Hugging Face tokens (`hf_`).
+  - `jwt`: JSON Web Tokens.
+  - `private-key-assignment`: `api_key = "…"`-style assignments of a long literal value.
 - **Not scanned, even when the scan is on:**
   - **Session transcripts.** `POST /api/v1/memory/capture` stores raw session transcripts
     verbatim and commits them to git without scanning, by design: transcripts routinely contain
