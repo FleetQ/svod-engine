@@ -338,6 +338,23 @@ class SvodTools(
             ToolResult.ok { put("path", f.path); put("revision", f.revision); put("content", f.text) }
         }
 
+    /** Line-by-line attribution of [path] at HEAD; `agent` appears on a line only when its commit has the trailer. */
+    suspend fun blame(agent: AgentIdentity, path: String): ToolResult = guarded(agent, "blame", write = false) {
+        val lines = engine.blame(path) ?: return@guarded ToolResult.notFound(path)
+        ToolResult.ok {
+            put("path", path)
+            putJsonArray("lines") {
+                lines.forEach { l ->
+                    addJsonObject {
+                        put("line", l.line); put("text", l.text); put("commit", l.commit)
+                        put("author", l.authorName); put("email", l.authorEmail); put("epochSeconds", l.epochSeconds)
+                        l.agent?.let { put("agent", it) }
+                    }
+                }
+            }
+        }
+    }
+
     suspend fun link(agent: AgentIdentity, path: String): ToolResult = guarded(agent, "link", write = false) {
         val g = linkGraph()
         ToolResult.ok {

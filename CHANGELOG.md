@@ -16,6 +16,12 @@ independently of the engine; each entry notes the contract version it ships.
   `before` = `nextCursor`. Paths and metadata only; content stays behind `diff`/`get_revision`. The tool is in
   the reader set, so read-only agents and reader grants may call it; vault grants apply as for `history`. An
   unparsable `since` or unknown `before` is `bad_request` / 400. MCP now has 22 tools.
+- Line-level blame: MCP read tool `blame` (`path`, `vault`) and App API `GET /api/v1/file/blame?path=&vault=`
+  (schemas `FileBlame` / `BlameLine`). Each line of the note at HEAD comes with the commit that last changed it,
+  author, email, epochSeconds and, when the commit has one, the `Svod-Agent` agent. Committed history only (not
+  the working tree); renames are not followed. A note missing at HEAD is `not_found` / 404. The tool is in the
+  reader set; vault grants apply as for `read`, and the App API hides an ungranted vault as 404. MCP now has
+  23 tools.
 
 ## v1.35.0 — 2026-11-26 (App API contract 0.42.0, unchanged)
 

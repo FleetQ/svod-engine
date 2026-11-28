@@ -61,6 +61,12 @@ data class CommitInfoDto(val commit: String, val author: String, val email: Stri
 data class HistoryDto(val commits: List<CommitInfoDto>)
 
 @Serializable
+data class BlameLineDto(val line: Int, val text: String, val commit: String, val author: String, val email: String, val epochSeconds: Long, val agent: String? = null)
+
+@Serializable
+data class FileBlameDto(val path: String, val lines: List<BlameLineDto>)
+
+@Serializable
 data class PathChangeDto(val path: String, val kind: String, val oldPath: String? = null)
 
 @Serializable

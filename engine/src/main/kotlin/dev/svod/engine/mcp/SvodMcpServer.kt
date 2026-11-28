@@ -506,6 +506,9 @@ class SvodMcpServer(
         tool("get_revision", "Read a note's content at a specific revision.", mapOf("path" to "string", "revision" to "string"), listOf("path", "revision")) { req ->
             val (t, d) = routed(req, "get_revision"); d ?: t!!.getRevision(agent, req.str("path")!!, req.str("revision")!!).toCallToolResult()
         }
+        tool("blame", "Line-by-line attribution for a note at HEAD: the commit, author, date and Svod-Agent of each line.", mapOf("path" to "string"), listOf("path")) { req ->
+            val (t, d) = routed(req, "blame"); d ?: t!!.blame(agent, req.str("path")!!).toCallToolResult()
+        }
         tool("link", "Outgoing wikilinks for a note (resolved + unresolved).", mapOf("path" to "string"), listOf("path")) { req ->
             val (t, d) = routed(req, "link"); d ?: t!!.link(agent, req.str("path")!!).toCallToolResult()
         }

@@ -91,6 +91,18 @@ data class CommitInfo(
     val agent: String? = null,
 )
 
+/** One line of a note at HEAD with the commit that last changed it (line-level blame). [line] is 1-based. */
+data class BlameLine(
+    val line: Int,
+    val text: String,
+    val commit: String,
+    val authorName: String,
+    val authorEmail: String,
+    val epochSeconds: Long,
+    /** `Svod-Agent:` trailer of that commit (ADR-0020), null when absent. */
+    val agent: String? = null,
+)
+
 /** How a commit touched a path in the change feed. A soft delete into `.trash/` is DELETE, a move out of it RESTORE. */
 enum class ChangeKind { ADD, MODIFY, DELETE, RENAME, RESTORE }
 

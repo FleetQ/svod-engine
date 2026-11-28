@@ -455,6 +455,35 @@ class GitRepo private constructor(
         return null
     }
 
+    /**
+     * Line-level blame of [path] at HEAD: each line with the commit, author and `Svod-Agent` trailer that last
+     * changed it. Null when [path] does not exist at HEAD. Reads committed history only, never the working tree
+     * (every engine write is a commit). Renames are not followed.
+     */
+    fun blame(path: String): List<BlameLine>? {
+        if (readAtRevision(path, Constants.HEAD) == null) return null
+        val head = repo.resolve(Constants.HEAD) ?: return null
+        val result = git.blame().setFilePath(path).setStartCommit(head).call() ?: return null
+        val contents = result.resultContents
+        RevWalk(repo).use { rw ->
+            val agents = HashMap<ObjectId, String?>()
+            return (0 until contents.size()).map { i ->
+                val src = result.getSourceCommit(i)
+                val author = result.getSourceAuthor(i) ?: src.authorIdent
+                val agent = agents.getOrPut(src.id) { agentTrailer(rw.parseCommit(src.id).fullMessage) }
+                BlameLine(
+                    line = i + 1,
+                    text = contents.getString(i),
+                    commit = src.name,
+                    authorName = author.name,
+                    authorEmail = author.emailAddress,
+                    epochSeconds = author.whenAsInstant.epochSecond,
+                    agent = agent,
+                )
+            }
+        }
+    }
+
     /** Unified diff of [path] between two revisions (commit ids/refs). Empty if unchanged. */
     fun diff(path: String, fromRevision: String, toRevision: String): String {
         val from = repo.resolve(fromRevision) ?: throw IllegalArgumentException("unknown revision: $fromRevision")

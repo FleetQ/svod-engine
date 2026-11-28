@@ -209,6 +209,13 @@ class SvodEngine private constructor(
         FileContent(vp.value, git.blobId(bytes), String(bytes, UTF_8))
     }
 
+    /**
+     * Line-level blame of [path] at HEAD: each line with the commit, author and `Svod-Agent` that last changed it.
+     * Null when [path] does not exist at HEAD. Committed history only; renames are not followed.
+     */
+    suspend fun blame(path: String): List<BlameLine>? =
+        actor.submit { git.blame(VaultPath.of(path).value) }
+
     /** Unified diff of [path] between two revisions (commit ids / refs). */
     suspend fun diff(path: String, fromRevision: String, toRevision: String): String =
         actor.submit { git.diff(VaultPath.of(path).value, fromRevision, toRevision) }

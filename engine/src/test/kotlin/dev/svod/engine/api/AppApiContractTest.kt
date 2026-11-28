@@ -54,6 +54,8 @@ class AppApiContractTest {
             validate("$ap/file", Request.Method.GET, 200, fx.get("$ap/file?path=${ApiFixture.enc("vault/a.md")}").body())
             validate("$ap/file/history", Request.Method.GET, 200, fx.get("$ap/file/history?path=${ApiFixture.enc("vault/a.md")}").body())
             validate("$ap/file/links", Request.Method.GET, 200, fx.get("$ap/file/links?path=${ApiFixture.enc("vault/a.md")}").body())
+            validate("$ap/file/blame", Request.Method.GET, 200, fx.get("$ap/file/blame?path=${ApiFixture.enc("vault/a.md")}").body())
+            validate("$ap/file/blame", Request.Method.GET, 404, fx.get("$ap/file/blame?path=${ApiFixture.enc("vault/missing.md")}").body())
             validate("$ap/changes", Request.Method.GET, 200, fx.get("$ap/changes?max=1").body())
             validate("$ap/changes", Request.Method.GET, 400, fx.get("$ap/changes?since=garbage").body())
             validate("$ap/search", Request.Method.GET, 200, fx.get("$ap/search?q=hello").body())
@@ -500,6 +502,7 @@ class AppApiContractTest {
         val implemented = setOf(
             "/health", "/ready", "/api/v1/tree", "/api/v1/trash", "/api/v1/file", "/api/v1/file/move", "/api/v1/file/restore",
             "/api/v1/file/history", "/api/v1/file/diff", "/api/v1/file/revision", "/api/v1/file/links",
+            "/api/v1/file/blame",
             "/api/v1/changes",
             "/api/v1/search", "/api/v1/graph",
             "/api/v1/graph/communities", "/api/v1/graph/community", "/api/v1/graph/status", "/api/v1/graph/rebuild",

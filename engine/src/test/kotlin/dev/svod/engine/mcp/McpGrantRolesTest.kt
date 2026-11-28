@@ -176,8 +176,25 @@ class McpGrantRolesTest {
                 val rc = c.callTool("recent_changes", mapOf("vault" to "other"))
                 assertEquals(true, rc.isError)
                 assertTrue(rc.text().contains("vault 'other' is not granted to agent '$tok'"), rc.text())
+                val bl = c.callTool("blame", mapOf("path" to "x.md", "vault" to "other"))
+                assertEquals(true, bl.isError)
+                assertTrue(bl.text().contains("vault 'other' is not granted to agent '$tok'"), bl.text())
             } finally { c.close() }
         }
+    }
+
+    @Test
+    fun `a reader may blame a note in its own vault`() = run(listOf(
+        spec("wr", roles = mapOf("work" to GrantRole.WRITER)), spec("rd", roles = mapOf("work" to GrantRole.READER)),
+    )) { port ->
+        val w = connect(port, "wr")
+        try { w.ok("write", mapOf("path" to "n.md", "content" to "first\nsecond")) } finally { w.close() }
+        val c = connect(port, "rd")
+        try {
+            c.ok("blame", mapOf("path" to "n.md"))
+            val text = c.callTool("blame", mapOf("path" to "n.md", "vault" to "work")).text()
+            assertTrue(text.contains("\"text\":\"second\"") && text.contains("\"line\":2"), text)
+        } finally { c.close() }
     }
 
     @Test
