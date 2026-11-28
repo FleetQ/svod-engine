@@ -58,7 +58,7 @@
     <section class="diff-pane">
       <div id="note" class="note hidden">
         <div class="pane-head">
-          <h2>Note</h2>
+          <h2 id="noteHeading" tabindex="-1">Note</h2>
           <span id="notePath" class="muted mono"></span>
         </div>
         <p id="noteMeta" class="muted note-meta"></p>
@@ -66,11 +66,11 @@
         <ol id="noteHistory" class="history"></ol>
       </div>
       <div class="pane-head">
-        <h2>git diff</h2>
+        <h2 id="diffHeading" tabindex="-1">git diff</h2>
         <span id="diffPath" class="muted mono"></span>
       </div>
       <pre id="diff" class="diff">
-<span class="empty">Select a change on the left to see the diff of an agent's memory.</span></pre>
+<span class="empty">Select a change in the agent activity feed or a note's history to see the diff of an agent's memory.</span></pre>
     </section>
 
     <section class="review-pane" id="review" data-svod-review>
