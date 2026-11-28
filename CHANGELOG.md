@@ -25,8 +25,9 @@ independently of the engine; each entry notes the contract version it ships.
 - Ready-made Claude Code hook scripts in `dist/hooks/`, with a guide in `docs/claude-code-hooks.md`.
   `svod-session-start.sh` (`SessionStart`) prints the rule book (`GET /api/v1/memory/rulebook`) and the vault
   changes since the last session (`GET /api/v1/changes?since=` the saved head). `svod-capture.sh` (`Stop`,
-  `PreCompact`, `SessionEnd`) posts the compacted transcript to `POST /api/v1/memory/capture`; `Stop` posts only
-  on the first capture or once the transcript has doubled. A test checks the routes and fields the scripts declare
+  `PreCompact`, `SessionEnd`) posts a compacted transcript to `POST /api/v1/memory/capture`: user and assistant
+  text only, tool calls clipped to 300 and tool results to 500 characters, thinking/meta/sidechain and compact-summary
+  entries dropped. `Stop` is meant to post only on the first capture or once the transcript has doubled. A test checks the routes and fields the scripts declare
   against the contract and the server routes, and that a live engine returns the required response fields and
   stores the capture fields. The scripts themselves are not run by the test. No contract change.
 

@@ -100,10 +100,17 @@ How this differs from claude-mem and similar memory plugins:
 - `Stop` fires after every response. It posts only on the first capture of a session, or once the
   transcript is at least **twice** the size last accepted. A long session then makes a handful of
   commits instead of one per response.
-- The body is built by `jq` straight from the transcript JSONL file: `sessionId`, `project` (the
-  basename of `cwd`), `transcript` (the JSONL lines, with `isCompactSummary` entries dropped because
-  they restate earlier turns), and `startedAt` / `endedAt` (epoch millis, taken from the entries'
-  timestamps). The transcript never passes through the command line.
+- The body is built by `jq` straight from the transcript JSONL file, so the transcript never passes
+  through the command line. It has `sessionId`, `project` (the basename of `cwd`), `transcript` and
+  `startedAt` / `endedAt` (epoch millis from the entries' UTC timestamps; the current time if none
+  parse).
+- `transcript` is a **compacted** rendering, not the raw JSONL. Only user and assistant turns are
+  kept, each under a `### user` / `### assistant` heading. Text blocks stay whole. A tool call keeps
+  its name and the first 300 characters of its input, and a tool result keeps its first
+  500 characters. Thinking blocks, images, meta and system entries, subagent sidechains and
+  `isCompactSummary` entries (they restate earlier turns) are dropped. Most of a raw Claude Code
+  transcript is tool output, so a capture should be a small fraction of the JSONL file size. The
+  exact ratio depends on the session: one that is mostly long prose stays larger.
 - The engine answers with `deduped: true` when it already holds an equal or larger transcript for
   the session. That counts as accepted.
 
@@ -116,11 +123,15 @@ How this differs from claude-mem and similar memory plugins:
 
 ## Known limits
 
-- **Best-effort.** Every path exits 0 and never blocks Claude Code. If the engine is down nothing
-  is recorded, and the next event retries. A crash or killed terminal (no `SessionEnd`) loses at most
-  the part since the last doubling.
+The behaviour below is how the scripts are written to work. The test suite checks the routes and
+fields they use against the engine, but does not run the scripts, so treat these as expectations
+and use the steps under [Verify](#verify) on your own machine.
+
+- **Best-effort.** Every exit in the scripts is `exit 0`, so a hook should never block Claude Code.
+  If the engine is down, no size is recorded and the next event tries again. A crash or killed
+  terminal (no `SessionEnd`) should lose at most the part since the last doubling.
 - **A half-written last JSONL line** makes `jq` fail, so that event posts nothing. The next event
-  retries.
+  tries again.
 - **Captured transcripts never appear in recall.** That is on purpose: they can hold secrets, and
   the write-path secret scanner is skipped for them. Distill them into typed notes to make them
   findable.

@@ -223,6 +223,10 @@ class ClaudeCodeHooksDocTest {
         val undocumented = envVars.filter { !guide.contains(it) }
         assertTrue(undocumented.isEmpty(), "$GUIDE does not document $undocumented")
         for (u in allUses) assertTrue(guide.contains(u.path), "$GUIDE does not mention ${u.path}")
+        // The capture compacts the transcript; the clip limits the guide states are the script's.
+        val clips = Regex("""clip\((\d+)\)""").findAll(read("dist/hooks/svod-capture.sh")).map { it.groupValues[1] }.toSet()
+        assertTrue(clips.isNotEmpty(), "svod-capture.sh does not compact tool calls/results")
+        for (n in clips) assertTrue(guide.contains("$n characters"), "$GUIDE does not state the $n-character clip")
     }
 
     @Test
