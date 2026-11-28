@@ -82,6 +82,16 @@ class MainCliTest {
     }
 
     @Test
+    fun `export-rules is parsed and listed in the usage`() {
+        assertEquals(
+            Command.ExportRules(listOf("c.json", "AGENTS.md")),
+            parseCommand(arrayOf("export-rules", "c.json", "AGENTS.md")),
+        )
+        val u = usageText()
+        assertTrue("svod-engine export-rules <config.json> <AGENTS.md|CLAUDE.md>" in u, u)
+    }
+
+    @Test
     fun `version names the engine and the contract`() {
         assertEquals(
             "svod-engine ${SvodNode.ENGINE_VERSION} (App API contract ${ApiCompatibility.CURRENT_CONTRACT_VERSION})",

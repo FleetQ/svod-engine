@@ -10,6 +10,7 @@ import dev.svod.engine.lifecycle.EngineDiscovery
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
 import dev.svod.engine.memory.FolderDigest
+import dev.svod.engine.memory.RulesExport
 import dev.svod.engine.migrate.BasicMemoryImport
 import dev.svod.engine.migrate.ClaudeMemoryImport
 import dev.svod.engine.migrate.NotionImport
@@ -54,6 +55,10 @@ import kotlin.system.exitProcess
  * Folder digest: `svod-engine digest <config.json> [folder...]` writes a generated index.md and log.md into each
  * folder in one commit per folder, with the engine stopped (see [FolderDigest]).
  *
+ * Rules export: `svod-engine export-rules <config.json> <AGENTS.md|CLAUDE.md>` writes the vault's active policies,
+ * preferences and procedures into a managed section of an agent instructions file outside the vault, with the
+ * engine stopped (see [RulesExport]).
+ *
  * `svod-engine --help` (`-h`) prints usage and `svod-engine --version` (`-V`) prints the engine
  * and App API contract versions; both exit before any config is read.
  */
@@ -95,6 +100,7 @@ fun main(args: Array<String>) {
         is Command.Doctor -> return runDoctor(cmd.args)
         is Command.Eval -> return runEval(cmd.args)
         is Command.Digest -> return runDigest(cmd.args)
+        is Command.ExportRules -> return runExportRules(cmd.args)
         is Command.Run -> cmd.configPath
     }
     val config = configPath
@@ -129,6 +135,7 @@ internal sealed interface Command {
     data class Doctor(val args: List<String>) : Command
     data class Eval(val args: List<String>) : Command
     data class Digest(val args: List<String>) : Command
+    data class ExportRules(val args: List<String>) : Command
     data class Unknown(val flag: String) : Command
 }
 
@@ -149,6 +156,7 @@ internal fun parseCommand(args: Array<String>): Command {
         first == "doctor" -> Command.Doctor(args.drop(1))
         first == "eval" -> Command.Eval(args.drop(1))
         first == "digest" -> Command.Digest(args.drop(1))
+        first == "export-rules" -> Command.ExportRules(args.drop(1))
         first.startsWith("-") -> Command.Unknown(first)
         else -> Command.Run(Paths.get(first))
     }
@@ -166,6 +174,8 @@ internal fun usageText(): String = """
     |      score search quality (recall@k, nDCG@10, MRR) on your vault against a golden set, then exit (engine stopped; never writes notes)
     |  svod-engine digest <config.json> [folder...]
     |      write a generated index.md and log.md into each folder (default: every top-level folder), then exit (engine stopped)
+    |  svod-engine export-rules <config.json> <AGENTS.md|CLAUDE.md>
+    |      write the vault's active policies, preferences and procedures into a managed section of an agent instructions file, then exit (engine stopped)
     |  svod-engine import <config.json> <obsidian-dir> [into]
     |      import an Obsidian vault into the configured vault, then exit (engine stopped)
     |  svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]
@@ -302,6 +312,31 @@ private fun runDigest(args: List<String>) {
         exitProcess(2)
     } catch (e: java.io.IOException) {
         System.err.println("svod-engine digest: cannot read ${e.message}")
+        exitProcess(2)
+    }
+}
+
+/** `svod-engine export-rules <config.json> <AGENTS.md|CLAUDE.md>`: managed rules section; engine stopped. */
+private fun runExportRules(args: List<String>) {
+    if (args.size != 2 || args.any { it.startsWith("-") }) {
+        System.err.println("usage: svod-engine export-rules <config.json> <AGENTS.md|CLAUDE.md>")
+        exitProcess(2)
+    }
+    try {
+        val config = SvodConfig.loadOrThrowValidated(Paths.get(args[0]))
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        SvodEngine.open(config.vault(), scope, SecretScanner(config.secretScanning)).use { engine ->
+            val r = runBlocking { RulesExport.export(engine, Paths.get(config.vaultPath), Paths.get(args[1])) }
+            println("export-rules: ${r.rules} rules → ${r.target} (${if (r.changed) "written" else "unchanged"})")
+        }
+    } catch (e: VaultLockedException) {
+        System.err.println("svod-engine export-rules: ${e.message} — stop the engine first (export-rules runs with the engine stopped)")
+        exitProcess(2)
+    } catch (e: IllegalArgumentException) {
+        System.err.println("svod-engine export-rules: ${e.message}")
+        exitProcess(2)
+    } catch (e: java.io.IOException) {
+        System.err.println("svod-engine export-rules: cannot read or write ${e.message}")
         exitProcess(2)
     }
 }
