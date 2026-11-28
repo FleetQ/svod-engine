@@ -32,9 +32,10 @@ data class AuditEntry(
  * `.svod/audit/audit.log`. Appends are serialized per file and flushed so the trail is durable and
  * ordered. Each new entry carries [AuditEntry.prevHash] (the previous entry's hash, or [GENESIS])
  * and [AuditEntry.hash] (SHA-256 of the entry without `hash`), so the lines form a hash chain:
- * [verify] finds the first edited, removed, reordered or inserted line. Lines written before the
- * chain existed have no hash and count as pre-chain. The chain has no anchor outside the file, so
- * a full rewrite or lines cut off the end are not detected.
+ * [verify] finds the first edited, removed or reordered line, or a line inserted after the chain
+ * starts. Lines written before the chain existed have no hash and count as pre-chain. The chain has
+ * no anchor outside the file, so a full rewrite, lines cut off the end and hash-less lines added
+ * before the first chained line are not detected.
  */
 class AuditLog(private val file: Path, private val clock: () -> Long = System::currentTimeMillis) {
 
@@ -133,7 +134,10 @@ class AuditLog(private val file: Path, private val clock: () -> Long = System::c
         private fun readLines(file: Path): List<String?> {
             // Split raw bytes on '\n' and decode each line on its own with a strict UTF-8 decoder, so a
             // torn multi-byte character spoils only its own line, never the whole read.
-            val bytes = Files.readAllBytes(file)
+            return splitLines(Files.readAllBytes(file))
+        }
+
+        private fun splitLines(bytes: ByteArray): List<String?> {
             val lines = ArrayList<String?>()
             var start = 0
             for (k in bytes.indices) if (bytes[k] == '\n'.code.toByte()) { lines += decodeStrict(bytes.copyOfRange(start, k)); start = k + 1 }
@@ -143,17 +147,28 @@ class AuditLog(private val file: Path, private val clock: () -> Long = System::c
 
         /**
          * Read-only check of [file]'s hash chain; never creates or writes anything. Leading lines without
-         * a hash are pre-chain. From the first chained line on, every non-blank line must decode, carry a
-         * hash equal to [hashOf] and a prevHash equal to the previous line's hash ([GENESIS] for the first).
-         * Stops at the first failure with its 1-based line number. Blank lines are skipped.
+         * a hash are pre-chain (so hash-less lines added before the first chained line are not detected).
+         * From the first chained line on, every non-blank line must decode, be byte-for-byte its canonical
+         * encoding (no extra keys, reordered keys or changed whitespace), carry a hash equal to [hashOf] and a
+         * prevHash equal to the previous line's hash ([GENESIS] for the first). Stops at the first failure
+         * with its 1-based line number. Blank lines are skipped. A failing last line with no newline is
+         * reported as incomplete: it may still be being written, or was torn by a crash.
          */
         fun verify(file: Path): AuditChainReport {
             if (!Files.isRegularFile(file)) return AuditChainReport(AuditChainReport.Status.ABSENT, 0, 0, null, null)
+            val bytes = Files.readAllBytes(file)
+            val lines = splitLines(bytes)
+            val lastUnterminated = bytes.isNotEmpty() && bytes.last() != '\n'.code.toByte()
             var chained = 0
             var preChain = 0
             var prev: String? = null
-            readLines(file).forEachIndexed { i, line ->
-                fun broken(reason: String) = AuditChainReport(AuditChainReport.Status.BROKEN, chained, preChain, i + 1L, reason)
+            lines.forEachIndexed { i, line ->
+                fun broken(reason: String): AuditChainReport {
+                    val r = if (lastUnterminated && i == lines.lastIndex) {
+                        "incomplete last line (still being written or torn by a crash; run again): $reason"
+                    } else reason
+                    return AuditChainReport(AuditChainReport.Status.BROKEN, chained, preChain, i + 1L, r)
+                }
                 if (line != null && line.isBlank()) return@forEachIndexed
                 val e = line?.let { runCatching { lenient.decodeFromString(AuditEntry.serializer(), it) }.getOrNull() }
                     ?: return broken("undecodable line")
@@ -161,6 +176,9 @@ class AuditLog(private val file: Path, private val clock: () -> Long = System::c
                     if (prev != null) return broken("unchained line after the chain started (inserted)")
                     preChain++
                     return@forEachIndexed
+                }
+                if (line != json.encodeToString(AuditEntry.serializer(), e)) {
+                    return broken("line not in canonical form (line edited)")
                 }
                 if (e.hash != hashOf(e)) return broken("hash mismatch (line edited)")
                 if (e.prevHash != (prev ?: GENESIS)) {

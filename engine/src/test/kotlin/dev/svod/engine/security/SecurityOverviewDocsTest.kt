@@ -230,6 +230,9 @@ class SecurityOverviewDocsTest {
         assertTrue("hash chain" in gaps, "$PAGE '## Known gaps' must state the hash chain's limits")
         assertTrue("rewrite" in gaps, "$PAGE '## Known gaps' must say a full rewrite of the audit log is not detected")
         assertTrue("end" in gaps && "cut" in gaps, "$PAGE '## Known gaps' must say lines cut off the end are not detected")
+        assertTrue("pre-chain" in gaps, "$PAGE '## Known gaps' must say hash-less lines added at the start pass as pre-chain")
+        assertTrue("incomplete last line" in gaps, "$PAGE '## Known gaps' must explain the false alarm while the engine writes")
+        assertTrue("byte-for-byte" in audit, "$PAGE '## Audit trail' must say a chained line must match the engine's encoding exactly")
     }
 
     @Test

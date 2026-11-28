@@ -132,6 +132,53 @@ class AuditLogChainTest {
     }
 
     @Test
+    fun `an extra key in a chained line is reported`() {
+        val log = AuditLog(file)
+        repeat(2) { log.record("a", "write", "ok", "n$it.md") }
+        val ls = lines().toMutableList()
+        ls[0] = ls[0].removeSuffix("}") + ""","approvedBy":"admin"}"""
+        writeLines(ls)
+        val r = AuditLog.verify(file)
+        assertEquals(AuditChainReport.Status.BROKEN, r.status)
+        assertEquals(1L, r.brokenLine)
+        assertTrue("canonical" in r.reason!!, r.reason)
+    }
+
+    @Test
+    fun `reformatting a chained line is reported`() {
+        val log = AuditLog(file)
+        repeat(2) { log.record("a", "write", "ok", "n$it.md") }
+        val ls = lines().toMutableList()
+        ls[1] = ls[1].replace(",", ", ")
+        writeLines(ls)
+        val r = AuditLog.verify(file)
+        assertEquals(AuditChainReport.Status.BROKEN, r.status)
+        assertEquals(2L, r.brokenLine)
+    }
+
+    @Test
+    fun `hash-less lines added before the chain count as pre-chain, as documented`() {
+        val log = AuditLog(file)
+        log.record("a", "write", "ok", "n.md")
+        val fake = """{"ts":1,"agentId":"x","tool":"write","outcome":"ok"}"""
+        writeLines(listOf(fake) + lines())
+        val r = AuditLog.verify(file)
+        assertEquals(AuditChainReport.Status.OK, r.status)
+        assertEquals(1, r.preChain)
+    }
+
+    @Test
+    fun `an unterminated failing last line is reported as incomplete`() {
+        val log = AuditLog(file)
+        log.record("a", "write", "ok", "n.md")
+        Files.writeString(file, Files.readString(file) + """{"ts":2,"agentId":"a","to""")
+        val r = AuditLog.verify(file)
+        assertEquals(AuditChainReport.Status.BROKEN, r.status)
+        assertEquals(2L, r.brokenLine)
+        assertTrue(r.reason!!.startsWith("incomplete last line"), r.reason)
+    }
+
+    @Test
     fun `a garbage line is reported`() {
         val log = AuditLog(file)
         log.record("a", "write", "ok", "n.md")
