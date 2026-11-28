@@ -8,6 +8,8 @@ import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.FileTime
+import java.nio.file.attribute.PosixFileAttributeView
+import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -81,6 +83,46 @@ class RulesExportTest {
         assertFalse("Dot one" in out, out)
         assertFalse("secret bit" in out, out)
         assertTrue("public part" in out && "tail" in out, out)
+    }
+
+    @Test
+    fun `private spans never reach the title`() = runBlocking {
+        write("rules/a.md", note("policy", null, "# Deploy <private>hidden-hostname</private>\nrule a"))
+        write("rules/b.md", note("policy", null, "<private>\n# Secret project X\n</private>\nrule b"))
+        write("rules/c.md", note("policy", "Visible <private>hidden-title</private>", "rule c"))
+        val out = renderNow()
+        for (leak in listOf("hidden-hostname", "Secret project X", "hidden-title", "<private>")) assertFalse(leak in out, out)
+        assertTrue("### Deploy\n" in out, out)
+        assertTrue("### b\n" in out, out)
+        assertTrue("### Visible\n" in out, out)
+    }
+
+    @Test
+    fun `export keeps the file mode and writes through a symlink`() = runBlocking {
+        write("rules/p.md", note("policy", "P", "x"))
+        val real = outDir.resolve("AGENTS.md")
+        Files.writeString(real, "intro\n")
+        val posix = Files.getFileStore(outDir).supportsFileAttributeView(PosixFileAttributeView::class.java)
+        if (posix) Files.setPosixFilePermissions(real, PosixFilePermissions.fromString("rw-r--r--"))
+        val link = Files.createSymbolicLink(outDir.resolve("CLAUDE.md"), real)
+        assertTrue(RulesExport.export(engine, fx.root, link, now).changed)
+        assertTrue(Files.isSymbolicLink(link))
+        assertTrue("### P" in Files.readString(real))
+        if (posix) {
+            assertEquals("rw-r--r--", PosixFilePermissions.toString(Files.getPosixFilePermissions(real)))
+            val fresh = outDir.resolve("NEW.md")
+            RulesExport.export(engine, fx.root, fresh, now)
+            assertEquals("rw-r--r--", PosixFilePermissions.toString(Files.getPosixFilePermissions(fresh)))
+        }
+    }
+
+    @Test
+    fun `a symlinked target pointing into the vault is refused`() = runBlocking {
+        write("rules/p.md", note("policy", "P", "x"))
+        write("AGENTS.md", "vault file\n")
+        val link = Files.createSymbolicLink(outDir.resolve("AGENTS.md"), fx.root.resolve("AGENTS.md"))
+        assertFailsWith<IllegalArgumentException> { RulesExport.export(engine, fx.root, link, now) }
+        assertEquals("vault file\n", Files.readString(fx.root.resolve("AGENTS.md")))
     }
 
     @Test

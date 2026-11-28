@@ -5,6 +5,8 @@ import dev.svod.engine.index.MarkdownChunker
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.PosixFileAttributeView
+import java.nio.file.attribute.PosixFilePermissions
 import kotlin.text.Charsets.UTF_8
 
 /**
@@ -38,11 +40,13 @@ object RulesExport {
             if (doc.status == "revoked" || doc.status == "provisional") continue
             if (doc.supersededBy != null) continue
             if (doc.expiresAt != null && doc.expiresAt <= nowEpoch) continue
-            val title = doc.title?.trim()?.takeIf { it.isNotEmpty() }
-                ?: doc.body.lineSequence().firstOrNull { it.startsWith("# ") }?.removePrefix("# ")?.trim()?.takeIf { it.isNotEmpty() }
+            // Title and body both come from private-stripped text, so a <private> span never reaches the file.
+            val body = MarkdownChunker.stripPrivateSpans(doc.body)
+            val title = doc.title?.let { MarkdownChunker.stripPrivateSpans(it) }?.trim()?.takeIf { it.isNotEmpty() }
+                ?: body.lineSequence().firstOrNull { it.startsWith("# ") }?.removePrefix("# ")?.trim()?.takeIf { it.isNotEmpty() }
                 ?: path.substringAfterLast('/').removeSuffix(".md")
             val commit = engine.history(path, 1).firstOrNull()?.commit
-            out.add(Rule(path, type, title, commit, MarkdownChunker.stripPrivateSpans(doc.body).trim()))
+            out.add(Rule(path, type, title, commit, body.trim()))
         }
         return out.sortedWith(compareBy<Rule>({ RULE_TYPES.indexOf(it.type) }, { it.path }))
     }
@@ -115,12 +119,21 @@ object RulesExport {
         val existing = if (Files.exists(abs)) Files.readString(abs, UTF_8) else null
         val next = splice(existing, render(rules), abs.toString())
         if (next == existing) return Result(false, rules.size, abs)
-        val dir = abs.parent
+        // Write through a symlink (CLAUDE.md -> AGENTS.md) instead of replacing it; the guard above already
+        // checked the resolved path.
+        val dest = if (existing != null) abs.toRealPath() else abs
+        val dir = dest.parent
         Files.createDirectories(dir)
-        val tmp = Files.createTempFile(dir, ".${abs.fileName}.", ".tmp")
+        val posix = Files.getFileStore(dir).supportsFileAttributeView(PosixFileAttributeView::class.java)
+        // createTempFile makes an owner-only file; keep the existing mode, or a usual 0644 for a new file.
+        val perms = if (!posix) null
+            else if (existing != null) Files.getPosixFilePermissions(dest)
+            else PosixFilePermissions.fromString("rw-r--r--")
+        val tmp = Files.createTempFile(dir, ".${dest.fileName}.", ".tmp")
         try {
             Files.writeString(tmp, next, UTF_8)
-            Files.move(tmp, abs, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            if (perms != null) Files.setPosixFilePermissions(tmp, perms)
+            Files.move(tmp, dest, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
         } finally {
             Files.deleteIfExists(tmp)
         }

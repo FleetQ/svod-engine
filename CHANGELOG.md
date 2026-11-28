@@ -29,7 +29,9 @@ independently of the engine; each entry notes the contract version it ships.
   under `messy/` or a dot-folder. Each rule cites its vault path and last commit. The output carries no
   timestamp, the file is rewritten only when its content changes, text outside the markers is kept
   byte-for-byte, and malformed markers or a target inside the (default, `vaults`-aware) vault are refused.
-  Markers quoted inside a note are HTML-escaped so they never break the section. No contract change.
+  Markers quoted inside a note are HTML-escaped so they never break the section; titles come from
+  private-stripped text too. The write is atomic, keeps the file's mode and goes through a symlinked target.
+  No contract change.
 
 ## v1.35.0 — 2026-11-26 (App API contract 0.42.0, unchanged)
 
