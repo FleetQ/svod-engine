@@ -8,7 +8,7 @@ import kotlin.test.assertTrue
 
 /**
  * Keeps docs/compare-hindsight.md honest: its sections, its MCP tool count (the live tools/list), a non-empty
- * "where Hindsight is ahead" section, and linked, dated sources.
+ * "where Hindsight is ahead" section, linked, dated sources, and a ⚠️ plus a date on every Hindsight table cell.
  */
 class CompareHindsightDocsConsistencyTest {
 
@@ -23,14 +23,17 @@ class CompareHindsightDocsConsistencyTest {
 
     private fun lineOf(text: String, offset: Int): Int = text.substring(0, offset).count { it == '\n' } + 1
 
-    /** The page text from the `## <heading>` line up to the next `## ` heading. */
-    private fun section(heading: String): String {
+    /** The line indices of the page from the `## <heading>` line up to (not including) the next `## ` heading. */
+    private fun sectionLines(heading: String): IntRange {
         val lines = page.lines()
         val start = lines.indexOfFirst { it.startsWith("## ") && it.removePrefix("## ").trim().startsWith(heading) }
         assertTrue(start >= 0, "$PAGE has no '## $heading' section")
         val end = (start + 1 until lines.size).firstOrNull { lines[it].startsWith("## ") } ?: lines.size
-        return lines.subList(start, end).joinToString("\n")
+        return start until end
     }
+
+    /** The page text from the `## <heading>` line up to the next `## ` heading. */
+    private fun section(heading: String): String = page.lines().slice(sectionLines(heading)).joinToString("\n")
 
     private companion object {
         const val PAGE = "docs/compare-hindsight.md"
@@ -73,11 +76,9 @@ class CompareHindsightDocsConsistencyTest {
         assertTrue("https://" in sources, "$PAGE '## Sources and date' links no https:// source")
         assertTrue(DATE.containsMatchIn(sources), "$PAGE '## Sources and date' has no YYYY-MM-DD date")
         // Exclude the Sources section by position, not by line text, so an identical line elsewhere is still checked.
-        val lines = page.lines()
-        val sourcesStart = lines.indexOfFirst { it.startsWith("## Sources and date") }
-        val sourcesEnd = (sourcesStart + 1 until lines.size).firstOrNull { lines[it].startsWith("## ") } ?: lines.size
-        val undated = lines.withIndex()
-            .filter { (i, line) -> URL.containsMatchIn(line) && i !in sourcesStart until sourcesEnd && !DATE.containsMatchIn(line) }
+        val sourceLines = sectionLines("Sources and date")
+        val undated = page.lines().withIndex()
+            .filter { (i, line) -> URL.containsMatchIn(line) && i !in sourceLines && !DATE.containsMatchIn(line) }
             .map { (i, line) -> "line ${i + 1}: '${line.trim()}'" }
         assertTrue(undated.isEmpty(), "$PAGE links outside '## Sources and date' must carry a date: $undated")
     }
@@ -86,9 +87,11 @@ class CompareHindsightDocsConsistencyTest {
     fun `every Hindsight cell in the comparison table is marked and dated`() {
         val rows = section("Where Svod differs").lines().filter { it.startsWith("| **") }
         assertTrue(rows.isNotEmpty(), "$PAGE '## Where Svod differs' has no comparison table rows")
+        // Rows are `| **aspect** | Svod | Hindsight |`; a row missing a cell must not let the Svod cell pass as Hindsight's.
         val bad = rows.filter { row ->
-            val hindsight = row.trimEnd().removeSuffix("|").substringAfterLast('|')
-            "⚠️" !in hindsight || !DATE.containsMatchIn(hindsight)
+            val cells = row.trim().removePrefix("|").removeSuffix("|").split('|')
+            val hindsight = cells.getOrNull(2).orEmpty()
+            cells.size != 3 || "⚠️" !in hindsight || !DATE.containsMatchIn(hindsight)
         }
         assertTrue(bad.isEmpty(), "$PAGE Hindsight cells must be marked ⚠️ with a YYYY-MM-DD date: $bad")
     }

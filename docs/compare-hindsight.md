@@ -1,7 +1,7 @@
 # Svod vs Hindsight
 
-Hindsight, by Vectorize, is an open-source memory system for AI agents. ⚠️ It is reported (as of
-2026-11-27) to take what an agent sees, use an LLM to extract facts from it, and later "reflect"
+Hindsight, by Vectorize, is a memory system for AI agents. ⚠️ It is reported (as of 2026-11-27)
+to be open source and to take what an agent sees, use an LLM to extract facts from it, and later "reflect"
 over those facts to form higher-level observations. Svod takes a different path: memory is a git
 repository of Markdown that people and agents both read and edit. If you are choosing between
 them, this page sets out what they have in common, where Svod differs, and where Hindsight is
@@ -27,7 +27,7 @@ it was reported.
 | | Svod | Hindsight |
 |---|---|---|
 | **Store of record** | A folder of ordinary `.md` files with frontmatter, in a git repository, readable and editable in any editor | ⚠️ A database (reported as Postgres with pgvector, as of 2026-11-27) |
-| **Provenance** | Every change is a git commit whose author is the specific agent, the UI or the external editor that made it | ⚠️ Not documented as per-change authorship (as of 2026-11-27) |
+| **Provenance** | Every change is a git commit whose author is the specific agent (or the person bound to it, with a `Svod-Agent` trailer), the UI or the external editor that made it | ⚠️ Not documented as per-change authorship (as of 2026-11-27) |
 | **Memory model** | Typed memories (policy / preference / fact / episode / procedure) with a lifecycle and an optional per-agent review queue | ⚠️ LLM-extracted facts, consolidated by a reflect step (as of 2026-11-27) |
 | **Durability** | Never loses a file: atomic writes, soft-delete to `.trash/` plus a commit, crash recovery; a stale write is surfaced as a conflict, never silently merged | ⚠️ Not documented as a guarantee (as of 2026-11-27) |
 | **Search** | Hybrid BM25 + vector search fused with RRF, in one JVM with in-process embeddings | ⚠️ Not checked (as of 2026-11-27); see its docs for the current retrieval strategies |
@@ -37,7 +37,7 @@ it was reported.
 
 What this means in practice: if you want memory a person can open, read, correct and diff, with
 "which agent wrote this, when, and what did it say before?" answered by git, Svod does that
-locally with no extra service and no model calls on the write path.
+locally with no extra service and no LLM calls on the write path.
 
 ## Where Hindsight is ahead
 
