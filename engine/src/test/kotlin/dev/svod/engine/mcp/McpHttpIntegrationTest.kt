@@ -45,7 +45,8 @@ class McpHttpIntegrationTest {
                 val scribe = connect(port, "write-token")
                 try {
                     val advertised = scribe.listTools().tools
-                    assertEquals(21, advertised.size, "all 21 tools advertised")
+                    assertEquals(23, advertised.size, "all 23 tools advertised")
+                    assertTrue(advertised.any { it.name == "blame" }, "blame is advertised")
                     assertTrue(advertised.any { it.name == "extract_memories" }, "extract_memories is advertised")
 
                     val w = scribe.callTool("write", mapOf("path" to "http/a.md", "content" to "# A\nwritten via mcp"))

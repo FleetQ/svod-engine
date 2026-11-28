@@ -484,6 +484,28 @@ class AppApiServer(
                 val max = call.request.queryParameters["max"]?.toIntOrNull() ?: 100
                 call.respond(HistoryDto(vc.engine.history(path, max).map { CommitInfoDto(it.commit, it.authorName, it.authorEmail, it.epochSeconds, it.message, it.agent) }))
             }
+            get("/api/v1/file/blame") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                val path = call.path() ?: return@get call.badRequest("missing path")
+                val lines = vc.engine.blame(path) ?: return@get call.notFound(path)
+                call.respond(FileBlameDto(dev.svod.engine.core.VaultPath.of(path).value, lines.map { BlameLineDto(it.line, it.text, it.commit, it.authorName, it.authorEmail, it.epochSeconds, it.agent) }))
+            }
+            get("/api/v1/changes") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                val q = call.request.queryParameters
+                val max = q["max"]?.toIntOrNull() ?: 50
+                val page = try {
+                    vc.engine.changes(q["since"], q["before"], max)
+                } catch (e: IllegalArgumentException) {
+                    return@get call.badRequest(e.message ?: "invalid since/before")
+                }
+                call.respond(ChangesDto(page.head, page.changes.map { c ->
+                    ChangeEntryDto(
+                        c.commit, c.authorName, c.authorEmail, c.epochSeconds, c.message, c.agent,
+                        c.paths.map { PathChangeDto(it.path, it.kind.name.lowercase(), it.oldPath) }, c.pathCount, c.pathsTruncated,
+                    )
+                }, page.nextCursor))
+            }
             get("/api/v1/file/diff") {
                 val vc = vault() ?: return@get call.notFound("vault")
                 val path = call.path() ?: return@get call.badRequest("missing path")
@@ -704,6 +726,33 @@ class AppApiServer(
                 } ?: emptyList()
                 call.respond(ConflictsDto(entries))
             }
+            // Engine-admin only (ADMIN_ROUTES); read-only: never creates, writes or truncates the trail.
+            get("/api/v1/audit") {
+                val vc = vault() ?: return@get call.notFound("vault")
+                val q = call.request.queryParameters
+                val agent = q["agent"]?.trim()?.takeIf { it.isNotEmpty() }
+                val outcomes = q["outcome"]?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }?.toSet()?.takeIf { it.isNotEmpty() }
+                val since = q["since"]?.trim()?.takeIf { it.isNotEmpty() }?.let { raw ->
+                    raw.toLongOrNull() ?: runCatching { java.time.Instant.parse(raw).toEpochMilli() }.getOrNull()
+                        ?: return@get call.badRequest("since must be an ISO-8601 instant or epoch milliseconds")
+                }
+                val before = q["before"]?.let { raw ->
+                    raw.trim().toLongOrNull() ?: return@get call.badRequest("before must be an integer seq")
+                }
+                val limit = q["limit"]?.let { raw ->
+                    raw.trim().toIntOrNull()?.takeIf { it in 1..500 } ?: return@get call.badRequest("limit must be between 1 and 500")
+                } ?: 100
+                val page = dev.svod.engine.mcp.AuditLog.query(
+                    dev.svod.engine.mcp.AuditLog.fileFor(vc.engine.root), agent, outcomes, since, before, limit,
+                )
+                call.respond(AuditPageDto(
+                    page.entries.map {
+                        AuditEntryDto(it.seq, java.time.Instant.ofEpochMilli(it.ts).toString(), it.ts, it.agentId, it.tool,
+                            it.outcome, it.path, it.target, it.revision, it.detail)
+                    },
+                    page.total, page.skipped, page.nextBefore,
+                ))
+            }
             post("/api/v1/conflicts/resolve") {
                 val vc = vault() ?: return@post call.notFound("vault")
                 val req = call.receive<ResolveConflictRequestDto>()
@@ -742,7 +791,7 @@ class AppApiServer(
                         if (findings.isNotEmpty()) {
                             // A deliberate override of the scanner: recorded in the vault's audit trail now,
                             // and in the merge commit message when the next cycle writes the file.
-                            dev.svod.engine.mcp.AuditLog(vc.engine.root.resolve(".svod").resolve("audit").resolve("audit.log"))
+                            dev.svod.engine.mcp.AuditLog(dev.svod.engine.mcp.AuditLog.fileFor(vc.engine.root))
                                 .record(principal().author.name, "conflicts.resolve", "secret-override", path = c.path,
                                     detail = "accepted quarantined incoming version; findings: ${findings.joinToString(", ")}")
                         }

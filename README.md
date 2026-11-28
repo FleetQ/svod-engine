@@ -22,7 +22,7 @@ with a conflict, never silently overwritten.
 [Why Svod](#why-svod-exists) ·
 [Feature tour](#what-it-does-feature-tour) ·
 [Architecture](#how-it-works-90-second-architecture) ·
-[Agent interface (21 MCP tools)](#the-agent-interface--21-mcp-tools) ·
+[Agent interface (23 MCP tools)](#the-agent-interface--23-mcp-tools) ·
 [Connecting an LLM agent](#connecting-an-llm-agent) ·
 [App API for UIs](#the-ui-interface--local-app-api) ·
 [Download & install](#download--install) ·
@@ -72,7 +72,7 @@ index. The result:
 | **Hybrid search** | Lucene BM25 (lexical) + optional HNSW kNN vectors (semantic), fused with Reciprocal Rank Fusion. Heading-aware chunking. Filters by tag / path / date; fuzzy / prefix / phrase / field-scoped queries. |
 | **Pluggable embeddings** | Default `onnx-local` runs `multilingual-e5-small` (MIT) in-process via ONNX Runtime — no server, no Python, no network at query time. Or `local-ollama` (a local Ollama server), `remote-openai` (any OpenAI-compatible `/v1/embeddings` endpoint, API key as a Secrets ref), or `none` for a guaranteed BM25-only baseline. Switchable at runtime via `PUT /api/v1/embedder`; `POST /api/v1/embedder/models` lists what a provider can serve. |
 | **Optional reranking** | A second-stage cross-encoder re-scores the fused candidates for a relevance lift — opt-in, default off, degrades to the fused order on any failure. Configured under `reranker` and reported in `GET /settings`. |
-| **MCP server for agents** | 21 tools over streamable HTTP, per-agent bearer tokens → git author (or the bound person, see team sharing), read-only/write roles, token-bucket rate limiting, append-only audit log, optional TLS. Memory review is chosen per agent (`requireReview`). |
+| **MCP server for agents** | 23 tools over streamable HTTP, per-agent bearer tokens → git author (or the bound person, see team sharing), read-only/write roles, token-bucket rate limiting, append-only audit log, optional TLS. Memory review is chosen per agent (`requireReview`). |
 | **Typed memory + review** | `remember` turns an observation into a typed memory note (policy / preference / fact / episode / procedure) with a lifecycle; `context_pack` recalls it (ranked, or the whole rule book with `enumerate=true`). Review is per agent via `agents[].requireReview` (agents without one follow `memory.requireReview`) and **off by default since 1.30.0**; an agent that opts in has its fact/policy wait `provisional` in the review queue (`GET`/`POST /api/v1/memory/review`, the viewer's Memory review pane) until a person approves it. See [ADR-0018](docs/adr/0018-memory-fact-classification.md). |
 | **Local App API + WebSocket** | An HTTP/JSON API for UIs (loopback by default; a shared engine serves it over TLS with personal keys), plus a live `/api/v1/events` stream (agent activity, commits, index updates, conflicts) so a UI feels alive. |
 | **Wikilink graph + thematic graph** | `[[wikilinks]]` parsed into a backlink/outlink graph. Moving or renaming a note **rewrites every backlink in a single commit** — link integrity for free. Optionally (`graph.enabled`), a derived note graph (wikilinks + kNN similarity over the stored vectors) is clustered by Louvain into thematic communities, with optional build-time summaries: MCP `graph_communities` / `graph_community` / `graph_status`, App API `graph/communities` / `graph/community` / `graph/status` / `graph/rebuild`. |
@@ -128,18 +128,24 @@ Full detail: [`docs/architecture.md`](docs/architecture.md) and the ADRs in
 
 ---
 
-## The agent interface — 21 MCP tools
+## The agent interface — 23 MCP tools
 
 Per-agent bearer token authenticates and **becomes the git commit author**. Roles are
 enforced *before* the engine is touched.
 
 **Read (any role):** `read` · `list` · `tree` · `grep` · `search` · `context_pack` · `history` ·
-`diff` · `get_revision` · `link` · `graph_query` · `graph_communities` · `graph_community` · `graph_status`
+`recent_changes` · `diff` · `get_revision` · `blame` · `link` · `graph_query` · `graph_communities` · `graph_community` · `graph_status`
 **Write (WRITE role):** `write` · `edit` · `delete` · `move` · `promote` · `remember` · `extract_memories`
 
 - `tree` shows the folder structure with recursive file counts; `grep` finds exact text or a regex
   and returns line hits. `grep` obeys recall's visibility: captured sessions never, `messy/` drafts
   only with a `messy/` prefix, `<private>` content never.
+- `recent_changes` is the vault-wide change feed for catching up at session start: commits newest
+  first back to `since` (a commit id such as the `head` of your last call, or an ISO date), each with
+  author, agent and changed paths marked add/modify/delete/rename/restore. Page with
+  `before` = `nextCursor`. It lists paths only; `diff`/`get_revision` give the content.
+- `blame` attributes each line of a note at HEAD to the commit that last changed it, with author,
+  date and the `Svod-Agent` when present. Committed history only; renames are not followed.
 
 - `search` runs hybrid retrieval (BM25 + vectors, RRF-fused, plus any reranker) with `mode`
   (`keyword`/`semantic`/`hybrid`) and filters; `context_pack` goes one step further — it assembles
@@ -204,7 +210,8 @@ with one of the bearer tokens from your config's `agents` list. For copy-paste f
 - **Auth:** header `Authorization: Bearer <token>`, where `<token>` is an agent's `token` from the
   config (a literal value or a `env:` / `file:` / `keychain:` Secrets ref). The token *is* the
   identity — its `agentId` becomes the git commit author and its `role` (`WRITE` / `READ_ONLY`) gates
-  every call.
+  every call. An agent may also set an optional `"tools": ["search", "context_pack", ...]` allowlist:
+  `tools/list` then offers only those tools (within its role), and any other tool fails as unknown.
 
 `svod-engine init` (see [Quickstart](#quickstart)) prints every one of the blocks below, filled in with your
 own endpoint and the new agent's token (shown here as `friday-write-token`).
@@ -316,17 +323,18 @@ Principles:
 ## The UI interface — local App API
 
 Loopback HTTP/JSON, validated against [`contract/openapi.yaml`](contract/openapi.yaml) (the
-versioned single source of truth for every client — currently **0.42.0**):
+versioned single source of truth for every client — currently **0.43.0**):
 
 - **Health:** `/health` · `/ready`
 - **Content:** `/api/v1/` `tree` · `file` (GET/PUT/DELETE; DELETE under `.trash/` purges, admin only) ·
-  `file/move` · `file/restore` · `file/history` · `file/diff` · `file/revision` · `file/links` ·
-  `trash` (list soft-deleted files)
+  `file/move` · `file/restore` · `file/history` · `file/diff` · `file/revision` · `file/blame` · `file/links` ·
+  `trash` (list soft-deleted files) · `changes` (vault-wide change feed, paged)
 - **Discovery:** `search` (filter-only "browse by tag" when `q` is omitted) · `graph` · `tags`
 - **Graph (thematic):** `graph/communities` · `graph/community` · `graph/status` · `graph/rebuild`
 - **People & agents** ([ADR-0019](docs/adr/0019-app-api-principals.md),
   [ADR-0020](docs/adr/0020-team-sharing-users-and-roles.md)): `me` · `users` · `users/{id}` ·
-  `users/{id}/key` · `agents` · `agents/{id}` · `stats` (engine admin only)
+  `users/{id}/key` · `agents` · `agents/{id}` · `stats` (engine admin only) ·
+  `audit` (agent audit trail, engine admin only)
 - **Memory:** `memory/review` (GET queue / POST approve, decline, reopen) · `memory/rulebook` ·
   `memory/capture` · `memory/sessions` · `memory/sessions/mark-distilled` · `memory/proposals` ·
   `memory/proposals/{id}` · `memory/dashboard`
@@ -345,7 +353,9 @@ versioned single source of truth for every client — currently **0.42.0**):
 
 The `conflicts` endpoint carries each conflict's `base`/`ours`/`theirs` so a client can render a
 3-way merge; `conflicts/resolve` commits the merged content through the single writer and clears
-it — the engine half of the UI's conflict-resolution screen.
+it. The reference web viewer's **Sync conflicts** pane (`examples/web-viewer`) is a ready-made
+client: it shows base / ours / theirs side by side and resolves with keep ours (`keepMine`), take
+theirs (`acceptIncoming`) or an edited merge (`content`).
 
 The WebSocket streams `agent.activity` / `commit.created` / `index.updated` / `index.progress` /
 `file.changed` / `conflict` / `engine.status` live — what powers the "watch your agents think" feed.
@@ -554,7 +564,8 @@ did we decide X, and which agent proposed it?" with `git log`.
 Your laptop and a server both run Svod over the same git remote. Edits on either replicate;
 YAML frontmatter merges key-by-key, note bodies merge via git's 3-way, and a genuine conflict
 is surfaced at `/api/v1/conflicts` (both versions preserved) rather than silently picking a
-winner. Each host holds the full history — lose a machine, lose nothing.
+winner; the reference web viewer's Sync conflicts pane lets you settle it side by side. Each
+host holds the full history — lose a machine, lose nothing.
 
 **5. A custom dashboard / second-brain UI.**
 Point any client at the loopback API and subscribe to `/api/v1/events`. You get a live feed of
@@ -577,7 +588,7 @@ a working, dependency-free reference you can crib from.)
 | **Conflict surfaced, not auto-merged** | ✅ | ❌ | ❌ | ⚠️ | ❌ | n/a | ❌ |
 | **Hybrid search (BM25 + vectors)** | ✅ RRF | ⚠️ vector-first | ⚠️ | ⚠️ full-text first | ✅ | ⚠️ plugins | ⚠️ vector-only |
 | **Runs fully local, no Python/server** | ✅ single JVM, in-proc embeddings | ⚠️ | ⚠️ | ⚠️ local, needs Python | ⚠️ | ✅ | ⚠️ |
-| **Agent protocol** | ✅ MCP (21 tools) | SDK | SDK | ✅ MCP | SDK | ❌ | ❌ (DIY) |
+| **Agent protocol** | ✅ MCP (23 tools) | SDK | SDK | ✅ MCP | SDK | ❌ | ❌ (DIY) |
 | **Multi-host replication** | ✅ git transport | ⚠️ hosted | ⚠️ | ⚠️ cloud sync | ⚠️ hosted | ⚠️ sync apps | ⚠️ |
 | **Lock-in** | None (git clone) | High | Medium | Low | High | None | High |
 | **Licence** | Apache-2.0 | Apache-2.0 | Apache-2.0 | AGPL-3.0 | — | Proprietary (free app) | Varies |
@@ -659,7 +670,7 @@ person-authored commits) → trash listing/purge → SSRF
 guard for hosted engines (`denyPrivateRemotes`) → admin-only `GET /stats` counters.
 Full suite green;
 CI gates every change; packaged as self-contained app-images **and** GraalVM `native-image` single
-binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.42.0**
+binaries for macOS / Linux / Windows (see **Download & install**). App API **contract 0.43.0**
 (versioned independently of the engine). See [`docs/adr/`](docs/adr/) (ADR-0001 through 0021) for the decision record.
 
 Deferred (documented, not hidden): encryption built into the engine. Encryption at rest is handled by host volume encryption with a key the customer holds ([ADR-0021](docs/adr/0021-encryption-at-rest.md), [paths to put on the volume](docs/security-overview.md#encryption-at-rest)).

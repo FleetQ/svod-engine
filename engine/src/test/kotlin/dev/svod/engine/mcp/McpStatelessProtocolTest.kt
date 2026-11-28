@@ -93,7 +93,7 @@ class McpStatelessProtocolTest {
                     )
                     assertEquals(HttpStatusCode.OK, res.status)
                     val result = res.jsonBody()["result"]!!.jsonObject
-                    assertEquals(21,result["tools"]!!.jsonArray.size, "all 21 tools advertised statelessly")
+                    assertEquals(23,result["tools"]!!.jsonArray.size, "all 23 tools advertised statelessly")
                     assertEquals(McpProtocol.TOOLS_TTL_MS, result["ttlMs"]!!.jsonPrimitive.long)
                     assertEquals(McpProtocol.TOOLS_CACHE_SCOPE, result["cacheScope"]!!.jsonPrimitive.content)
                     // the schema still travels with each tool
@@ -223,7 +223,7 @@ class McpStatelessProtocolTest {
                 val legacy = Client(Implementation(name = "legacy-test-client", version = "1.0.0"))
                 legacy.connect(StreamableHttpClientTransport(client = legacyHttp, url = "http://127.0.0.1:${server.port}/mcp"))
                 try {
-                    assertEquals(21,legacy.listTools().tools.size, "the handshake path still advertises 21 tools")
+                    assertEquals(23,legacy.listTools().tools.size, "the handshake path still advertises 23 tools")
                     legacy.callTool("write", mapOf("path" to "both/legacy.md", "content" to "# legacy"))
                     assertEquals("Scribe", fx.engine.history("both/legacy.md").first().authorName)
                 } finally { legacy.close(); legacyHttp.close() }

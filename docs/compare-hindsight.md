@@ -32,7 +32,7 @@ it was reported.
 | **Durability** | Never loses a file: atomic writes, soft-delete to `.trash/` plus a commit, crash recovery; a stale write is surfaced as a conflict, never silently merged | ⚠️ Not documented as a guarantee (as of 2026-11-27) |
 | **Search** | Hybrid BM25 + vector search fused with RRF, in one JVM with in-process embeddings | ⚠️ Not checked (as of 2026-11-27); see its docs for the current retrieval strategies |
 | **Write path cost** | No LLM call is required to store a memory, and with a local embedder (`onnx-local`, `local-ollama` or `none`) there is no per-token cloud cost | ⚠️ Fact extraction calls an LLM on write (as of 2026-11-27) |
-| **Agent interface** | 21 MCP tools, usable from any MCP-capable agent | ⚠️ API, SDKs and an MCP server (as of 2026-11-27) |
+| **Agent interface** | 23 MCP tools, usable from any MCP-capable agent | ⚠️ API, SDKs and an MCP server (as of 2026-11-27) |
 | **Lock-in** | Leaving is a `git clone`: the memory is plain Markdown | ⚠️ An export from its database (as of 2026-11-27) |
 
 What this means in practice: if you want memory a person can open, read, correct and diff, with

@@ -174,6 +174,15 @@ class DoctorTest {
     }
 
     @Test
+    fun `an unknown tool in an agent allowlist is a config failure naming agent and tool`() {
+        val c = validConfig()
+        val bad = c.copy(agents = listOf(c.agents.single().copy(tools = listOf("search", "serch"))))
+        val fail = Doctor.validation(bad).single { it.status == Status.FAIL }
+        assertEquals("config", fail.name)
+        assertTrue("friday" in fail.message && "serch" in fail.message, fail.toString())
+    }
+
+    @Test
     fun `every validate error is its own failure`() {
         val c = validConfig()
         val bad = c.copy(mcpPort = c.appApiPort, agents = listOf(c.agents.single().copy(role = "BOSS")))

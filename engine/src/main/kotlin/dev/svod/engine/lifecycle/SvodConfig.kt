@@ -7,6 +7,7 @@ import dev.svod.engine.index.RerankerConfig
 import dev.svod.engine.index.RerankerProvider
 import dev.svod.engine.mcp.AgentRegistry
 import dev.svod.engine.mcp.AgentRole
+import dev.svod.engine.mcp.GrantResolver
 import dev.svod.engine.mcp.GrantRole
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
@@ -345,6 +346,11 @@ data class SvodConfig(
         val user: String? = null,
         /** Explicit role per granted vault (`reader` | `writer` | `maintainer`), from `{vault, role}` entries. */
         val vaultRoles: Map<String, String> = emptyMap(),
+        /**
+         * Optional allowlist of MCP tool names this agent is offered (within its role). Null ⇒ every tool
+         * the role allows; tools outside the list fail like unknown tools.
+         */
+        val tools: List<String>? = null,
     ) {
         /**
          * This agent with its grants narrowed to [keep]. Roles of dropped vaults go with them; if that
@@ -522,6 +528,11 @@ data class SvodConfig(
                 if (GrantRole.parse(r) == null) errors += "agent '${a.agentId}' role for vault '$v' must be one of ${GrantRole.LABELS}, was '$r'"
                 if (v !in a.vaults) errors += "agent '${a.agentId}' has a role for vault '$v' it is not granted"
             }
+            a.tools?.let { listed ->
+                if (listed.isEmpty()) errors += "agent '${a.agentId}' tools must list at least one tool (omit it for all tools)"
+                val known = GrantResolver.REQUIRED.keys
+                for (t in listed) if (t !in known) errors += "agent '${a.agentId}' lists unknown tool '$t'; known: ${known.sorted()}"
+            }
         }
         if (syncRemotes.isNotEmpty() && hostId.isBlank()) errors += "hostId must be set when syncRemotes is configured"
         if (mcp.sessionIdleMinutes < 1) errors += "mcp.sessionIdleMinutes must be >= 1, was ${mcp.sessionIdleMinutes}"
@@ -648,6 +659,7 @@ data class SvodConfig(
             requireReview = a.requireReview,
             userId = person?.userId,
             grantRoles = a.vaultRoles.mapNotNull { (v, r) -> GrantRole.parse(r)?.let { v to it } }.toMap(),
+            tools = a.tools,
         )
     }
 

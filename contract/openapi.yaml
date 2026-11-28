@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Svod App API
-  version: 0.42.0
+  version: 0.43.0
   description: >
     Local control + client API for the Svod engine. Binds to 127.0.0.1 by default; a shared
     engine may leave loopback only with TLS, personal keys (`Authorization: Bearer`) and
@@ -198,6 +198,32 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/CommitInfo" }
 
+  /api/v1/changes:
+    get:
+      tags: [files]
+      summary: Vault-wide change feed (newest first, paged)
+      description: >
+        Since 0.43.0. Commits from HEAD back to `since`, newest first, each with its changed paths
+        (`add`, `modify`, `delete`, `rename`, `restore`; a soft delete into `.trash/` is `delete`, a move out
+        of it `restore`). `since` is a commit id (that commit and older are left out; e.g. the `head` of the
+        previous call) or an ISO-8601 instant or date (start of that UTC day). Page older with
+        `before` = the previous `nextCursor`. Paths and metadata only; use `/file/diff` or `/file/revision`
+        for content. At most 200 paths are listed per commit (`pathCount`, `pathsTruncated`). Needs read
+        access to the vault.
+      operationId: changes
+      parameters:
+        - { name: since, in: query, required: false, schema: { type: string } }
+        - { name: before, in: query, required: false, schema: { type: string } }
+        - { name: max, in: query, required: false, schema: { type: integer, default: 50, minimum: 1, maximum: 200 } }
+        - $ref: "#/components/parameters/VaultQuery"
+      responses:
+        "200":
+          description: One page of the feed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangesPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+
   /api/v1/file/diff:
     get:
       tags: [files]
@@ -229,6 +255,26 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/FileContent" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/file/blame:
+    get:
+      tags: [files]
+      summary: Line-by-line attribution for a note at HEAD
+      description: >
+        Each line of the note as committed at HEAD, with the commit, author, date and `Svod-Agent` of the
+        commit that last changed it. Committed history only (not the working tree); renames are not followed.
+        Since 0.43.0.
+      operationId: fileBlame
+      parameters:
+        - $ref: "#/components/parameters/PathQuery"
+      responses:
+        "200":
+          description: Blame of every line, in order
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileBlame" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/file/links:
@@ -695,6 +741,54 @@ paths:
               schema: { $ref: "#/components/schemas/Stats" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /api/v1/audit:
+    get:
+      tags: [meta]
+      summary: >
+        The vault's agent audit trail (admin only), newest first. ADDITIVE in 0.42.0 (no contract
+        version bump; older clients never call it). Read-only: the route never creates, writes or
+        truncates the trail. Lines record agent writes, blocked writes, conflicts, role denials, rate
+        limits and secret overrides. A malformed or half-written line is skipped and counted in
+        `skipped`, never an error. A non-admin gets 403; an unknown or ungranted vault 404.
+      operationId: getAudit
+      parameters:
+        - $ref: "#/components/parameters/VaultQuery"
+        - name: agent
+          in: query
+          required: false
+          description: Only entries by this agent id.
+          schema: { type: string }
+        - name: outcome
+          in: query
+          required: false
+          description: Comma-separated outcomes to keep (e.g. `blocked,conflict`). Omitted ⇒ every outcome.
+          schema: { type: string }
+        - name: since
+          in: query
+          required: false
+          description: Only entries at or after this time — an ISO-8601 instant or epoch milliseconds. Anything else is 400.
+          schema: { type: string }
+        - name: before
+          in: query
+          required: false
+          description: Paging cursor — only entries with `seq` below this (pass the previous page's `nextBefore`).
+          schema: { type: integer, format: int64 }
+        - name: limit
+          in: query
+          required: false
+          description: Page size, 1–500 (default 100). Out of range is 400.
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200":
+          description: One page of the trail
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   /api/v1/users:
     get:
@@ -1799,6 +1893,66 @@ components:
           type: string
           description: Agent id from the commit's `Svod-Agent:` trailer; absent otherwise. Since 0.39.0 (ADR-0020).
 
+    FileBlame:
+      type: object
+      required: [path, lines]
+      properties:
+        path: { type: string }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/BlameLine" }
+
+    BlameLine:
+      type: object
+      required: [line, text, commit, author, email, epochSeconds]
+      properties:
+        line: { type: integer, description: "1-based line number." }
+        text: { type: string, description: "Line content without its line ending." }
+        commit: { type: string, description: "Commit that last changed this line." }
+        author: { type: string }
+        email: { type: string }
+        epochSeconds: { type: integer, format: int64 }
+        agent:
+          type: string
+          description: Agent id from that commit's `Svod-Agent:` trailer; absent otherwise.
+
+    ChangesPage:
+      type: object
+      description: Since 0.43.0. One page of `GET /changes`.
+      required: [changes]
+      properties:
+        head: { type: string, description: "Current HEAD commit; absent for an empty repository. Pass it as `since` next time." }
+        changes:
+          type: array
+          items: { $ref: "#/components/schemas/ChangeEntry" }
+        nextCursor: { type: string, description: "`before` for the next (older) page; absent on the last page." }
+
+    ChangeEntry:
+      type: object
+      required: [commit, author, email, epochSeconds, message, paths, pathCount, pathsTruncated]
+      properties:
+        commit: { type: string }
+        author: { type: string }
+        email: { type: string }
+        epochSeconds: { type: integer, format: int64 }
+        message: { type: string }
+        agent:
+          type: string
+          description: Agent id from the commit's `Svod-Agent:` trailer; absent otherwise.
+        paths:
+          type: array
+          items: { $ref: "#/components/schemas/PathChange" }
+        pathCount: { type: integer, description: "Changed paths in the commit, before the 200-path cap." }
+        pathsTruncated: { type: boolean }
+
+    PathChange:
+      type: object
+      required: [path, kind]
+      properties:
+        path: { type: string, description: "The path after the change (the `.trash/` path for a delete)." }
+        kind: { type: string, enum: [add, modify, delete, rename, restore] }
+        oldPath: { type: string, description: "The path before a rename, soft delete or restore." }
+
     DiffResult:
       type: object
       required: [path, from, to, diff]
@@ -2567,6 +2721,37 @@ components:
               lastCommitAt: { type: string, format: date-time, nullable: true, description: "Time of the vault's HEAD commit; absent for an empty repository." }
         agents: { type: integer, description: "Number of configured MCP agents." }
         lastAgentRequestAt: { type: string, format: date-time, nullable: true, description: "Newest authenticated MCP request by any agent since process start; absent when none." }
+
+    AuditPage:
+      type: object
+      description: ADDITIVE in 0.42.0. One page of GET /api/v1/audit, newest first.
+      required: [entries, total, skipped]
+      properties:
+        entries:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEntry" }
+        total: { type: integer, description: "Entries matching the filters, before paging." }
+        skipped: { type: integer, description: "Lines that could not be read (malformed or half-written) and were left out." }
+        nextBefore: { type: integer, format: int64, nullable: true, description: "Pass as `before` for the next (older) page; absent when no more matches remain." }
+
+    AuditEntry:
+      type: object
+      description: ADDITIVE in 0.42.0. One line of a vault's agent audit trail.
+      required: [seq, ts, tsMs, agentId, tool, outcome]
+      properties:
+        seq: { type: integer, format: int64, description: "1-based line number in the trail; a stable paging cursor." }
+        ts: { type: string, format: date-time }
+        tsMs: { type: integer, format: int64, description: "Same instant as `ts`, in epoch milliseconds." }
+        agentId: { type: string }
+        tool: { type: string, description: "MCP tool (or App API action, e.g. conflicts.resolve) that was attempted." }
+        outcome: { type: string, description: "e.g. ok, blocked, conflict, denied, rate_limited, not_found, secret-override." }
+        path: { type: string, nullable: true }
+        target: { type: string, nullable: true }
+        revision: { type: string, nullable: true }
+        detail:
+          type: string
+          nullable: true
+          description: Scanner rule names and commit ids only — never the matched (secret) values.
 
     Metrics:
       type: object
