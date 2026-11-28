@@ -217,6 +217,15 @@ not a running, unlocked host.
   (the route never creates, writes or truncates the file), newest first, filterable by agent,
   outcome and since, and paged. Non-admins get 403. Entries carry scanner rule names and commit
   ids, never secret values.
+- **Hash chain.** Each agent audit entry carries `prevHash` (the previous entry's `hash`, or 64
+  zeros for the first chained entry) and `hash` (SHA-256 of the entry with `prevHash` set and
+  `hash` left out), so the lines form a chain. `svod-engine audit-verify <config.json>` checks
+  every configured vault's chain read-only (it never writes the file and can run while the engine
+  is up) and exits 1 at the first edited, removed or reordered line, or a line inserted after the
+  first chained line. A chained line counts as edited unless it is byte-for-byte the engine's own
+  encoding, so extra keys, reordered keys or changed whitespace are caught too. Lines written
+  before this version have no hash and count as pre-chain; they are never rewritten. The App API
+  log `audit-api.log` is not chained.
 - **People.** Every keyed App API request, and every refusal, is one JSON line in
   `audit-api.log` in the config directory. The file is created 0600 and never contains request
   bodies, query strings (except the `vault` parameter) or `Authorization` values
@@ -300,6 +309,18 @@ The engine makes no outbound connections except these:
 - **No SOC 2, ISO 27001 or HIPAA attestation.** Svod is software you run yourself, not a hosted
   service.
 - **No audit log rotation or retention.** The audit log files grow until the operator rotates them.
+- **The agent audit log's hash chain has no outside anchor.** Someone with write access to
+  `.svod/audit/audit.log` can rewrite it in full, recomputing every later hash, or cut lines off
+  the end, and `audit-verify` will not notice. Hash-less lines are accepted as pre-chain only
+  before the first chained line, so made-up hash-less entries added at the start of the file are
+  not detected either (`audit-verify` prints the pre-chain count; on a vault whose log was chained
+  from the start it should be 0). For stronger guarantees, copy the log or its last hash off the
+  machine regularly.
+- **`audit-verify` can raise a false alarm while the engine writes.** A last line without its
+  newline is reported as an incomplete last line (still being written, or torn by a crash).
+  Run the check again; if it persists, the line was torn by a crash and every later run exits 1
+  until an operator looks at it. The engine's next entry starts on a new line and chains from the
+  last whole entry, so deleting the torn line restores a valid chain.
 - **Purge does not rewrite git history** (see [Deletion and retention](#deletion-and-retention)).
 - **No key or token expiry.** Keys stay valid until revoked or rotated.
 - **The secret scan has exceptions.** Session transcripts stored through

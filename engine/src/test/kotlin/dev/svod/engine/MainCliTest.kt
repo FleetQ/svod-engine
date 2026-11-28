@@ -3,6 +3,8 @@ package dev.svod.engine
 import dev.svod.engine.lifecycle.ApiCompatibility
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
+import dev.svod.engine.mcp.AuditLog
+import java.nio.file.Files
 import java.nio.file.Paths
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -102,5 +104,43 @@ class MainCliTest {
         val ok = startupBanner(withAgent, 7517, 7518)
         assertFalse(ok.any { "no agents configured" in it }, ok.joinToString("\n"))
         assertEquals(4, ok.size)
+    }
+
+    @Test
+    fun `audit-verify is parsed and listed in the usage`() {
+        assertEquals(Command.AuditVerify(listOf("c.json")), parseCommand(arrayOf("audit-verify", "c.json")))
+        val u = usageText()
+        assertTrue("svod-engine audit-verify <config.json>" in u, u)
+    }
+
+    @Test
+    fun `auditVerifyReport reports ok, missing and broken chains`() {
+        val tmp = Files.createTempDirectory("svod-audit-verify-")
+        try {
+            val good = tmp.resolve("good")
+            val none = tmp.resolve("none")
+            val bad = tmp.resolve("bad")
+            listOf(good, none, bad).forEach { Files.createDirectories(it) }
+            AuditLog(AuditLog.fileFor(good)).apply { record("a", "write", "ok", "n.md"); record("a", "edit", "ok", "n.md") }
+            val badFile = AuditLog.fileFor(bad)
+            AuditLog(badFile).apply { record("a", "write", "ok", "x.md"); record("a", "edit", "ok", "x.md") }
+            Files.writeString(badFile, Files.readString(badFile).replace("x.md", "y.md"))
+
+            val okOnly = SvodConfig(
+                vaults = listOf(SvodConfig.VaultSettings("g", good.toString()), SvodConfig.VaultSettings("n", none.toString())),
+            )
+            val (lines, code) = auditVerifyReport(okOnly)
+            assertEquals(0, code, lines.joinToString("\n"))
+            assertTrue(lines.any { it.startsWith("vault g: ok") && "2 chained" in it }, lines.joinToString("\n"))
+            assertTrue(lines.any { it == "vault n: no audit log" }, lines.joinToString("\n"))
+            assertFalse(Files.exists(AuditLog.fileFor(none)), "audit-verify must not create a log")
+
+            val withBad = okOnly.copy(vaults = okOnly.vaults + SvodConfig.VaultSettings("b", bad.toString()))
+            val (badLines, badCode) = auditVerifyReport(withBad)
+            assertEquals(1, badCode, badLines.joinToString("\n"))
+            assertTrue(badLines.any { it.startsWith("vault b: BROKEN at line 1") }, badLines.joinToString("\n"))
+        } finally {
+            tmp.toFile().deleteRecursively()
+        }
     }
 }

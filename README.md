@@ -459,6 +459,7 @@ svod-engine ~/svod/config.json             # start the engine with it
 svod-engine doctor ~/svod/config.json      # check the setup without changing anything (exits 1 on a failure)
 svod-engine eval ~/svod/config.json golden.jsonl # score search quality on your own notes (engine stopped)
 svod-engine digest ~/svod/config.json proj # write proj/index.md + proj/log.md from git history (engine stopped)
+svod-engine audit-verify ~/svod/config.json # check the agent audit log's hash chain (exits 1 on tampering)
 ```
 
 `eval` reports recall@k, nDCG@10 and MRR per search mode for a golden set you write; see
