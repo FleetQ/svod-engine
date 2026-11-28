@@ -56,6 +56,18 @@
     });
   }
 
+  // Must match style.css's stacking breakpoint (@media (max-width: 1100px)).
+  const oneColumn = window.matchMedia("(max-width: 1100px)");
+
+  // In the one-column layout the picked note or diff sits far below the list: bring its heading into
+  // view and move focus there. The multi-column layout keeps focus where it is.
+  function revealPane(headingId) {
+    if (!oneColumn.matches) return;
+    const h = $(headingId);
+    h.scrollIntoView({ block: "start" });
+    h.focus({ preventScroll: true });
+  }
+
   function setConnected(on) {
     statusEl.textContent = on ? "connected" : "disconnected";
     statusEl.className = "status " + (on ? "on" : "off");
@@ -104,6 +116,7 @@
     document.querySelectorAll(".item.active, .history .commit.active").forEach((e) => e.classList.remove("active"));
     li.classList.add("active");
     showDiff(path, commit);
+    revealPane("diffHeading");
   }
 
   // Shared by the feed and a note's history: diff a commit against its parent.
@@ -253,6 +266,7 @@
     const seq = ++noteSeq;
     const p = encodeURIComponent(path);
     $("note").classList.remove("hidden");
+    revealPane("noteHeading");
     $("notePath").textContent = path;
     $("noteMeta").textContent = "";
     $("noteContent").textContent = "loading…";
