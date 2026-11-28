@@ -315,6 +315,10 @@
     const seq = ++reviewSeq;
     try {
       const r = await api(`${base}/api/v1/memory/review?limit=100`, { cache: "no-store" });
+      if (r.status === 401) {
+        if (seq === reviewSeq) showLocked();
+        return;
+      }
       if (!r.ok) {
         const msg = await errorText(r, "review list failed");
         if (seq === reviewSeq) { reviewMsg.textContent = msg; $("reviewCount").textContent = ""; }
@@ -342,6 +346,7 @@
 
     $("reviewCount").textContent =
       `${total} waiting` + (total > items.length ? ` · showing ${items.length}` : "");
+    reviewList.removeAttribute("aria-busy");
     reviewList.innerHTML = "";
     if (!items.length && !reviewed.size) {
       const li = document.createElement("li");
@@ -453,6 +458,10 @@
     const seq = ++conflictSeq;
     try {
       const r = await api(`${base}/api/v1/conflicts`, { cache: "no-store" });
+      if (r.status === 401) {
+        if (seq === conflictSeq) showLocked();
+        return;
+      }
       if (!r.ok) {
         const msg = await errorText(r, "conflict list failed");
         if (seq === conflictSeq) { conflictMsg.textContent = msg; $("conflictCount").textContent = ""; }
@@ -488,6 +497,7 @@
     const listTop = conflictList.scrollTop;
 
     $("conflictCount").textContent = items.length ? `${items.length} open` : "";
+    conflictList.removeAttribute("aria-busy");
     conflictList.innerHTML = "";
     if (!items.length) {
       const li = document.createElement("li");
@@ -701,6 +711,68 @@
     reconnectTimer = setTimeout(connect, 1500);
   }
 
+  // ── locked / loading placeholders ─────────────────────────────────────
+  // A pane must never claim "nothing here" when it could not load: a 401 shows that a key is needed.
+  const feedWatching = feedEmpty ? feedEmpty.textContent : "";
+
+  function setPlaceholder(list, text) {
+    list.innerHTML = "";
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = text;
+    list.append(li);
+    return li;
+  }
+
+  function keyButton() {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "ghost linkish";
+    b.textContent = "Enter API key";
+    b.addEventListener("click", () => keyEl.focus());
+    return b;
+  }
+
+  // Drop both lists' rows and counts. A list reply still in flight (for the previous engine or key)
+  // must not draw rows back over what replaces them.
+  function resetLists() {
+    reviewSeq++;
+    conflictSeq++;
+    clearTimeout(reviewTimer);
+    clearTimeout(conflictTimer);
+    reviewItems.clear();
+    conflictItems.clear();
+    $("reviewCount").textContent = "";
+    $("conflictCount").textContent = "";
+  }
+
+  function showLocked() {
+    const text = apiKey
+      ? "The API key was rejected. Enter another above to load this."
+      : "API key needed. Enter an API key above to load this.";
+    // Every 401 path lands here, so the pill never says "connected" over a locked pane.
+    statusEl.textContent = apiKey ? "key rejected" : "API key needed";
+    statusEl.className = "status off";
+    resetLists();
+    for (const list of [reviewList, conflictList]) {
+      list.removeAttribute("aria-busy");
+      setPlaceholder(list, text + " ").append(keyButton());
+    }
+    if (feedEmpty && feedEmpty.isConnected) {
+      feedEmpty.textContent = text + " ";
+      feedEmpty.append(keyButton());
+    }
+  }
+
+  function showLoading() {
+    resetLists();
+    for (const list of [reviewList, conflictList]) {
+      setPlaceholder(list, "Loading...");
+      list.setAttribute("aria-busy", "true");
+    }
+    if (feedEmpty && feedEmpty.isConnected) feedEmpty.textContent = feedWatching;
+  }
+
   async function connect() {
     try {
       const r = await fetch(`${base}/ready`, { cache: "no-store" });
@@ -710,10 +782,11 @@
       // would only be refused and retried every 1.5 s.
       const probe = await api(`${base}/api/v1/index/status`, { cache: "no-store" });
       if (probe.status === 401) {
-        statusEl.textContent = apiKey ? "key rejected" : "API key needed";
-        statusEl.className = "status off";
+        showLocked();
         return;
       }
+      // A reconnect that is now accepted must not leave the feed saying a key is needed.
+      if (feedEmpty && feedEmpty.isConnected) feedEmpty.textContent = feedWatching;
       refreshIndexInfo();
       loadReview();
       loadConflicts();
@@ -740,12 +813,10 @@
     conflictDrafts.clear();
     // Its rows too: a resolve clicked on one would be sent to the new engine. A list request still
     // in flight to the old engine must not draw them back.
-    conflictSeq++;
-    clearTimeout(conflictTimer);
-    conflictItems.clear();
-    conflictList.innerHTML = "";
-    $("conflictCount").textContent = "";
-    if (ws) try { ws.close(); } catch (_) {}
+    showLoading();
+    // Without dropping onclose, the old socket's close schedules a second connect(): two live sockets.
+    clearTimeout(reconnectTimer);
+    if (ws) try { ws.onclose = null; ws.close(); } catch (_) {}
     connect();
   });
   keyEl.addEventListener("change", () => {
@@ -754,6 +825,7 @@
     else sessionStorage.removeItem(keyStoreKey());
     clearTimeout(reconnectTimer);
     if (ws) try { ws.onclose = null; ws.close(); } catch (_) {}
+    showLoading();
     connect();
   });
   $("retry").addEventListener("click", connect);

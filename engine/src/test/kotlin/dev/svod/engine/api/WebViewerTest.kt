@@ -162,6 +162,75 @@ class WebViewerTest {
         }
     }
 
+    private fun <T> withBundledViewer(block: (port: Int) -> T): T {
+        val viewer = Paths.get(System.getProperty("user.dir")).parent.resolve("examples/web-viewer")
+        assertTrue(Files.isRegularFile(viewer.resolve("index.html")), "bundled viewer at $viewer")
+        val vault = Files.createTempDirectory("svod-viewer-")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val engine = SvodEngine.open(vault, scope)
+        val index = IndexService(vault, vault.resolve(".svod").resolve("index"), NoneEmbedder).start()
+        val api = AppApiServer(
+            engine, index, EventBus(),
+            config = AppApiServer.Config(webViewerPath = viewer.toString()),
+        ).start(0)
+        try {
+            return block(api.port)
+        } finally {
+            api.stop(); index.close(); engine.close()
+        }
+    }
+
+    /** The first row of a list in index.html, plus the list's opening tag. */
+    private fun firstRow(page: String, id: String): Pair<String, String> {
+        val open = Regex("""<ol[^>]*id="$id"[^>]*>""").find(page) ?: error("no <ol id=\"$id\"> in index.html")
+        val rest = page.substring(open.range.last + 1)
+        val li = Regex("""<li[^>]*>([\s\S]*?)</li>""").find(rest) ?: error("no row in #$id")
+        return open.value to li.value
+    }
+
+    @Test
+    fun `review and conflict panes start loading, not empty`() {
+        withBundledViewer { port ->
+            val page = get(port, "/").body()
+            for (id in listOf("reviewList", "conflictList")) {
+                val (ol, li) = firstRow(page, id)
+                assertTrue(ol.contains("aria-busy=\"true\""), "#$id must start aria-busy, got: $ol")
+                assertTrue(li.contains("class=\"empty\"") && li.contains("Loading..."), "#$id must start as Loading..., got: $li")
+            }
+            assertTrue("Nothing is waiting for review." !in page, "index.html must not claim the review queue is empty")
+            assertTrue("No open sync conflicts." !in page, "index.html must not claim there are no conflicts")
+        }
+    }
+
+    @Test
+    fun `viewer shows an API-key-needed state on 401 instead of empty lists`() {
+        withBundledViewer { port ->
+            val js = get(port, "/app.js").body()
+            for (s in listOf(
+                "function showLocked",
+                "Enter an API key above to load this",
+                "The API key was rejected. Enter another above to load this.",
+                "Enter API key",
+                "keyEl.focus()",
+                "removeAttribute(\"aria-busy\")",
+            )) {
+                assertTrue(js.contains(s), "app.js must contain $s")
+            }
+            // connect(), loadReview() and loadConflicts() all route a 401 to the locked state. Match the
+            // exact call sites: act() and resolveConflict() already test `status === 401`, and the
+            // `function showLocked()` declaration would also count as a bare `showLocked()` match.
+            for (s in listOf("if (seq === reviewSeq) showLocked();", "if (seq === conflictSeq) showLocked();")) {
+                assertTrue(js.contains(s), "app.js must route a list 401 to the locked state: $s")
+            }
+            assertTrue(
+                Regex("""probe\.status === 401\) \{\s*showLocked\(\);""").containsMatchIn(js),
+                "connect() must route a 401 probe to the locked state",
+            )
+            val css = get(port, "/style.css").body()
+            assertTrue(css.contains(".linkish"), "style.css must style the in-row key button")
+        }
+    }
+
     @Test
     fun `no viewer route when unconfigured`() {
         val vault = Files.createTempDirectory("svod-viewer-")

@@ -82,8 +82,8 @@
         </span>
       </div>
       <p id="reviewMsg" class="muted review-msg" role="status"></p>
-      <ol id="reviewList" class="review">
-        <li class="empty">Nothing is waiting for review.</li>
+      <ol id="reviewList" class="review" aria-busy="true">
+        <li class="empty">Loading...</li>
       </ol>
     </section>
 
@@ -96,8 +96,8 @@
         </span>
       </div>
       <p id="conflictMsg" class="muted review-msg" role="status"></p>
-      <ol id="conflictList" class="conflicts">
-        <li class="empty">No open sync conflicts.</li>
+      <ol id="conflictList" class="conflicts" aria-busy="true">
+        <li class="empty">Loading...</li>
       </ol>
     </section>
   </main>
