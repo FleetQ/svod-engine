@@ -27,7 +27,8 @@ independently of the engine; each entry notes the contract version it ships.
   changes since the last session (`GET /api/v1/changes?since=` the saved head). `svod-capture.sh` (`Stop`,
   `PreCompact`, `SessionEnd`) posts the compacted transcript to `POST /api/v1/memory/capture`; `Stop` posts only
   on the first capture or once the transcript has doubled. A test checks the routes and fields the scripts declare
-  against the contract, the server and a live engine. No contract change.
+  against the contract and the server routes, and that a live engine returns the required response fields and
+  stores the capture fields. The scripts themselves are not run by the test. No contract change.
 
 ## v1.35.0 — 2026-11-26 (App API contract 0.42.0, unchanged)
 

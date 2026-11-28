@@ -109,7 +109,9 @@ class ClaudeCodeHooksDocTest {
                 assertTrue(u.fields.isNotEmpty(), "$script: ${u.method} ${u.path} lists no fields")
                 assertTrue(text.contains(u.path), "$script declares ${u.path} but never uses it")
             }
-            assertTrue(text.contains("exit 0"), "$script must end every path with exit 0")
+            assertEquals("exit 0", text.trimEnd().lines().last().trim(), "$script must end with exit 0")
+            val exits = Regex("""\bexit\s+(\S+)""").findAll(text).map { it.groupValues[1] }.toSet()
+            assertEquals(setOf("0"), exits, "$script must only ever exit 0")
         }
         val routes = allUses.map { "${it.method} ${it.path}" }.toSet()
         assertEquals(
@@ -158,11 +160,30 @@ class ClaudeCodeHooksDocTest {
                 val key = "${u.method} ${u.path}"
                 val r = assertNotNull(live[key], "no live call for $key")
                 assertEquals(200, r.statusCode(), "$key: ${r.body()}")
-                val seen = keys(Json.parseToJsonElement(r.body())) + (if (u.method == "POST") captureBody.keys else emptySet())
                 val required = contractFields(assertNotNull(operation(u.method, u.path)))
-                val missing = u.fields.filter { it !in seen && required[it] == true }
-                assertTrue(missing.isEmpty(), "$key: live exchange lacks required field(s) $missing (saw $seen)")
+                val response = keys(Json.parseToJsonElement(r.body()))
+                // Request fields the script sends must be ones the request schema knows; the rest must come back.
+                val requestSchema = HashMap<String, Boolean>().also {
+                    props(operation(u.method, u.path)!!.requestBody?.content?.get("application/json")?.schema, it)
+                }
+                val missing = u.fields.filter { it !in response && it !in requestSchema && required[it] == true }
+                assertTrue(missing.isEmpty(), "$key: live response lacks required field(s) $missing (saw $response)")
             }
+            // The request fields svod-capture.sh sends are really stored: the session list echoes them back.
+            val capture = uses("svod-capture.sh").single()
+            val session = Json.parseToJsonElement(fx.get("/api/v1/memory/sessions").body()).jsonArray.single().jsonObject
+            for (f in capture.fields.filter { it in captureBody.keys }) {
+                val value = captureBody[f]!!.jsonPrimitive.content
+                if (f == "transcript") {
+                    assertEquals(value.toByteArray(Charsets.UTF_8).size.toString(), session["bytes"]!!.jsonPrimitive.content, "transcript size")
+                } else {
+                    assertEquals(value, session[f]?.jsonPrimitive?.content, "captured session field $f")
+                }
+            }
+            val captured = Json.parseToJsonElement(live.getValue("POST /api/v1/memory/capture").body()).jsonObject
+            assertEquals("false", captured["deduped"]!!.jsonPrimitive.content)
+            val again = Json.parseToJsonElement(fx.post("/api/v1/memory/capture", captureBody.toString()).body()).jsonObject
+            assertEquals("true", again["deduped"]!!.jsonPrimitive.content, "an equal transcript is deduped (counted as accepted by the script)")
             val book = Json.parseToJsonElement(live.getValue("GET /api/v1/memory/rulebook").body()).jsonObject
             assertEquals("Hook rule", book["items"]!!.jsonArray.single().jsonObject["title"]!!.jsonPrimitive.content)
             val changes = Json.parseToJsonElement(live.getValue("GET /api/v1/changes").body()).jsonObject

@@ -83,7 +83,7 @@ How this differs from claude-mem and similar memory plugins:
 | Variable | Default | Meaning |
 |---|---|---|
 | `SVOD_API_URL` | from the discovery file, else `http://127.0.0.1:7517` | App API base URL. Use `https://…` for a remote engine. |
-| `SVOD_DISCOVERY_FILE` | `~/.config/svod/engine.json` | The file a running engine writes; its `host` and `appApiPort` are used when `SVOD_API_URL` is unset. |
+| `SVOD_DISCOVERY_FILE` | `~/.config/svod/engine.json` | The file a running engine writes; its `host` and `appApiPort` are used when `SVOD_API_URL` is unset. The URL built from it is always `http://`, so an engine with `appApiTls` needs `SVOD_API_URL`. |
 | `SVOD_API_KEY` | unset (keyless loopback) | Personal App API key, sent as `Authorization: Bearer …`. |
 | `SVOD_VAULT` | unset (the default vault) | Vault id on a multi-vault engine, sent as `?vault=`. |
 
