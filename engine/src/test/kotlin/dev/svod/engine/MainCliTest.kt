@@ -1,11 +1,20 @@
 package dev.svod.engine
 
+import dev.svod.engine.core.Author
+import dev.svod.engine.core.SvodEngine
+import dev.svod.engine.core.WriteOutcome
 import dev.svod.engine.lifecycle.ApiCompatibility
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.runBlocking
+import java.nio.file.Files
 import java.nio.file.Paths
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -79,6 +88,49 @@ class MainCliTest {
         assertEquals(Command.Digest(listOf("c.json", "proj")), parseCommand(arrayOf("digest", "c.json", "proj")))
         val u = usageText()
         assertTrue("svod-engine digest <config.json> [folder...]" in u, u)
+    }
+
+    @Test
+    fun `export-rules is parsed and listed in the usage`() {
+        assertEquals(
+            Command.ExportRules(listOf("c.json", "AGENTS.md")),
+            parseCommand(arrayOf("export-rules", "c.json", "AGENTS.md")),
+        )
+        val u = usageText()
+        assertTrue("svod-engine export-rules <config.json> <AGENTS.md|CLAUDE.md>" in u, u)
+    }
+
+    private fun seedVault(): java.nio.file.Path {
+        val dir = Files.createTempDirectory("svod-cli-vault-")
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        SvodEngine.open(dir, scope).use { engine ->
+            runBlocking {
+                val out = engine.write("rules/p.md", "---\ntype: policy\ntitle: CLI policy\n---\nbody\n", null, Author("a", "a@example.com"))
+                assertTrue(out is WriteOutcome.Success, "$out")
+            }
+        }
+        return dir
+    }
+
+    @Test
+    fun `export-rules uses the vaults entry, not vaultPath`() {
+        val real = seedVault()
+        val stale = Files.createTempDirectory("svod-cli-stale-")
+        val out = Files.createTempDirectory("svod-cli-out-")
+
+        val vaultsOnly = SvodConfig(vaults = listOf(SvodConfig.VaultSettings(id = "main", path = real.toString())))
+        val r = exportRules(vaultsOnly, out.resolve("AGENTS.md"))
+        assertTrue(r.changed)
+        assertEquals(1, r.rules)
+        assertTrue("### CLI policy" in Files.readString(out.resolve("AGENTS.md")))
+
+        val both = SvodConfig(
+            vaultPath = stale.toString(),
+            vaults = listOf(SvodConfig.VaultSettings(id = "main", path = real.toString())),
+        )
+        assertFailsWith<IllegalArgumentException> { exportRules(both, real.resolve("AGENTS.md")) }
+        assertFalse(Files.exists(real.resolve("AGENTS.md")))
+        assertEquals(1, exportRules(both, stale.resolve("AGENTS.md")).rules)
     }
 
     @Test

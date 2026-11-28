@@ -22,6 +22,16 @@ independently of the engine; each entry notes the contract version it ships.
   the working tree); renames are not followed. A note missing at HEAD is `not_found` / 404. The tool is in the
   reader set; vault grants apply as for `read`, and the App API hides an ungranted vault as 404. MCP now has
   23 tools.
+- `svod-engine export-rules <config.json> <AGENTS.md|CLAUDE.md>` (engine stopped) writes the vault's active
+  `policy`, `preference` and `procedure` notes into a managed section between `<!-- svod:rules:begin -->` and
+  `<!-- svod:rules:end -->` of an agent instructions file outside the vault. Filtering matches context_pack:
+  no revoked, provisional, superseded or expired notes, no `private: true` notes or `<private>` spans, nothing
+  under `messy/` or a dot-folder. Each rule cites its vault path and last commit. The output carries no
+  timestamp, the file is rewritten only when its content changes, text outside the markers is kept
+  byte-for-byte, and malformed markers or a target inside the (default, `vaults`-aware) vault are refused.
+  Markers quoted inside a note are HTML-escaped so they never break the section; titles come from
+  private-stripped text too. The write is atomic, keeps the file's mode and goes through a symlinked target.
+  No contract change.
 
 ## v1.35.0 — 2026-11-26 (App API contract 0.42.0, unchanged)
 
