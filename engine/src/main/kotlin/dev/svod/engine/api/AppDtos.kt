@@ -46,6 +46,9 @@ data class MoveResultDto(val path: String, val revision: String, val commit: Str
 data class RestoreRequestDto(val trashPath: String, val to: String? = null)
 
 @Serializable
+data class RestoreRevisionRequestDto(val path: String, val revision: String, val expectedRevision: String? = null)
+
+@Serializable
 data class TreeNodeDto(
     val name: String, val path: String, val type: String, val children: List<TreeNodeDto>? = null,
     /** `GET /trash` file nodes only: the path the note had before it was deleted, when history records it. */

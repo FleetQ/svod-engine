@@ -38,7 +38,7 @@ class GraphRagUnitTest {
 
     @Test
     fun `contract version was bumped for the additive graph routes`() {
-        // Bumped deliberately in v1.33.0: GET /stats.
+        // Bumped deliberately to 0.43.0: changes feed, blame, audit and POST /api/v1/file/restore-revision.
         assertEquals("0.43.0", ApiCompatibility.CURRENT_CONTRACT_VERSION)
     }
 

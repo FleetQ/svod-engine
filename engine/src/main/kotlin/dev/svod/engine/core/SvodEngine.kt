@@ -210,6 +210,39 @@ class SvodEngine private constructor(
     }
 
     /**
+     * Put [path] back to its content at [revision] (a commit id / ref) in one attributed commit
+     * `restore: ‹path› to ‹commit id›`. [expectedRevision] is the live blob id the caller last read
+     * (null ⇒ the file must not exist); a mismatch is a [WriteOutcome.Conflict]. [content] overrides
+     * the restored text (e.g. a provisional-marked copy); null ⇒ the bytes at [revision]. A note absent
+     * at [revision] is [WriteOutcome.NotFound]; an unknown revision or a non-commit object is an
+     * [IllegalArgumentException].
+     */
+    suspend fun restoreRevision(
+        path: String,
+        revision: String,
+        expectedRevision: Revision?,
+        author: Author,
+        content: String? = null,
+    ): WriteOutcome =
+        timed { actor.submit { doRestoreRevision(VaultPath.of(path), revision, expectedRevision, author, content) } }
+            .also(::notifyCommit)
+
+    /**
+     * The full id of the commit [revision] (a commit id / ref, annotated tags peeled) names, or null when it
+     * names no commit. Resolve a moving ref (`HEAD~1`, a branch) once with this, then pass the id on, so
+     * every later step sees the same commit.
+     */
+    suspend fun resolveCommit(revision: String): String? = actor.submit { resolveCommitOnActor(revision) }
+
+    private fun resolveCommitOnActor(revision: String): String? = try {
+        git.resolveRev("$revision^{commit}")
+    } catch (e: org.eclipse.jgit.errors.RevisionSyntaxException) {
+        null
+    } catch (e: IOException) {
+        null // missing object, ambiguous abbreviation, or not a commit (a blob / tree id)
+    }
+
+    /**
      * Line-level blame of [path] at HEAD: each line with the commit, author and `Svod-Agent` that last changed it.
      * Null when [path] does not exist at HEAD. Committed history only; renames are not followed.
      */
@@ -401,6 +434,33 @@ class SvodEngine private constructor(
         val bytes = content.toByteArray(UTF_8)
         AtomicFile.write(target, bytes, crash)
         val commit = git.commitPaths(listOf(vp.value), "write: ${vp.value}", author) ?: git.headId()!!
+        return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)
+    }
+
+    private fun doRestoreRevision(
+        vp: VaultPath,
+        revision: String,
+        expected: Revision?,
+        author: Author,
+        override: String?,
+    ): WriteOutcome {
+        val commitId = resolveCommitOnActor(revision) ?: throw IllegalArgumentException("unknown revision: $revision")
+        val old = git.readAtRevision(vp.value, commitId) ?: return WriteOutcome.NotFound("${vp.value}@$revision")
+        val text = override ?: String(old, UTF_8)
+        val secrets = secretScanner.scan(text)
+        if (secrets.isNotEmpty()) {
+            return WriteOutcome.Blocked(vp.value, secrets.map { "${it.rule} (line ${it.line})" })
+        }
+        val target = vp.resolveAgainst(root)
+        val exists = Files.isRegularFile(target)
+        val current = if (exists) git.blobId(Files.readAllBytes(target)) else null
+        if (current != expected) {
+            val live = if (exists) Files.readString(target, UTF_8) else null
+            return WriteOutcome.Conflict(vp.value, expected, current, live)
+        }
+        val bytes = if (override != null) override.toByteArray(UTF_8) else old
+        AtomicFile.write(target, bytes, crash)
+        val commit = git.commitPaths(listOf(vp.value), "restore: ${vp.value} to $commitId", author) ?: git.headId()!!
         return WriteOutcome.Success(vp.value, git.blobId(bytes), commit)
     }
 

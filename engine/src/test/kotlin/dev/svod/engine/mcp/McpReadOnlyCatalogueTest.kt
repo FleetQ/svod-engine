@@ -46,11 +46,12 @@ class McpReadOnlyCatalogueTest {
                     assertTrue("recent_changes" in readOnly, "recent_changes is a reader tool")
                     assertTrue("blame" in readOnly, "blame is a reader tool")
                     assertEquals(readers, readOnly.toSet())
-                    listOf("write", "edit", "move", "delete", "remember", "extract_memories", "promote").forEach {
+                    listOf("write", "edit", "move", "delete", "remember", "extract_memories", "promote", "restore_revision").forEach {
                         assertTrue(it !in readOnly, "$it must be hidden from a READ_ONLY agent")
                     }
                     val all = http.toolNames(server.port, WRITE_AGENT.token)
-                    assertEquals(23, all.size, "write agent keeps all 23 tools: $all")
+                    assertEquals(24, all.size, "write agent keeps all 24 tools: $all")
+                    assertTrue("restore_revision" in all, "restore_revision is offered to a write agent")
                     assertEquals(GrantResolver.REQUIRED.keys, all.toSet())
                 }
             } finally { server.stop() }

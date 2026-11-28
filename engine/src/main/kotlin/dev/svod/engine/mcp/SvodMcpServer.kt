@@ -506,6 +506,17 @@ class SvodMcpServer(
         tool("get_revision", "Read a note's content at a specific revision.", mapOf("path" to "string", "revision" to "string"), listOf("path", "revision")) { req ->
             val (t, d) = routed(req, "get_revision"); d ?: t!!.getRevision(agent, req.str("path")!!, req.str("revision")!!).toCallToolResult()
         }
+        tool(
+            "restore_revision",
+            "Put a note back to its content at an earlier COMMIT (a commit id from history, not a note revision from read) " +
+                "in one attributed commit 'restore: <path> to <commit>'. Optional 'expectedRevision' (the note revision you last " +
+                "read) guards against concurrent edits; a conflict returns the live content.",
+            mapOf("path" to "string", "revision" to "string", "expectedRevision" to "string"),
+            listOf("path", "revision"),
+        ) { req ->
+            val (t, d) = routed(req, "restore_revision")
+            d ?: t!!.restoreRevision(agent, req.str("path")!!, req.str("revision")!!, req.str("expectedRevision")).toCallToolResult()
+        }
         tool("blame", "Line-by-line attribution for a note at HEAD: the commit, author, date and Svod-Agent of each line.", mapOf("path" to "string"), listOf("path")) { req ->
             val (t, d) = routed(req, "blame"); d ?: t!!.blame(agent, req.str("path")!!).toCallToolResult()
         }
