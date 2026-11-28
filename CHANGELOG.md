@@ -28,6 +28,14 @@ independently of the engine; each entry notes the contract version it ships.
   `docs/security-overview.md` now lists every rule id, kept in sync with the code by `SecurityOverviewDocsTest`.
   No contract change.
 
+### Docs — Svod vs Hindsight
+
+- New `docs/compare-hindsight.md` compares Svod with Hindsight by Vectorize: what both share, where Svod differs,
+  where Hindsight is ahead, and dated sources. Hindsight facts that were not confirmed from a primary source are
+  marked ⚠️. README '## How it compares' links to it, and `CompareHindsightDocsConsistencyTest` checks its sections,
+  its MCP tool count against the live tools/list, its dated sources, and that every Hindsight cell in its comparison
+  table is marked ⚠️ with a date. No contract change.
+
 ## v1.35.0 — 2026-11-26 (App API contract 0.42.0, unchanged)
 
 ### Added
