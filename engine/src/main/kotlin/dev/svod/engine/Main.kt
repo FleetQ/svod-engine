@@ -9,6 +9,8 @@ import dev.svod.engine.lifecycle.Doctor
 import dev.svod.engine.lifecycle.EngineDiscovery
 import dev.svod.engine.lifecycle.SvodConfig
 import dev.svod.engine.lifecycle.SvodNode
+import dev.svod.engine.mcp.AuditChainReport
+import dev.svod.engine.mcp.AuditLog
 import dev.svod.engine.memory.FolderDigest
 import dev.svod.engine.migrate.BasicMemoryImport
 import dev.svod.engine.migrate.ClaudeMemoryImport
@@ -54,6 +56,9 @@ import kotlin.system.exitProcess
  * Folder digest: `svod-engine digest <config.json> [folder...]` writes a generated index.md and log.md into each
  * folder in one commit per folder, with the engine stopped (see [FolderDigest]).
  *
+ * Audit check: `svod-engine audit-verify <config.json>` checks each vault's agent audit-log hash chain read-only
+ * and exits 1 at the first broken line (see [AuditLog.verify]).
+ *
  * `svod-engine --help` (`-h`) prints usage and `svod-engine --version` (`-V`) prints the engine
  * and App API contract versions; both exit before any config is read.
  */
@@ -95,6 +100,7 @@ fun main(args: Array<String>) {
         is Command.Doctor -> return runDoctor(cmd.args)
         is Command.Eval -> return runEval(cmd.args)
         is Command.Digest -> return runDigest(cmd.args)
+        is Command.AuditVerify -> return runAuditVerify(cmd.args)
         is Command.Run -> cmd.configPath
     }
     val config = configPath
@@ -129,6 +135,7 @@ internal sealed interface Command {
     data class Doctor(val args: List<String>) : Command
     data class Eval(val args: List<String>) : Command
     data class Digest(val args: List<String>) : Command
+    data class AuditVerify(val args: List<String>) : Command
     data class Unknown(val flag: String) : Command
 }
 
@@ -149,6 +156,7 @@ internal fun parseCommand(args: Array<String>): Command {
         first == "doctor" -> Command.Doctor(args.drop(1))
         first == "eval" -> Command.Eval(args.drop(1))
         first == "digest" -> Command.Digest(args.drop(1))
+        first == "audit-verify" -> Command.AuditVerify(args.drop(1))
         first.startsWith("-") -> Command.Unknown(first)
         else -> Command.Run(Paths.get(first))
     }
@@ -166,6 +174,8 @@ internal fun usageText(): String = """
     |      score search quality (recall@k, nDCG@10, MRR) on your vault against a golden set, then exit (engine stopped; never writes notes)
     |  svod-engine digest <config.json> [folder...]
     |      write a generated index.md and log.md into each folder (default: every top-level folder), then exit (engine stopped)
+    |  svod-engine audit-verify <config.json>
+    |      check each vault's agent audit-log hash chain without changing anything; exits 1 on the first edited, removed or reordered line
     |  svod-engine import <config.json> <obsidian-dir> [into]
     |      import an Obsidian vault into the configured vault, then exit (engine stopped)
     |  svod-engine import-basic-memory <config.json> <basic-memory-dir> [into]
@@ -304,6 +314,49 @@ private fun runDigest(args: List<String>) {
         System.err.println("svod-engine digest: cannot read ${e.message}")
         exitProcess(2)
     }
+}
+
+/**
+ * `svod-engine audit-verify <config.json>`: read-only check of each vault's agent audit-log hash chain.
+ * Does not open the engine or take the vault lock, so it can run while the engine is up.
+ */
+private fun runAuditVerify(args: List<String>) {
+    if (args.size != 1 || args.any { it.startsWith("-") }) {
+        System.err.println("usage: svod-engine audit-verify <config.json>")
+        exitProcess(2)
+    }
+    val config = try {
+        SvodConfig.loadOrThrowValidated(Paths.get(args[0]))
+    } catch (e: IllegalArgumentException) {
+        System.err.println("svod-engine audit-verify: ${e.message}")
+        exitProcess(2)
+    } catch (e: IllegalStateException) {
+        System.err.println("svod-engine audit-verify: ${e.message}")
+        exitProcess(2)
+    } catch (e: java.io.IOException) {
+        System.err.println("svod-engine audit-verify: cannot read ${e.message}")
+        exitProcess(2)
+    }
+    val (lines, code) = auditVerifyReport(config)
+    lines.forEach(::println)
+    exitProcess(code)
+}
+
+/** One line per configured vault and the exit code: 1 when any vault's chain is broken, else 0. */
+internal fun auditVerifyReport(config: SvodConfig): Pair<List<String>, Int> {
+    var broken = false
+    val lines = config.resolvedVaults().map { v ->
+        val r = AuditLog.verify(AuditLog.fileFor(Paths.get(v.path)))
+        when (r.status) {
+            AuditChainReport.Status.ABSENT -> "vault ${v.id}: no audit log"
+            AuditChainReport.Status.OK -> "vault ${v.id}: ok (${r.chained} chained, ${r.preChain} pre-chain)"
+            AuditChainReport.Status.BROKEN -> {
+                broken = true
+                "vault ${v.id}: BROKEN at line ${r.brokenLine}: ${r.reason}"
+            }
+        }
+    }
+    return lines to (if (broken) 1 else 0)
 }
 
 private fun runImport(args: List<String>) {

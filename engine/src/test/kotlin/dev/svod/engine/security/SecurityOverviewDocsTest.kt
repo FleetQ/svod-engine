@@ -220,6 +220,19 @@ class SecurityOverviewDocsTest {
     }
 
     @Test
+    fun auditChainIsDocumented() {
+        val audit = section("Audit trail")
+        assertTrue("`svod-engine audit-verify" in audit, "$PAGE '## Audit trail' must name `svod-engine audit-verify`")
+        assertTrue("SHA-256" in audit, "$PAGE '## Audit trail' must say the agent audit log is a SHA-256 hash chain")
+        assertBackticked(audit, "prevHash", "## Audit trail")
+        assertTrue("pre-chain" in audit.lowercase(), "$PAGE '## Audit trail' must say older lines count as pre-chain")
+        val gaps = section("Known gaps").lowercase()
+        assertTrue("hash chain" in gaps, "$PAGE '## Known gaps' must state the hash chain's limits")
+        assertTrue("rewrite" in gaps, "$PAGE '## Known gaps' must say a full rewrite of the audit log is not detected")
+        assertTrue("end" in gaps && "cut" in gaps, "$PAGE '## Known gaps' must say lines cut off the end are not detected")
+    }
+
+    @Test
     fun deletionAndGapsAreStated() {
         assertTrue(".trash" in VaultPath.RESERVED_TOP, "VaultPath.RESERVED_TOP no longer has .trash; update $PAGE")
         val del = section("Deletion and retention").lowercase()
