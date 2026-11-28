@@ -257,6 +257,14 @@ button {
 .review-actions button, .review-tools button { margin: 0; padding: 4px 12px; font-size: 12px; }
 button.ghost { background: var(--panel-2); color: var(--ink-dim); border: 1px solid var(--line); }
 button.ghost:hover { color: var(--ink); border-color: var(--accent); }
+/* In-row "Enter API key" action in a locked pane: reads as a link, keeps the global focus ring. */
+button.ghost.linkish {
+  display: inline; margin: 0; padding: 0; background: none; border: none;
+  font: inherit; font-style: normal; color: var(--accent);
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+button.ghost.linkish:hover { color: var(--ink); }
+button.ghost.linkish:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button:disabled { opacity: 0.5; cursor: default; }
 
 /* sync conflicts pane */
